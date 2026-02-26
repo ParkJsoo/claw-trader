@@ -104,6 +104,8 @@
 
 **Current Phase:** 8 v4 Complete (무인 운영 안전장치)
 **System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause 상태 — 무인 운영 중)
+**Current Universe Mode:** Static (.env-based watchlist)
+**Next Evolution:** AI-assisted candidate pool (Phase 10)
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상)
 **md:last_update age:** KR ~4s / US ~7s ✅
@@ -284,6 +286,15 @@ GEN_MD_STALE_SEC=180       # md stale 임계값 (초)
 GEN_MD_ERROR_SPIKE=50      # md 오류 급증 임계값 (인터벌당)
 GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
 ```
+
+### Watchlist Operational Rule
+
+현재 운영 모드에서:
+
+- 신규 진입(New Entry)은 `GEN_WATCHLIST_*`에 정의된 종목에 한정된다.
+- 이미 보유 중인 포지션은 watchlist 여부와 관계없이 관리된다.
+- watchlist 변경은 전략 변경 이벤트로 간주한다.
+- 무인 운영 중에는 watchlist를 변경하지 않는다.
 
 ### 3/3 이후 체크리스트
 ```

@@ -1,5 +1,8 @@
 # 🚀 Claw-Trader Roadmap v2 (현실 반영 버전)
 
+> Note: watchlist는 프로젝트의 최종 형태가 아니라
+> 단계별로 진화하는 Universe Layer의 초기 구현이다.
+
 ---
 
 ## ✅ PHASE 0 — 보안 환경 격리 ✔ 완료
@@ -132,6 +135,48 @@
 - shadow 데이터 충분히 검증 후 전환
 
 **상태:** ✅ DONE (v1 — Shadow Mode)
+
+---
+
+## 🌍 Universe Layer Evolution
+
+Claw-Trader의 watchlist는 단순 관심종목 리스트가 아니라
+전략이 탐색하는 "거래 가능 Universe"의 1차 버전이다.
+
+```
+Market
+  ↓
+Universe Selector
+  ↓
+Active Watchlist
+  ↓
+Signal Engine
+  ↓
+Risk Engine
+  ↓
+Executor
+```
+
+### Phase 8 — Static Universe
+- .env 기반 GEN_WATCHLIST_KR / GEN_WATCHLIST_US 사용
+- 신규 진입은 watchlist 종목에 한정
+- 운영 안정화 및 리스크 통제를 위한 구조
+
+### Phase 9 — AI within Static Universe
+- AI 엔진 고도화 (Claude / Local LLM)
+- watchlist는 유지
+- AI는 watchlist 내부에서만 판단 수행
+- watchlist 변경 권한은 운영자
+
+### Phase 10 — AI-assisted Candidate Pool
+- AI가 시장 데이터를 기반으로 후보 종목 추천
+- 운영자가 승인 (Human-in-the-loop)
+- 실제 watchlist는 Redis 기반으로 동적 관리
+
+### Phase 11 — Autonomous Universe Selector (Optional)
+- AI가 조건 기반으로 Universe 자동 조정
+- 변경 폭 제한 / cooldown / 롤백 필수
+- RiskEngine과 강하게 연동
 
 ---
 
