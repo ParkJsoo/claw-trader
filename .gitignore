@@ -1,0 +1,41 @@
+# 환경변수 (절대 커밋 금지)
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Claude Code / OMC (세션 데이터, 대화 리플레이 포함)
+.claude/
+.omc/
+
+# 로그
+*.log
+logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo

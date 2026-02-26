@@ -1,0 +1,37 @@
+{
+  "type": "object",
+  "required": ["signal_id", "ts", "market", "symbol", "direction", "entry", "stop"],
+  "properties": {
+    "signal_id": { "type": "string" },
+    "ts": { "type": "string" },
+    "market": { "type": "string", "enum": ["KR", "US"] },
+    "symbol": { "type": "string" },
+    "asset_class": { "type": "string" },
+    "direction": { "type": "string", "enum": ["LONG", "EXIT"] },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "price": { "type": "number" },
+        "size_cash": { "type": "number" },
+        "tif": { "type": "string" }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string" },
+        "anchor_id": { "type": "string" },
+        "vwap_level": { "type": "number" },
+        "support_level": { "type": "number" },
+        "buffer": {
+          "type": "object",
+          "properties": {
+            "seconds": { "type": "number" },
+            "ticks": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

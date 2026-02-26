@@ -1,0 +1,1 @@
+print('Claw-Trader bootstrap')

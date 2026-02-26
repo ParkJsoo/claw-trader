@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "required": ["risk_id", "action", "ts"],
+  "properties": {
+    "risk_id": { "type": "string" },
+    "ts": { "type": "string" },
+    "action": { "type": "string" },
+    "reason": { "type": "string" }
+  }
+}
