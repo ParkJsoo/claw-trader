@@ -42,8 +42,8 @@
 🇺🇸 **IBKR Client**
 - ibkr_healthcheck.py ✅
 - IBKR Gateway ping 연결 확인 ✅
-- **reqMarketDataType(4) 적용** — Delayed Frozen 모드, Error 10089 해결 ✅
-- **reconnect backoff 적용** — 지수 백오프 최대 60s, 실패 로깅 ✅
+- `reqMarketDataType(4)` — Delayed Frozen 모드, Error 10089 해결 ✅
+- reconnect backoff 적용 — 지수 백오프 최대 60s, 실패 로깅 ✅
 - available_cash=0 → ACCOUNT_SNAPSHOT_ERROR 처리 (3/3 입금 후 해결 예정) ⚠️
 
 ---
@@ -90,6 +90,11 @@
 ✔ AI Signal Generator — KR/US 모두 정상 동작 ✅
 ✔ IbkrFeed — Delayed Frozen 모드 (reqMarketDataType(4)), AAPL/NVDA 가격 수신 확인 ✅
 ✔ Process Lock — gen:runner:lock (signal_generator_runner 중복 실행 방지) ✅
+✔ Telegram Notifier — `guards/notifier.py` (자동 pause 시 알림) ✅
+✔ AI 호출 하드 캡 — `ai:call_count` 일일 1000회 제한, 초과 시 auto-pause + TG ✅
+✔ 비정상 자동 중지 — MD_STALE / MD_ERROR_SPIKE / AI_ERROR_SPIKE 감지 → auto-pause + TG ✅
+✔ 10분 상태 요약 로그 — md_age / hist 길이 / md_err_delta / ai_stats / lock_ttl ✅
+✔ TG 스팸 방지 — 이미 pause 상태에서 중복 알림 차단 ✅
 ✔ Watcher 정상 대기
 ⚠️ claw:pause:global=true 설정 중 (실제 주문 차단 상태)
 
@@ -97,58 +102,67 @@
 
 ## 📊 System Status
 
-**Current Phase:** 8 v3 Complete (IBKR Delayed Data + Process Lock)
-**System Stability:** ⭐⭐⭐⭐⭐ Stable Foundation
+**Current Phase:** 8 v4 Complete (무인 운영 안전장치)
+**System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause 상태 — 무인 운영 중)
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
-**US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상) — 인프라 검증 구간
+**US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상)
+**md:last_update age:** KR ~4s / US ~7s ✅
+**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner ✅
+**gen:runner:lock TTL:** ~63s (정상 갱신 중) ✅
+
+---
+
+## ✅ PHASE 8 v4 — 무인 운영 안전장치 완료
+
+### 구현 내역
+
+**`src/guards/notifier.py`** (신규)
+- `send_telegram(message)` — urllib 기반 Telegram 알림 (fire-and-forget)
+- 실패 시 False 반환, 예외 전파 없음
+
+**`src/ai/generator.py`** 변경
+- `_GEN_DAILY_CALL_CAP=1000` — emit 여부와 무관한 AI API 호출 수 하드 캡
+- `_set_auto_pause()` 메서드 — pause=true + reason/meta Redis 기록 + TG 알림
+- `ai:call_count:{market}:{YYYYMMDD}` — API 호출 직전 INCR, 초과 시 자동 pause + return None
+
+**`src/app/signal_generator_runner.py`** 변경
+- 시작 시 `claw:pause:global` 확인 — false면 WARN 출력
+- `_health_check()` — 10분마다 상태 로그 + 비정상 감지 (MD_STALE/MD_ERROR_SPIKE/AI_ERROR_SPIKE)
+- `_do_auto_pause()` — pause=true + reason/meta + TG 알림 + 로그
+- 이미 pause 상태면 anomaly 감지 시 상태 로그만, TG 중복 알림 없음
+- pause 상태에서 AI 호출 없이 60s sleep (lock 하트비트 유지)
+
+### 동작 확인 (Phase 8 v4 세션)
+- MD_STALE(US) 자동 감지 + TG 알림 발송 확인 ✅
+- pause 상태에서 AI 호출 0 확인 ✅
+- TG 스팸 방지 수정 후 재확인 ✅
+- gen:runner:lock TTL 갱신 정상 ✅
+
+### GPT 피드백 검토 (2026-02-27)
+- GPT가 TG 스팸 방지 코드 존재 여부 질문
+- 확인 결과: signal_generator_runner.py:191에 `if anomalies and not _is_paused(r):` 가드 구현 완료 (방법 A)
+- GPT도 "지금 상태로 무인 운영 진행해도 된다" 결론
+- 프로세스 재기동 후 전체 상태 정상 확인 (KR 4s / US 7s / lock TTL 63s)
 
 ---
 
 ## ✅ PHASE 8 v3 — IBKR Delayed Data + Process Lock 완료
 
-### 구현 내역
-
 **`src/market_data/ibkr_feed.py`**
-- `reqMarketDataType(4)` — 연결 직후 Delayed Frozen 모드 설정
-  - Error 10089 "market data subscription" 해결
-  - 장외 시간에도 마지막 가격 반환
-- reconnect 지수 백오프: 실패 시 2^n 초 대기, 최대 60s
-- reconnect 로깅: 실패 횟수, 다음 백오프 시간, 재연결 성공 시 복구 메시지
+- `reqMarketDataType(4)` — Delayed Frozen 모드
+- reconnect 지수 백오프 (최대 60s)
 
 **`src/app/signal_generator_runner.py`**
-- 프로세스 락: `gen:runner:lock` SET NX EX 120
-  - 이미 실행 중이면 exit(0)
-  - 루프 시작마다 EXPIRE 120으로 TTL 갱신
-  - finally 블록에서 락 삭제 (정상 종료 시 즉시 해제)
-
-### 동작 확인 (이번 세션)
-- US AAPL: 272.80 → 272.77 → 272.67 (Delayed Frozen 정상 수신) ✅
-- US NVDA: 187.36 → 187.21 → 186.88 (Delayed Frozen 정상 수신) ✅
-- KR 005930: mark_hist 134개 누적, AI no_emit=8 (장 마감 — 정상) ✅
-- gen:runner:lock=1 — 프로세스 락 정상 동작 ✅
+- `gen:runner:lock` SET NX EX 120 + 루프마다 갱신 + finally 해제
 
 ---
 
 ## ✅ PHASE 8 v2 — AI Signal Generator 완료
 
-### 구현 내역
-- `src/ai/generator.py` — AISignalGenerator (cold start 가드, 피처 계산, AI 호출, 감사 로그)
-- `src/app/signal_generator_runner.py` — 독립 프로세스 (GEN_POLL_SEC=60, 워치리스트, exit(1) on no API key)
-- `src/market_data/updater.py` — 워치리스트 심볼 폴링 지원 (extra_symbols 파라미터)
-- `src/app/market_data_runner.py` — GEN_WATCHLIST_KR/US 읽어서 updater에 전달
-
-### Risk Engine 개선
-- `src/executor/risk.py` — available_cash <= 0을 ACCOUNT_SNAPSHOT_ERROR로 분리
-  - meta에 equity/cash/currency 포함
-  - except 블록 meta에 market/symbol/size_cash 추가
-
-### generator.py 안전장치
-- EXIT 신호: position:{market}:{symbol} qty 확인 후 없으면 no_position 차단
-- daily_cap: INCR → 초과 시 DECR 롤백 (원자성 보장)
-- daily_cap → cooldown 순서 (cap 초과 시 cooldown 키 소모 없음)
-- stop_price: KR=원단위(Decimal("1")), US=센트단위(Decimal("0.01"))
-- stop_price <= 0 방어 (stop_adjusted=True 플래그 감사 로그)
-- signal에 ts_ms 추가 (프로젝트 전사 표준)
+- `src/ai/generator.py` — AISignalGenerator
+- `src/app/signal_generator_runner.py` — 독립 프로세스
+- `src/market_data/updater.py` — 워치리스트 폴링 지원
+- `src/app/market_data_runner.py` — watchlist 주입
 
 ---
 
@@ -156,23 +170,17 @@
 
 ### 1. KR 장중 Feature 값 검증 (최우선)
 - 장중(09:00~15:30 KST)에 반드시 확인
-- `LRANGE mark_hist:KR:005930 0 5` → timestamp 증가 + price 변화 확인
-- `ai:gen_stats:KR:{YYYYMMDD}` → no_emit 비율, reason 품질 확인
-- ret_1m / ret_5m 이 0.0 고정이면 가격 갱신 문제
+- `LRANGE mark_hist:KR:005930 0 5` → timestamp 증가 + price 변화
+- `HGETALL ai:gen_stats:KR:{YYYYMMDD}` → no_emit/generated 비율, reason 품질
+- ret_1m/ret_5m 0.0 고정이면 가격 갱신 문제
 
-### 2. IBKR available_cash=0 해결 (3월 3일 입금 후)
-- 입금 후 IBKR 계좌 관리에서 API 권한 확인
-- Gateway → Trading Permissions → API 액세스 허용 여부
-- `redis-cli SET claw:pause:global false` 후 US 실전 파이프라인 확인
-
-### 3. claw:pause:global 해제 후 KR 실전 파이프라인 확인
+### 2. claw:pause:global 해제 후 KR 실전 파이프라인 확인
 - KR 장중에 모멘텀 발생 시 신호 생성 → Risk 통과 여부 확인
-- Risk PAUSED 처리 확인 (주문 절대 안 나감)
+- `docker exec claw-redis redis-cli -a henry0308 SET claw:pause:global false`
 
-### 4. 3/3 이후 — Delayed → Live 전환
-- IBKR 라이브 시장 데이터 구독 활성화
-- `reqMarketDataType(4)` → `reqMarketDataType(1)` 변경 (또는 삭제 — 라이브 기본값)
-- US 실전 전략 검증 시작
+### 3. IBKR available_cash=0 해결 (3월 3일 입금 후)
+- 입금 후 IBKR 계좌 API 권한 확인
+- `reqMarketDataType(4)` → `reqMarketDataType(1)` 변경 (라이브 전환)
 
 ---
 
@@ -181,72 +189,41 @@
 | 시장 | 모드 | 목적 |
 |------|------|------|
 | KR | 실전 품질 검증 | 전략/AI/Risk 검증, 장중 Feature 확인 |
-| US | 인프라 검증 | Delayed Frozen 데이터 흐름, cold start 통과 확인 |
-
----
-
-## 📈 Strategy Status
-- Strategy Filter Engine ✅ — 3-rule filter (dedupe / cooldown / daily_cap)
-- Signal Generation ✅ — AI Signal Generator v1 (Phase 8 v2)
-
----
-
-## 🤖 AI / Signal Generator Status
-- Phase 8 v1: Shadow Advisory ✅ — 파이프라인 영향 없이 추천 기록
-- Phase 8 v2: AI Signal Generator ✅ — KR/US 모두 동작 확인
-- Phase 8 v3: IBKR Delayed Data + Process Lock ✅
-- 다음: AI 주도 신호 신뢰도 검증 후 실전 전환 (shadow 데이터 충분히 쌓인 후)
+| US | 인프라 검증 | Delayed Frozen 데이터 흐름, cold start 통과 |
 
 ---
 
 ## 🧩 Redis Key Status
 
-### Active Keys
-
 **Control:**
-- claw:pause:global — 현재 "true" 설정 중 (수동 주문 차단)
+- `claw:pause:global` — 현재 "true" (수동 주문 차단)
+- `claw:pause:reason` — 자동 pause 사유
+- `claw:pause:meta` — 자동 pause 상세 (market/detail/ts_ms/source)
 
 **Process Lock ✅**
-- gen:runner:lock — signal_generator_runner 단일 실행 보장 (TTL 120s, 루프마다 갱신)
+- `gen:runner:lock` — TTL 120s, 루프마다 갱신
+
+**AI Call Count (Phase 8 v4) ✅**
+- `ai:call_count:{market}:{YYYYMMDD}` — API 호출 수 (TTL 3d)
 
 **Portfolio Engine (PHASE 4) ✅**
-- position:{market}:{symbol}
-- position_index:{market}
-- pnl:{market}
-- trade:{market}:{trade_id}
-- claw:fill:queue
+- position:{market}:{symbol} / position_index:{market} / pnl:{market}
 
 **Risk Engine (PHASE 5) ✅**
-- claw:pause:reason
-- claw:pause:meta
-- claw:killswitch:{market}
+- claw:pause:reason / claw:pause:meta / claw:killswitch:{market}
 
 **Strategy Engine (PHASE 6) ✅**
-- strategy:dedupe:{market}:{signal_id}
-- strategy:cooldown:{market}:{symbol}
-- strategy:daily_count:{market}:{YYYYMMDD}
-- strategy:pass_count:{market}:{YYYYMMDD}
-- strategy:reject_count:{market}:{YYYYMMDD}
+- strategy:dedupe/cooldown/daily_count/pass_count/reject_count
 
 **Market Data (PHASE 7) ✅**
-- mark:{market}:{symbol}
-- md:error:{market}:{YYYYMMDD}
-- md:last_update:{market}
+- mark:{market}:{symbol} / md:error:{market}:{YYYYMMDD} / md:last_update:{market}
 
 **Market Data History (PHASE 8 v2) ✅**
 - mark_hist:{market}:{symbol} — 최근 300개 (TTL 2d)
 
-**AI Advisory (PHASE 8 v1) ✅**
-- ai:advice:{market}:{signal_id}
-- ai:advice_index:{market}:{YYYYMMDD}
-- ai:advice_stats:{market}:{YYYYMMDD}
-
 **AI Signal Generator (PHASE 8 v2) ✅**
-- ai:gen:{market}:{signal_id}
-- ai:gen_index:{market}:{YYYYMMDD}
-- ai:gen_stats:{market}:{YYYYMMDD}
-- gen:cooldown:{market}:{symbol}
-- gen:daily_emit:{market}:{YYYYMMDD}
+- ai:gen:{market}:{signal_id} / ai:gen_index / ai:gen_stats
+- gen:cooldown:{market}:{symbol} / gen:daily_emit:{market}:{YYYYMMDD}
 
 ---
 
@@ -254,33 +231,40 @@
 
 Start From:
 
-👉 **KR 장중 Feature 값 검증 → ai:gen_stats 확인 → 3/3 이후 IBKR 라이브 전환**
+👉 **KR 장중(09:00~15:30 KST) Feature 값 검증 → ai:gen_stats 확인 → 3/3 이후 IBKR 라이브 전환**
 
 운영 루틴:
-- `LRANGE mark_hist:KR:005930 0 5` — timestamp 증가 + price 변화 확인
-- `HGETALL ai:gen_stats:KR:{YYYYMMDD}` — no_emit/generated/skip_* 분포
-- `ZREVRANGE ai:gen_index:KR:{YYYYMMDD} 0 4` → 최근 신호 ID 추출
-- `HGETALL ai:gen:{KR}:{signal_id}` → reason 품질, features_json 확인
-- `GET md:last_update:KR` / `GET md:last_update:US` — stale 여부
-- `GET gen:runner:lock` — 프로세스 락 생존 여부
-- KR 장중(09:00~15:30 KST) / US 장중(23:30~06:00 KST)
+```bash
+# md 신선도
+docker exec claw-redis redis-cli -a henry0308 GET md:last_update:KR
+docker exec claw-redis redis-cli -a henry0308 GET md:last_update:US
 
-Reference: docs/claw_trader_roadmap_v2.md, docs/execution_spec.md, docs/redis_keys.md
+# 가격 변화 확인
+docker exec claw-redis redis-cli -a henry0308 LRANGE mark_hist:KR:005930 0 4
+
+# AI 통계
+docker exec claw-redis redis-cli -a henry0308 HGETALL ai:gen_stats:KR:$(date +%Y%m%d)
+
+# AI 호출 수
+docker exec claw-redis redis-cli -a henry0308 GET ai:call_count:KR:$(date +%Y%m%d)
+
+# 프로세스 락
+docker exec claw-redis redis-cli -a henry0308 TTL gen:runner:lock
+```
 
 ### 주요 구현 파일
-- src/market_data/ibkr_feed.py — reqMarketDataType(4) + reconnect backoff
-- src/ai/generator.py — AISignalGenerator
-- src/app/signal_generator_runner.py — 프로세스 락 + 독립 프로세스
-- src/market_data/updater.py — 워치리스트 폴링 지원
-- src/app/market_data_runner.py — watchlist 주입
+- src/guards/notifier.py — Telegram 알림
+- src/ai/generator.py — AI 호출 캡 + auto-pause
+- src/app/signal_generator_runner.py — 헬스 모니터 + auto-pause + TG 스팸 방지
+- src/market_data/ibkr_feed.py — Delayed Frozen + reconnect backoff
 
 ### 프로세스 기동 순서
 ```
 cd src
 python -m app.runner                   # 신호 처리 파이프라인
-python -m app.market_data_runner       # 현재가 폴링 (워치리스트 포함)
-python -m scripts.order_watcher        # 주문 상태 감시
-python -m app.signal_generator_runner  # AI 신호 생성기 (프로세스 락 자동)
+python -m app.market_data_runner       # 현재가 폴링
+python -m scripts.order_watcher        # 주문 감시
+python -m app.signal_generator_runner  # AI 신호 생성기 (락 + 헬스 모니터)
 ```
 
 ### .env 주요 변수
@@ -294,6 +278,11 @@ GEN_MAX_SIZE_CASH_US=10
 GEN_DAILY_EMIT_CAP=5
 GEN_MIN_HIST=20
 GEN_COOLDOWN_SEC=300
+GEN_DAILY_CALL_CAP=1000    # AI API 호출 수 하드 캡
+GEN_STATUS_LOG_SEC=600     # 상태 로그 간격 (기본 10분)
+GEN_MD_STALE_SEC=180       # md stale 임계값 (초)
+GEN_MD_ERROR_SPIKE=50      # md 오류 급증 임계값 (인터벌당)
+GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
 ```
 
 ### 3/3 이후 체크리스트
@@ -301,10 +290,10 @@ GEN_COOLDOWN_SEC=300
 1. IBKR 계좌 입금 확인
 2. IBKR 라이브 시장 데이터 구독 (Market Data Connections)
 3. ibkr_feed.py: reqMarketDataType(4) → reqMarketDataType(1) 또는 제거
-4. redis-cli SET claw:pause:global false
+4. docker exec claw-redis redis-cli -a <pw> SET claw:pause:global false
 5. KR/US 장중 실전 파이프라인 확인
 ```
 
 ---
 
-**Claw‑Trader Engine:** Phase 8 v3 Complete — IBKR Delayed Data + Process Lock ✅
+**Claw‑Trader Engine:** Phase 8 v4 Complete — 무인 운영 안전장치 ✅

@@ -17,6 +17,7 @@ _GEN_COOLDOWN_SEC = int(os.getenv("GEN_COOLDOWN_SEC", "300"))
 _GEN_DAILY_EMIT_CAP = int(os.getenv("GEN_DAILY_EMIT_CAP", "20"))
 _GEN_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 _GEN_STOP_PCT = Decimal(os.getenv("GEN_STOP_PCT", "0.03"))
+_GEN_DAILY_CALL_CAP = int(os.getenv("GEN_DAILY_CALL_CAP", "1000"))
 
 
 class _GeneratorDecision:
@@ -52,6 +53,19 @@ class AISignalGenerator:
             from anthropic import Anthropic
             self._client = Anthropic()
         return self._client
+
+    def _set_auto_pause(self, reason: str, market: str, detail: str) -> None:
+        """전역 일시정지 설정 + reason/meta 기록 + TG 알림."""
+        from guards.notifier import send_telegram
+        ts_ms = str(int(time.time() * 1000))
+        self.redis.set("claw:pause:global", "true")
+        self.redis.set("claw:pause:reason", reason)
+        self.redis.hset("claw:pause:meta", mapping={
+            "reason": reason, "market": market, "detail": detail,
+            "ts_ms": ts_ms, "source": "ai_generator",
+        })
+        sent = send_telegram(f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}")
+        print(f"generator: auto_pause reason={reason} market={market} detail={detail} tg_sent={sent}", flush=True)
 
     def _get_hist(self, market: str, symbol: str) -> list[str]:
         key = f"mark_hist:{market}:{symbol}"
@@ -218,6 +232,23 @@ class AISignalGenerator:
             return None
 
         signal_id = str(uuid.uuid4())
+
+        # AI 호출 하드 캡 (emit 여부와 무관하게 API 호출 수 카운트)
+        call_key = f"ai:call_count:{market}:{today}"
+        call_count = self.redis.incr(call_key)
+        if call_count == 1:
+            self.redis.expire(call_key, 3 * 86400)
+        if call_count > _GEN_DAILY_CALL_CAP:
+            self.redis.decr(call_key)
+            self._set_auto_pause(
+                "AI_CALL_CAP_EXCEEDED", market,
+                f"call_count={call_count} cap={_GEN_DAILY_CALL_CAP}",
+            )
+            stats_key = f"ai:gen_stats:{market}:{today}"
+            self.redis.hincrby(stats_key, "skip_call_cap", 1)
+            self.redis.expire(stats_key, _GEN_TTL)
+            return None
+
         raw_response = ""
         try:
             client = self._get_client()
