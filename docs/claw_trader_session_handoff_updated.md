@@ -233,7 +233,8 @@
 
 Start From:
 
-👉 **3/3 IBKR 입금 확인 → reqMarketDataType(1) 전환 → claw:pause:global false → KR/US 실전 파이프라인 확인**
+👉 **`docs/live_transition_checklist.md` — STEP 1부터 순서대로 진행**
+(IBKR 입금 확인 → MD 전환 → pause 해제 → KR/US 소액 실전 테스트)
 
 운영 루틴:
 ```bash
