@@ -40,6 +40,22 @@ self.ib.reqMarketDataType(1)
 # 또는 해당 줄 제거 (기본값 1)
 ```
 
+### 2-3. 롤백 방법 (라이브 데이터 오류 시)
+
+라이브 전환 후 IBKR 가격 수신 불가 / 오류 급증 시 즉시 되돌리기:
+
+```python
+# ibkr_feed.py — 원래대로 복구
+self.ib.reqMarketDataType(4)  # Delayed Frozen 재적용
+```
+
+롤백 조건:
+- US MD stale (md:last_update:US > 60s)
+- IBKR 연결 오류 반복
+- Telegram AUTO-PAUSE 알림 수신
+
+롤백 후: 프로세스 재기동 → MD 신선도 확인 → 원인 파악 후 재시도
+
 ---
 
 ## 📋 STEP 3 — 프로세스 재기동
