@@ -108,10 +108,11 @@
 **Next Evolution:** AI-assisted candidate pool (Phase 10)
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상)
-**md:last_update age:** KR ~7s / US ~10s ✅
+**md:last_update age:** KR ~9s / US ~22s ✅
 **Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner ✅
-**gen:runner:lock TTL:** ~106s (정상 갱신 중) ✅
+**gen:runner:lock TTL:** ~80s (정상 갱신 중) ✅
 **KR Feature 검증:** ret_1m=-0.12% / ret_5m=-0.12% / range_5m=0.12% ✅ (0.0 아님 확인 완료)
+**caffeinate -i -s 검증:** 뚜껑 닫아도 28초 간격 폴링 유지 — gap 없음 ✅
 
 ---
 
@@ -309,6 +310,7 @@ GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
   - `-i`: 소프트웨어 잠자기 방지
   - `-s`: 뚜껑 닫기(lid-close) 잠자기 방지
   - `caffeinate -i`만으로는 뚜껑 닫기 시 sleep 발생 → lock TTL 만료 주의
+  - **`caffeinate -i -s` 현장 검증 완료 (2026-03-02)**: 뚜껑 닫고 40분 후에도 28초 간격 폴링 유지, gap 없음 ✅
 - 잠자기 후 재기동 시 gen:runner:lock TTL 확인 필수
   - TTL=-2이면 signal_generator_runner 재시작 필요
 
