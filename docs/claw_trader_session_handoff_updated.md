@@ -108,9 +108,10 @@
 **Next Evolution:** AI-assisted candidate pool (Phase 10)
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상)
-**md:last_update age:** KR ~4s / US ~7s ✅
+**md:last_update age:** KR ~7s / US ~10s ✅
 **Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner ✅
-**gen:runner:lock TTL:** ~63s (정상 갱신 중) ✅
+**gen:runner:lock TTL:** ~106s (정상 갱신 중) ✅
+**KR Feature 검증:** ret_1m=-0.12% / ret_5m=-0.12% / range_5m=0.12% ✅ (0.0 아님 확인 완료)
 
 ---
 
@@ -170,19 +171,17 @@
 
 ## 🔥 Immediate Next Priority
 
-### 1. KR 장중 Feature 값 검증 (최우선)
-- 장중(09:00~15:30 KST)에 반드시 확인
-- `LRANGE mark_hist:KR:005930 0 5` → timestamp 증가 + price 변화
-- `HGETALL ai:gen_stats:KR:{YYYYMMDD}` → no_emit/generated 비율, reason 품질
-- ret_1m/ret_5m 0.0 고정이면 가격 갱신 문제
+### 1. ✅ KR 장중 Feature 값 검증 — 완료 (2026-03-02)
+- ret_1m=-0.12% / ret_5m=-0.12% / range_5m=0.12% → 0.0 아님 확인
+- 삼성전자(005930) 장중 가격 변화 정상 수집 중 (213,250원)
 
-### 2. claw:pause:global 해제 후 KR 실전 파이프라인 확인
-- KR 장중에 모멘텀 발생 시 신호 생성 → Risk 통과 여부 확인
-- `docker exec claw-redis redis-cli -a henry0308 SET claw:pause:global false`
-
-### 3. IBKR available_cash=0 해결 (3월 3일 입금 후)
+### 2. IBKR available_cash=0 해결 (3월 3일 입금 후) ← 현재 최우선
 - 입금 후 IBKR 계좌 API 권한 확인
 - `reqMarketDataType(4)` → `reqMarketDataType(1)` 변경 (라이브 전환)
+
+### 3. claw:pause:global 해제 후 KR/US 실전 파이프라인 확인
+- IBKR 라이브 전환 완료 후 진행
+- `docker exec claw-redis redis-cli -a henry0308 SET claw:pause:global false`
 
 ---
 
@@ -233,7 +232,7 @@
 
 Start From:
 
-👉 **KR 장중(09:00~15:30 KST) Feature 값 검증 → ai:gen_stats 확인 → 3/3 이후 IBKR 라이브 전환**
+👉 **3/3 IBKR 입금 확인 → reqMarketDataType(1) 전환 → claw:pause:global false → KR/US 실전 파이프라인 확인**
 
 운영 루틴:
 ```bash
@@ -304,6 +303,14 @@ GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
 4. docker exec claw-redis redis-cli -a <pw> SET claw:pause:global false
 5. KR/US 장중 실전 파이프라인 확인
 ```
+
+### 무인 운영 팁
+- 뚜껑 닫아도 프로세스 유지: `caffeinate -i -s &` (전원 연결 필수)
+  - `-i`: 소프트웨어 잠자기 방지
+  - `-s`: 뚜껑 닫기(lid-close) 잠자기 방지
+  - `caffeinate -i`만으로는 뚜껑 닫기 시 sleep 발생 → lock TTL 만료 주의
+- 잠자기 후 재기동 시 gen:runner:lock TTL 확인 필수
+  - TTL=-2이면 signal_generator_runner 재시작 필요
 
 ---
 
