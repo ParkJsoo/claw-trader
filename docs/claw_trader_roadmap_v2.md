@@ -180,11 +180,28 @@ Executor
 
 ---
 
-## 🧠 PHASE 9 — OpenClaw / 로컬 LLM 통합
-- Ollama
-- 로컬 모델
-- 프롬프트 엔진
-- 전략 진화 실험
+## 🔥 PHASE 9 — AI-First / No-Trade + 운영 컨트롤 플레인 ← 현재 진행 중
+
+### 운영 모드
+- `claw:pause:global=true` 유지 — 실주문 없음
+- AI 평가는 `ai_eval_runner`로 pause와 무관하게 실행
+- 실주문 전환은 별도 Live checklist 트랙 A에서만 진행
+
+### 구현 완료 (2026-03-04)
+- `src/app/ai_eval_runner.py` — AI-First 평가 러너
+  - 2분 폴링, KR/US watchlist 2종목씩
+  - `ai:eval:last:{market}:{symbol}` / `ai:eval_log:*` / `ai:eval_stats:*` 저장
+  - `ai:eval_call_count:*` 별도 (cap 2000/market/day)
+  - `eval:runner:lock` 별도 프로세스 락
+
+### Phase 9 남은 목표
+- AI 평가 데이터 1~2거래일 안정화 확인 (feature 0.0 없음, error 없음)
+- watchlist KR 5~10종목 확장 (안정화 후)
+- 통계 리포트 (emit율/방향 분포, 2단계)
+- Qwen 듀얼런 (Claude 단일 안정화 후)
+- OpenClaw 운영 컨트롤 플레인 구현 (`docs/openclaw_control_plane_spec_v1_2.md`)
+  - `/claw status` / `/claw ai status` / `/claw pause on|off` (2단 확인)
+  - `/claw ps` / `/claw restart` / `/claw kill-switch`
 
 ---
 
@@ -214,5 +231,7 @@ Executor
 
 # 🔥 현재 위치
 
-⭐⭐⭐⭐⭐ PHASE 8 완료 (AI Advisory Shadow Mode v1)
-➡ 다음 단계: **Shadow 데이터 검증 후 PHASE 8 v2 또는 PHASE 9 (OpenClaw/LLM)**
+⭐⭐⭐⭐⭐ PHASE 8 완료 → **PHASE 9 진행 중 (AI-First / No-Trade)**
+- ai_eval_runner 가동 확인 완료 (2026-03-04)
+- 실주문은 뒤로 미룸 — AI 평가 파이프라인 안정화 우선
+- OpenClaw 운영 컨트롤 플레인은 Phase 9 중반 목표

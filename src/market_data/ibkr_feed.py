@@ -48,7 +48,7 @@ class IbkrFeed:
         try:
             self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=2)
             if self.ib.isConnected():
-                self.ib.reqMarketDataType(4)
+                self.ib.reqMarketDataType(4)  # Delayed Frozen — live 구독 활성화 전까지 유지
                 if self._reconnect_failures > 0:
                     print(
                         f"ibkr_feed: reconnected after {self._reconnect_failures} failures",

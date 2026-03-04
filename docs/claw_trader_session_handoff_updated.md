@@ -102,16 +102,16 @@
 
 ## 📊 System Status
 
-**Current Phase:** 8 v4 Complete (무인 운영 안전장치)
-**System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause 상태 — 무인 운영 중)
+**Current Phase:** 9 — AI-First / No-Trade (2026-03-04 진입)
+**System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause=true 유지 — 실주문 없음)
 **Current Universe Mode:** Static (.env-based watchlist)
-**Next Evolution:** AI-assisted candidate pool (Phase 10)
+**Next Evolution:** AI 평가 안정화 → watchlist 확장 → OpenClaw 컨트롤 플레인
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
-**US Pipeline:** ✅ Delayed Frozen 데이터 수신 중 (AAPL/NVDA 정상)
-**md:last_update age:** KR ~9s / US ~22s ✅
-**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner ✅
-**gen:runner:lock TTL:** ~80s (정상 갱신 중) ✅
-**KR Feature 검증:** ret_1m=-0.12% / ret_5m=-0.12% / range_5m=0.12% ✅ (0.0 아님 확인 완료)
+**US Pipeline:** ✅ Delayed Frozen (reqMarketDataType=4) — live 구독 전까지 유지
+**md:last_update age:** KR/US 모두 정상 갱신 중 ✅
+**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / **app.ai_eval_runner** ✅
+**gen:runner:lock TTL:** ~80s ✅ / **eval:runner:lock TTL:** ~300s ✅
+**AI Eval 첫 가동:** ai:eval_call_count:KR/US:20260304 = 6 확인 ✅
 **caffeinate -i -s 검증:** 뚜껑 닫아도 28초 간격 폴링 유지 — gap 없음 ✅
 
 ---
@@ -170,19 +170,24 @@
 
 ---
 
-## 🔥 Immediate Next Priority
+## 🔥 Immediate Next Priority (2026-03-04 기준)
 
-### 1. ✅ KR 장중 Feature 값 검증 — 완료 (2026-03-02)
-- ret_1m=-0.12% / ret_5m=-0.12% / range_5m=0.12% → 0.0 아님 확인
-- 삼성전자(005930) 장중 가격 변화 정상 수집 중 (213,250원)
+### 현재 모드: AI-First / No-Trade
+- `claw:pause:global=true` 유지 — 실주문 없음
+- Live checklist STEP 4(pause 해제)는 **트랙 B(AI-First)에서 진행하지 않음**
 
-### 2. IBKR available_cash=0 해결 (3월 3일 입금 후) ← 현재 최우선
-- 입금 후 IBKR 계좌 API 권한 확인
-- `reqMarketDataType(4)` → `reqMarketDataType(1)` 변경 (라이브 전환)
+### 1. AI 평가 파이프라인 안정화 확인 (1~2거래일)
+- KR 장중(09:00~15:30 KST): `ai:eval:last:KR:005930` feature 0.0 아님 확인
+- US 장중(09:30~16:00 EST): `ai:eval:last:US:AAPL` feature 0.0 아님 확인
+- `ai:eval_stats:*` no_emit/emit 분포 확인, error_* 없음 확인
 
-### 3. claw:pause:global 해제 후 KR/US 실전 파이프라인 확인
-- IBKR 라이브 전환 완료 후 진행
-- `docker exec claw-redis redis-cli -a henry0308 SET claw:pause:global false`
+### 2. IBKR live 구독 해결 후
+- `reqMarketDataType(4)` → `(1)` 변경 (`ibkr_feed.py:51`)
+- market_data_runner 재기동 → US MD 신선도 확인
+
+### 3. 실주문 전환 (트랙 A — 별도 의사결정 필요)
+- `docs/live_transition_checklist.md` 트랙 A — STEP 4부터 진행
+- AI 평가 안정화 + IBKR live 구독 완료 후에만 고려
 
 ---
 
@@ -227,14 +232,26 @@
 - ai:gen:{market}:{signal_id} / ai:gen_index / ai:gen_stats
 - gen:cooldown:{market}:{symbol} / gen:daily_emit:{market}:{YYYYMMDD}
 
+**AI Eval Runner (PHASE 9) ✅**
+- ai:eval:last:{market}:{symbol} — 최신 AI 판단 (hash, overwrite)
+- ai:eval_log:{market}:{YYYYMMDD} — 일별 판단 로그 (list, 최대 500)
+- ai:eval_stats:{market}:{YYYYMMDD} — 일별 통계 (emit/no_emit/error/skip_*)
+- ai:eval_call_count:{market}:{YYYYMMDD} — 일별 호출 수 (cap=2000, 별도)
+- eval:runner:lock — 프로세스 락 (TTL 300s)
+
 ---
 
 ## 🚀 Guidance For Next Chat
 
-Start From:
+**현재 모드: AI-First / No-Trade (Phase 9)**
 
-👉 **`docs/live_transition_checklist.md` — STEP 1부터 순서대로 진행**
-(IBKR 입금 확인 → MD 전환 → pause 해제 → KR/US 소액 실전 테스트)
+Start From:
+1. `ai:eval_stats:KR/US:{오늘날짜}` 확인 → no_emit/emit 분포, error 없음 확인
+2. 장중 feature 값 확인 (`ai:eval:last:KR:005930`, `ai:eval:last:US:AAPL`)
+3. IBKR live 구독 상태 확인 → 완료 시 `ibkr_feed.py:51` 4→1 변경
+4. 실주문 전환은 `docs/live_transition_checklist.md` 트랙 A (별도 결정 후)
+
+> ⚠️ STEP 4(pause 해제)는 AI-First 트랙(트랙 B)에서 진행하지 않음
 
 운영 루틴:
 ```bash
@@ -262,12 +279,13 @@ docker exec claw-redis redis-cli -a henry0308 TTL gen:runner:lock
 - src/market_data/ibkr_feed.py — Delayed Frozen + reconnect backoff
 
 ### 프로세스 기동 순서
-```
-cd src
-python -m app.runner                   # 신호 처리 파이프라인
-python -m app.market_data_runner       # 현재가 폴링
-python -m scripts.order_watcher        # 주문 감시
-python -m app.signal_generator_runner  # AI 신호 생성기 (락 + 헬스 모니터)
+```bash
+cd /Users/henry_oc/develop/claw-trader/src
+PYTHONPATH=src ../venv/bin/python -m app.runner                   # 신호 처리 파이프라인
+PYTHONPATH=src ../venv/bin/python -m app.market_data_runner       # 현재가 폴링
+PYTHONPATH=src ../venv/bin/python -m scripts.order_watcher        # 주문 감시
+PYTHONPATH=src ../venv/bin/python -m app.signal_generator_runner  # AI 신호 생성기
+PYTHONPATH=src ../venv/bin/python -m app.ai_eval_runner           # AI 평가 러너 (Phase 9 신규)
 ```
 
 ### .env 주요 변수
@@ -297,13 +315,16 @@ GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
 - watchlist 변경은 전략 변경 이벤트로 간주한다.
 - 무인 운영 중에는 watchlist를 변경하지 않는다.
 
-### 3/3 이후 체크리스트
+### Live 전환 상태 (트랙 분기)
 ```
-1. IBKR 계좌 입금 확인
-2. IBKR 라이브 시장 데이터 구독 (Market Data Connections)
-3. ibkr_feed.py: reqMarketDataType(4) → reqMarketDataType(1) 또는 제거
-4. docker exec claw-redis redis-cli -a <pw> SET claw:pause:global false
-5. KR/US 장중 실전 파이프라인 확인
+✅ STEP 1: IBKR 입금 확인 완료 (3/3)
+⏸ STEP 2: IBKR live 구독 미완료 → reqMarketDataType(4) 유지
+✅ STEP 3: 프로세스 재기동 + US MD 갱신 확인
+⏸ STEP 4~7: AI-First 트랙(트랙 B) — 실주문 뒤로 미룸
+
+트랙 A(실주문)로 전환 시:
+  → IBKR live 구독 완료 후 ibkr_feed.py:51 → reqMarketDataType(1)
+  → docs/live_transition_checklist.md STEP 4부터 진행
 ```
 
 ### 무인 운영 팁
