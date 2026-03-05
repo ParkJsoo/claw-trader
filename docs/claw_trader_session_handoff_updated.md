@@ -170,24 +170,31 @@
 
 ---
 
-## 🔥 Immediate Next Priority (2026-03-04 기준)
+## 🔥 Immediate Next Priority (2026-03-06 기준)
 
 ### 현재 모드: AI-First / No-Trade
 - `claw:pause:global=true` 유지 — 실주문 없음
-- Live checklist STEP 4(pause 해제)는 **트랙 B(AI-First)에서 진행하지 않음**
+- Phase 9 Day 1 EOD (2026-03-05): emit_rate=11.9%, error_rate=1.9% ✅
 
-### 1. AI 평가 파이프라인 안정화 확인 (1~2거래일)
-- KR 장중(09:00~15:30 KST): `ai:eval:last:KR:005930` feature 0.0 아님 확인
-- US 장중(09:30~16:00 EST): `ai:eval:last:US:AAPL` feature 0.0 아님 확인
-- `ai:eval_stats:*` no_emit/emit 분포 확인, error_* 없음 확인
+### 로드맵 (GPT 협의 확정)
+- **Phase 9** (현재): AI-First 안정화 — 2거래일 안정 확인
+- **Phase 9.5**: Claude vs Qwen 듀얼런 (confidence match ≥ 60%, 충돌 시 HOLD)
+- **Phase 10**: KR micro trading (8종목, 09:30~11:00, 1주 단위, stop_loss=2%)
+- **Phase 11**: watchlist 확장(8→10→12) + US 활성화
 
-### 2. IBKR live 구독 해결 후
+### 1. Phase 9 Day 2 관찰 (최우선)
+- KR emit_rate 10~30% 유지 확인
+- error_rate < 5% 유지 확인
+- 2일 연속 안정 → AI-First exit 조건 충족
+
+### 2. OpenClaw `/claw ai-status` 구현 (브랜치: feature/openclaw-ai-status)
+- Telegram 명령으로 AI 평가 상태 확인
+- 읽기 전용, Redis 조회만
+- spec: `docs/openclaw_control_plane_spec_v1_2.md` §3.5
+
+### 3. IBKR live 구독 해결 후
 - `reqMarketDataType(4)` → `(1)` 변경 (`ibkr_feed.py:51`)
 - market_data_runner 재기동 → US MD 신선도 확인
-
-### 3. 실주문 전환 (트랙 A — 별도 의사결정 필요)
-- `docs/live_transition_checklist.md` 트랙 A — STEP 4부터 진행
-- AI 평가 안정화 + IBKR live 구독 완료 후에만 고려
 
 ---
 
@@ -243,15 +250,23 @@
 
 ## 🚀 Guidance For Next Chat
 
-**현재 모드: AI-First / No-Trade (Phase 9)**
+**현재 모드: AI-First / No-Trade (Phase 9) — 2026-03-06**
 
 Start From:
-1. `ai:eval_stats:KR/US:{오늘날짜}` 확인 → no_emit/emit 분포, error 없음 확인
-2. 장중 feature 값 확인 (`ai:eval:last:KR:005930`, `ai:eval:last:US:AAPL`)
-3. IBKR live 구독 상태 확인 → 완료 시 `ibkr_feed.py:51` 4→1 변경
-4. 실주문 전환은 `docs/live_transition_checklist.md` 트랙 A (별도 결정 후)
+1. Phase 9 Day 2 상태 확인: `ai:eval_stats:KR:{오늘}` emit_rate/error_rate
+2. `feature/openclaw-ai-status` 브랜치에서 `/claw ai-status` 구현 계속
+3. IBKR live 구독 완료 시 → `ibkr_feed.py:51` reqMarketDataType 4→1 변경
 
-> ⚠️ STEP 4(pause 해제)는 AI-First 트랙(트랙 B)에서 진행하지 않음
+Phase 9 AI-First Exit 조건 (충족 시 Phase 9.5 진입):
+- ✅ error_rate < 5% (현재 1.9%)
+- ✅ emit_rate 10~30% (현재 11.9%)
+- ✅ md_age < 30s
+- ✅ runner crash 없음
+- ✅ watchlist 8종목 안정
+- ✅ Risk Engine 활성
+- ⏸ 최소 2거래일 안정 운영 (1일차 완료)
+
+> ⚠️ pause 해제(실주문)는 Phase 9.5 듀얼런 완료 후 Phase 10에서만
 
 운영 루틴:
 ```bash

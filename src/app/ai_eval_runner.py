@@ -138,7 +138,7 @@ def _eval_symbol(gen: AISignalGenerator, r, market: str, symbol: str, today: str
     log_key = f"ai:eval_log:{market}:{today}"
     r.lpush(log_key, json.dumps({**payload, "raw": raw_response[:500]}))
     r.ltrim(log_key, 0, _EVAL_LOG_MAX - 1)
-    r.expire(log_key, 7 * 86400)
+    r.expire(log_key, 30 * 86400)
 
     # stats 카운터
     stats_key = f"ai:eval_stats:{market}:{today}"
