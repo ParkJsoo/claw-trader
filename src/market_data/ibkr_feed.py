@@ -29,6 +29,7 @@ class IbkrFeed:
         self.ib = IB()
         self._reconnect_failures = 0
         self._last_connect_attempt = 0.0
+        self.market_data_type = int(os.getenv("IBKR_MARKET_DATA_TYPE", "4"))  # 4=Delayed Frozen, 1=Live
 
     def _get_backoff_sec(self) -> float:
         return min(_IBKR_BASE_BACKOFF_SEC ** self._reconnect_failures, _IBKR_MAX_BACKOFF_SEC)
@@ -48,7 +49,7 @@ class IbkrFeed:
         try:
             self.ib.connect(self.host, self.port, clientId=self.client_id, timeout=2)
             if self.ib.isConnected():
-                self.ib.reqMarketDataType(4)  # Delayed Frozen — live 구독 활성화 전까지 유지
+                self.ib.reqMarketDataType(self.market_data_type)  # 4=Delayed Frozen, 1=Live
                 if self._reconnect_failures > 0:
                     print(
                         f"ibkr_feed: reconnected after {self._reconnect_failures} failures",

@@ -3,6 +3,7 @@ load_dotenv()
 
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -26,6 +27,10 @@ _EVAL_LOG_MAX = 500  # 시장별 일일 eval 로그 최대 보관 수
 
 _KST = ZoneInfo("Asia/Seoul")
 _STATUS_LOG_INTERVAL = float(os.getenv("EVAL_STATUS_LOG_SEC", "600"))
+
+_OVERLOADED_MAX_RETRIES = 2       # OverloadedError 최대 재시도 횟수
+_OVERLOADED_BACKOFF_SEC = 1.0     # 1s → 2s 지수 backoff
+_SYMBOL_JITTER_MAX_SEC = 3.0      # 심볼 간 호출 분산 최대 지터(초)
 
 # ---------------------------------------------------------------------------
 # 목적: AI-First / No-Trade 모드
@@ -76,23 +81,37 @@ def _eval_symbol(gen: AISignalGenerator, r, market: str, symbol: str, today: str
         print(f"eval: call_cap_reached {market}:{symbol} cap={_EVAL_DAILY_CALL_CAP}", flush=True)
         return
 
-    # 4. AI 호출 (기존 client/prompt/parse 재사용)
+    # 4. AI 호출 — OverloadedError 시 최대 2회 재시도 + 지수 backoff
     #    generate() 는 호출하지 않음 — signal queue push 경로이므로
-    try:
-        client = gen._get_client()
-        prompt = gen._build_prompt(market, symbol, features)
-        response = client.messages.create(
-            model=gen.model,
-            max_tokens=128,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw_response = response.content[0].text
-        decision = gen._parse_response(raw_response, Decimal("999999"))
-    except Exception as e:
-        stats_key = f"ai:eval_stats:{market}:{today}"
-        r.hincrby(stats_key, f"error_{type(e).__name__}", 1)
-        r.expire(stats_key, 7 * 86400)
-        print(f"eval: ai_error {market}:{symbol} {type(e).__name__}:{e}", flush=True)
+    decision = None
+    for attempt in range(_OVERLOADED_MAX_RETRIES + 1):
+        try:
+            client = gen._get_client()
+            prompt = gen._build_prompt(market, symbol, features)
+            response = client.messages.create(
+                model=gen.model,
+                max_tokens=128,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_response = response.content[0].text
+            decision = gen._parse_response(raw_response, Decimal("999999"))
+            break
+        except Exception as e:
+            err_name = type(e).__name__
+            if err_name == "OverloadedError" and attempt < _OVERLOADED_MAX_RETRIES:
+                wait = _OVERLOADED_BACKOFF_SEC * (2 ** attempt)
+                print(
+                    f"eval: overloaded_retry {market}:{symbol} attempt={attempt + 1} wait={wait:.1f}s",
+                    flush=True,
+                )
+                time.sleep(wait)
+                continue
+            stats_key = f"ai:eval_stats:{market}:{today}"
+            r.hincrby(stats_key, f"error_{err_name}", 1)
+            r.expire(stats_key, 7 * 86400)
+            print(f"eval: ai_error {market}:{symbol} {err_name}:{e}", flush=True)
+            return
+    if decision is None:
         return
 
     # 5. 결과 저장 — 판단만 기록, 주문 없음
@@ -196,6 +215,7 @@ def main():
                 if not watchlist:
                     continue
                 for symbol in watchlist:
+                    time.sleep(random.uniform(0, _SYMBOL_JITTER_MAX_SEC))  # 동시 호출 분산
                     try:
                         _eval_symbol(gen, r, market, symbol, today)
                     except Exception as e:

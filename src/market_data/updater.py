@@ -90,7 +90,9 @@ class MarketDataUpdater:
                     pipe.expire(hist_key, 2 * 86400)
                     pipe.execute()
                 else:
-                    errors["price_none"] = errors.get("price_none", 0) + 1
+                    # Delayed Frozen 모드(market_data_type=4)는 price_none 카운트 제외 — 노이즈 방지
+                    if not (market == "US" and getattr(feed, "market_data_type", None) == 4):
+                        errors["price_none"] = errors.get("price_none", 0) + 1
             except Exception as e:
                 reason = type(e).__name__
                 errors[reason] = errors.get(reason, 0) + 1
