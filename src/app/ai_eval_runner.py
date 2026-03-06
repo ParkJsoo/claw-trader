@@ -6,7 +6,7 @@ import os
 import random
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, time as dtime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -38,6 +38,16 @@ _SYMBOL_JITTER_MAX_SEC = 3.0      # 심볼 간 호출 분산 최대 지터(초)
 #   - signal queue(claw:signal:queue) 절대 push 안 함
 #   - executor / exchange / portfolio import 없음
 # ---------------------------------------------------------------------------
+
+
+def _is_market_hours(market: str) -> bool:
+    """KR 장중(09:00~15:30 KST, 버퍼 ±10분) 여부 확인. US는 제한 없음."""
+    now = datetime.now(_KST)
+    if now.weekday() >= 5:  # 토=5, 일=6
+        return False
+    if market == "KR":
+        return dtime(8, 50) <= now.time() <= dtime(15, 40)
+    return True  # US: Delayed Frozen — 시간 제한 없음
 
 
 def _parse_watchlist(env_key: str) -> list[str]:
@@ -213,6 +223,9 @@ def main():
             # AI 평가 — pause 상태와 무관하게 실행 (AI-First 모드 핵심)
             for market, watchlist in [("KR", watchlist_kr), ("US", watchlist_us)]:
                 if not watchlist:
+                    continue
+                if not _is_market_hours(market):
+                    print(f"eval: market_closed {market} skip", flush=True)
                     continue
                 for symbol in watchlist:
                     time.sleep(random.uniform(0, _SYMBOL_JITTER_MAX_SEC))  # 동시 호출 분산
