@@ -58,6 +58,44 @@ self.ib.reqMarketDataType(4)  # Delayed Frozen 재적용
 
 ---
 
+## 📋 STEP 2.5 — US AI Eval 검증 (IBKR live 전환 직후)
+
+> IBKR reqMarketDataType(1) 전환 후 US 데이터 파이프라인 정상화 확인.
+
+### Cold Start 예상 시간
+- MD_POLL_INTERVAL(3s) × 20개 = **약 60초** 후 mark_hist ≥ 20 충족
+- 첫 eval 실행까지 최대 **2분** (ai_eval_runner 2분 폴링 주기)
+
+### 검증 순서
+
+**① mark_hist 쌓이는지 확인 (60초 대기 후)**
+```bash
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" LLEN mark_hist:US:AAPL
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" LLEN mark_hist:US:NVDA
+# → 20 이상이면 cold start 통과
+```
+
+**② US feature 0.0 문제 해소 확인 (2분 대기 후)**
+```bash
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGET ai:eval:last:US:AAPL features_json
+# → ret_1m, ret_5m이 0.0000이 아닌 실제 값이면 정상
+# → N/A가 아니라면 range_5m도 실제 값이어야 함
+```
+
+**③ US eval emit_rate 확인 (장중 30분 이상 관찰)**
+```bash
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:eval_stats:US:$(date +%Y%m%d)
+# → emit_rate 10~30% 범위 목표 (Delayed Frozen 시 0% → 개선되어야 함)
+```
+
+**④ US AI eval 정상 판정 기준**
+- [ ] mark_hist:US:AAPL ≥ 20
+- [ ] ret_1m / ret_5m 값이 0.0 아님 (가격 변동 반영)
+- [ ] error_rate < 5%
+- [ ] emit_rate 10~30% (장중 30분 관찰)
+
+---
+
 ## 📋 STEP 3 — 프로세스 재기동
 
 ```bash

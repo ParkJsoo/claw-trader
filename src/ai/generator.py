@@ -127,11 +127,24 @@ class AISignalGenerator:
         def fmt(v: Optional[float]) -> str:
             return f"{v:.4f}" if v is not None else "N/A"
 
+        if market == "KR":
+            market_ctx = (
+                "Market: KR (KOSPI/KOSDAQ, Korean Won, session 09:00-15:30 KST)\n"
+                "Typical size_cash range: 100000-500000 (KRW). "
+                "Signal on clear 1-5min momentum with range_5m > 0.002."
+            )
+        else:
+            market_ctx = (
+                "Market: US (NYSE/NASDAQ, USD, session 09:30-16:00 ET)\n"
+                "Typical size_cash range: 100-1000 (USD). "
+                "Signal on clear 1-5min momentum with range_5m > 0.003."
+            )
+
         lines = [
             "You are a cash-only equity trading signal generator.",
             "Decide whether to emit a trading signal based on recent price momentum.",
             "",
-            f"Market: {market}",
+            market_ctx,
             f"Symbol: {symbol}",
             f"Current price: {features['current_price']}",
             f"1-min return: {fmt(features['ret_1m'])}",
@@ -139,7 +152,7 @@ class AISignalGenerator:
             f"5-min range: {fmt(features['range_5m'])}",
             "",
             "Constraints: cash-only, direction must be LONG or EXIT only.",
-            "size_cash is in account currency (KRW for KR, USD for US).",
+            "size_cash must be in the market currency shown above.",
             "",
             "Respond with JSON only (no markdown):",
             '{"emit": true|false, "direction": "LONG|EXIT", "size_cash": <number>, "reason": "<100 chars"}',

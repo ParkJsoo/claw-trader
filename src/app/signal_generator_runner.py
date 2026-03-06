@@ -15,7 +15,7 @@ import redis
 from guards.data_guard import DataGuard
 from guards.notifier import send_telegram
 from ai.generator import AISignalGenerator
-from utils.redis_helpers import parse_watchlist, today_kst
+from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours
 
 _GEN_POLL_SEC = float(os.getenv("GEN_POLL_SEC", "60"))
 _GEN_MAX_SIZE_CASH_KR = Decimal(os.getenv("GEN_MAX_SIZE_CASH_KR", "500000"))
@@ -120,7 +120,7 @@ def _health_check(r, watchlist_kr: list, watchlist_us: list, state: dict) -> lis
             flush=True,
         )
 
-        if age > _MD_STALE_SEC:
+        if age > _MD_STALE_SEC and is_market_hours(market):
             anomalies.append((market, "MD_STALE", f"md_age={age:.0f}s threshold={_MD_STALE_SEC}s"))
         if md_err_delta > _MD_ERROR_SPIKE:
             anomalies.append((market, "MD_ERROR_SPIKE", f"delta={md_err_delta} threshold={_MD_ERROR_SPIKE}"))

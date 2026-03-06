@@ -1,9 +1,10 @@
 """공통 Redis/운영 헬퍼."""
 import os
-from datetime import datetime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
+_ET = ZoneInfo("America/New_York")
 
 
 def parse_watchlist(env_key: str) -> list[str]:
@@ -13,6 +14,26 @@ def parse_watchlist(env_key: str) -> list[str]:
 
 def today_kst() -> str:
     return datetime.now(_KST).strftime("%Y%m%d")
+
+
+def is_market_hours(market: str) -> bool:
+    """장중 여부 확인 (버퍼 ±10분).
+
+    KR: 평일 08:50~15:40 KST (정규장 09:00~15:30)
+    US: 평일 09:20~16:10 ET  (정규장 09:30~16:00)
+    주말은 양 시장 모두 False.
+    """
+    if market == "KR":
+        now = datetime.now(_KST)
+        if now.weekday() >= 5:
+            return False
+        return dtime(8, 50) <= now.time() <= dtime(15, 40)
+    if market == "US":
+        now = datetime.now(_ET)
+        if now.weekday() >= 5:
+            return False
+        return dtime(9, 20) <= now.time() <= dtime(16, 10)
+    return True
 
 
 def is_paused(r) -> bool:
