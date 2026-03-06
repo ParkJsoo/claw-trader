@@ -2,13 +2,16 @@
 OpenClaw Bot - Telegram Control Plane (read-only command handler)
 
 Supported commands:
-  /claw ai-status   - AI eval pipeline status
+  /claw status      - system overall status (pause, md, runners, AI summary)
+  /claw ai-status   - AI eval pipeline status (detailed)
   /claw help        - command list
 
 Security:
   - Only responds to TG_ALLOWED_CHAT_ID
   - Non-allowed chat_id: silent
   - Redis read-only - no system state changes
+  - Self-lock: ops:openclaw_bot:lock (prevents duplicate process)
+  - Duplicate update_id dedup: ops:tg:seen:{update_id}
 """
 
 from dotenv import load_dotenv
@@ -36,9 +39,14 @@ _ALLOWED_CHAT_ID = os.getenv("TG_ALLOWED_CHAT_ID", "")
 
 _HELP_TEXT = (
     "OpenClaw supported commands:\n"
+    "/claw status    - system overall status\n"
     "/claw ai-status - AI eval pipeline status\n"
     "/claw help      - this help"
 )
+
+_BOT_LOCK_KEY = "ops:openclaw_bot:lock"
+_BOT_LOCK_TTL = 60  # seconds — renewed each loop
+_SEEN_UPDATE_TTL = 86400  # 1 day dedup window
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +130,94 @@ def _safe_hget(r, key: str, field: str) -> str | None:
         return None
 
 
+def _safe_llen(r, key: str) -> int | None:
+    try:
+        return r.llen(key)
+    except Exception:
+        return None
+
+
+def _md_age_sec(r, market: str) -> int | None:
+    try:
+        val = r.get(f"md:last_update:{market}")
+        if val is None:
+            return None
+        ts_ms = int(val.decode() if isinstance(val, bytes) else val)
+        return int(time.time() - ts_ms / 1000)
+    except Exception:
+        return None
+
+
+def _seen_update(r, update_id: int) -> bool:
+    """Returns True if update_id was already processed (dedup). Marks as seen."""
+    key = f"ops:tg:seen:{update_id}"
+    result = r.set(key, "1", nx=True, ex=_SEEN_UPDATE_TTL)
+    return result is None  # None = key existed = already seen
+
+
 # ---------------------------------------------------------------------------
 # Command handlers
 # ---------------------------------------------------------------------------
+
+def handle_status(r) -> str:
+    """/claw status — system overall status (compact)."""
+    now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
+    today = datetime.now(_KST).strftime("%Y%m%d")
+    lines = [f"Claw Status ({now_str})"]
+
+    # Pause
+    try:
+        pause_val = r.get("claw:pause:global")
+        pause = (pause_val.decode() if isinstance(pause_val, bytes) else pause_val) if pause_val else "false"
+    except Exception:
+        pause = "(error)"
+    lines.append(f"pause: {'PAUSED [OK]' if pause == 'true' else 'LIVE [!]'}")
+
+    # MD age
+    kr_age = _md_age_sec(r, "KR")
+    us_age = _md_age_sec(r, "US")
+    kr_age_str = f"{kr_age}s {'[OK]' if kr_age is not None and kr_age < 180 else '[!]'}" if kr_age is not None else "(none)"
+    us_age_str = f"{us_age}s [delayed]" if us_age is not None else "(none)"
+    lines.append(f"\nData:")
+    lines.append(f"  KR md_age: {kr_age_str}")
+    lines.append(f"  US md_age: {us_age_str}")
+
+    # mark_hist length
+    kr_hist = _safe_llen(r, "mark_hist:KR:005930")
+    us_hist = _safe_llen(r, "mark_hist:US:AAPL")
+    kr_hist_str = f"{kr_hist} [OK]" if kr_hist else "(none)"
+    us_hist_str = f"{us_hist} [delayed]" if us_hist else "(none)"
+    lines.append(f"  hist KR:005930={kr_hist_str}")
+    lines.append(f"  hist US:AAPL={us_hist_str}")
+
+    # AI summary
+    lines.append(f"\nAI:")
+    for market in ("KR", "US"):
+        stats = _safe_hgetall(r, f"ai:eval_stats:{market}:{today}")
+        emit = int(stats.get("emit", 0))
+        no_emit = int(stats.get("no_emit", 0))
+        errors = sum(int(v) for k, v in stats.items() if k.startswith("error_"))
+        total = emit + no_emit + errors + sum(int(v) for k, v in stats.items() if k.startswith("skip_"))
+        if total == 0:
+            lines.append(f"  {market}: no data yet")
+        else:
+            emit_rate = emit / total * 100
+            err_rate = errors / total * 100
+            emit_ind = "OK" if 10 <= emit_rate <= 30 else "!"
+            err_ind = "OK" if err_rate < 5 else "ERR"
+            lines.append(f"  {market}: emit={emit_rate:.1f}%[{emit_ind}] err={err_rate:.1f}%[{err_ind}]")
+
+    # Runner locks
+    eval_ttl = _safe_ttl(r, "eval:runner:lock")
+    gen_ttl = _safe_ttl(r, "gen:runner:lock")
+    bot_ttl = _safe_ttl(r, _BOT_LOCK_KEY)
+    lines.append(f"\nRunners:")
+    lines.append(f"  gen:lock={f'{gen_ttl}s[OK]' if gen_ttl else '[DOWN]'}")
+    lines.append(f"  eval:lock={f'{eval_ttl}s[OK]' if eval_ttl else '[DOWN]'}")
+    lines.append(f"  openclaw:lock={f'{bot_ttl}s[OK]' if bot_ttl else '[DOWN]'}")
+
+    return "\n".join(lines)
+
 
 def handle_ai_status(r) -> str:
     today = datetime.now(_KST).strftime("%Y%m%d")
@@ -198,9 +291,10 @@ def handle_ai_status(r) -> str:
 
 def dispatch(r, chat_id: str | int, text: str) -> None:
     text = text.strip()
-    if text == "/claw ai-status":
-        msg = handle_ai_status(r)
-        _send_message(chat_id, msg)
+    if text == "/claw status":
+        _send_message(chat_id, handle_status(r))
+    elif text == "/claw ai-status":
+        _send_message(chat_id, handle_ai_status(r))
     elif text in ("/claw help", "/help"):
         _send_message(chat_id, _HELP_TEXT)
     else:
@@ -225,6 +319,11 @@ def main():
         sys.exit(1)
 
     r = redis.from_url(redis_url)
+
+    # Self-lock: prevent duplicate processes
+    if not r.set(_BOT_LOCK_KEY, "1", nx=True, ex=_BOT_LOCK_TTL):
+        print("openclaw: already running (lock exists) - exiting", flush=True)
+        sys.exit(0)
     print(
         f"openclaw: started poll_sec={_POLL_INTERVAL_SEC} "
         f"allowed_chat={_ALLOWED_CHAT_ID}",
@@ -234,37 +333,50 @@ def main():
     offset = 0
     backoff = _POLL_INTERVAL_SEC
 
-    while True:
-        try:
-            updates = _get_updates(offset)
-            backoff = _POLL_INTERVAL_SEC  # reset on success
+    try:
+        while True:
+            r.expire(_BOT_LOCK_KEY, _BOT_LOCK_TTL)  # renew self-lock
 
-            for update in updates:
-                offset = update["update_id"] + 1
-                msg = update.get("message") or update.get("edited_message")
-                if not msg:
-                    continue
-                chat_id = str(msg["chat"]["id"])
-                text = msg.get("text", "").strip()
-                if not text:
-                    continue
+            try:
+                updates = _get_updates(offset)
+                backoff = _POLL_INTERVAL_SEC  # reset on success
 
-                if chat_id != str(_ALLOWED_CHAT_ID):
-                    print(f"openclaw: ignored unauthorized chat_id={chat_id}", flush=True)
-                    continue
+                for update in updates:
+                    update_id = update["update_id"]
+                    offset = update_id + 1
 
-                print(f"openclaw: cmd chat={chat_id} text={text!r}", flush=True)
-                try:
-                    dispatch(r, chat_id, text)
-                except Exception as e:
-                    print(f"openclaw: dispatch_error {e}", flush=True)
-                    _send_message(chat_id, f"Error: {e}")
+                    if _seen_update(r, update_id):
+                        print(f"openclaw: dup update_id={update_id} skipped", flush=True)
+                        continue
 
-        except Exception as e:
-            print(f"openclaw: poll_error {e}", flush=True)
-            backoff = min(backoff * 2, _POLL_BACKOFF_MAX_SEC)
+                    msg = update.get("message") or update.get("edited_message")
+                    if not msg:
+                        continue
+                    chat_id = str(msg["chat"]["id"])
+                    text = msg.get("text", "").strip()
+                    if not text:
+                        continue
 
-        time.sleep(backoff)
+                    if chat_id != str(_ALLOWED_CHAT_ID):
+                        print(f"openclaw: ignored unauthorized chat_id={chat_id}", flush=True)
+                        continue
+
+                    print(f"openclaw: cmd chat={chat_id} text={text!r}", flush=True)
+                    try:
+                        dispatch(r, chat_id, text)
+                    except Exception as e:
+                        print(f"openclaw: dispatch_error {e}", flush=True)
+                        _send_message(chat_id, f"Error: {e}")
+
+            except Exception as e:
+                print(f"openclaw: poll_error {e}", flush=True)
+                backoff = min(backoff * 2, _POLL_BACKOFF_MAX_SEC)
+
+            time.sleep(backoff)
+
+    finally:
+        r.delete(_BOT_LOCK_KEY)
+        print("openclaw: lock released", flush=True)
 
 
 if __name__ == "__main__":
