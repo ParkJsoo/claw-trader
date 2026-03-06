@@ -102,7 +102,11 @@ class RiskEngine:
         try:
             realized = Decimal(raw.decode())
         except (InvalidOperation, Exception):
-            return None
+            return RiskDecision(
+                allow=False,
+                reason="PNL_DATA_CORRUPT",
+                meta={"market": signal.market},
+            )
         if realized <= cfg.daily_loss_limit:
             meta = {
                 "realized_pnl": str(realized),

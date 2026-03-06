@@ -2,7 +2,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import signal as _signal
+import sys
 import time
+import traceback
 
 import redis
 
@@ -10,20 +13,34 @@ from market_data.kis_feed import KisFeed
 from market_data.ibkr_feed import IbkrFeed
 from market_data.updater import MarketDataUpdater
 from portfolio.redis_repo import RedisPositionRepository
+from utils.redis_helpers import parse_watchlist
 
 POLL_INTERVAL = int(os.getenv("MD_POLL_INTERVAL", "3"))
 
+_MD_LOCK_KEY = "md:runner:lock"
+_MD_LOCK_TTL = 30  # poll interval + 여유
 
-def _parse_watchlist(env_key: str) -> list[str]:
-    raw = os.getenv(env_key, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
+
+_parse_watchlist = parse_watchlist
 
 
 def main():
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
-        raise RuntimeError("REDIS_URL is not set")
+        print("md_runner: REDIS_URL not set — exiting", flush=True)
+        sys.exit(1)
     r = redis.from_url(redis_url)
+
+    # 프로세스 락 (중복 실행 방지)
+    if not r.set(_MD_LOCK_KEY, "1", nx=True, ex=_MD_LOCK_TTL):
+        print("md_runner: already running (lock exists) - exiting", flush=True)
+        sys.exit(0)
+
+    def _handle_sigterm(signum, frame):
+        r.delete(_MD_LOCK_KEY)
+        print("md_runner: SIGTERM received, lock released", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     repo = RedisPositionRepository(r)
     kis_feed = KisFeed()
@@ -34,14 +51,19 @@ def main():
         "KR": _parse_watchlist("GEN_WATCHLIST_KR"),
         "US": _parse_watchlist("GEN_WATCHLIST_US"),
     }
-    print(f"Market data runner started. poll_interval={POLL_INTERVAL}s watchlist={watchlist}")
+    print(f"md_runner: started poll_interval={POLL_INTERVAL}s watchlist={watchlist}", flush=True)
 
-    while True:
-        try:
-            updater.run_once(watchlist)
-        except Exception as e:
-            print("md_runner_error:", e)
-        time.sleep(POLL_INTERVAL)
+    try:
+        while True:
+            r.expire(_MD_LOCK_KEY, _MD_LOCK_TTL)
+            try:
+                updater.run_once(watchlist)
+            except Exception:
+                traceback.print_exc()
+            time.sleep(POLL_INTERVAL)
+    finally:
+        r.delete(_MD_LOCK_KEY)
+        print("md_runner: lock released", flush=True)
 
 
 if __name__ == "__main__":

@@ -90,6 +90,6 @@ class IbkrFeed:
                 price = ticker.close
             if price is not None and price > 0:
                 return Decimal(str(price))
-        except Exception:
-            pass
-        return None
+        except Exception as e:
+            print(f"ibkr_feed: price_error {symbol} {e}", flush=True)
+            return None

@@ -274,20 +274,20 @@ Phase 9 AI-First Exit 조건 (충족 시 Phase 9.5 진입):
 운영 루틴:
 ```bash
 # md 신선도
-docker exec claw-redis redis-cli -a henry0308 GET md:last_update:KR
-docker exec claw-redis redis-cli -a henry0308 GET md:last_update:US
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET md:last_update:KR
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET md:last_update:US
 
 # 가격 변화 확인
-docker exec claw-redis redis-cli -a henry0308 LRANGE mark_hist:KR:005930 0 4
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" LRANGE mark_hist:KR:005930 0 4
 
 # AI 통계
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:gen_stats:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:gen_stats:KR:$(date +%Y%m%d)
 
 # AI 호출 수
-docker exec claw-redis redis-cli -a henry0308 GET ai:call_count:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:call_count:KR:$(date +%Y%m%d)
 
 # 프로세스 락
-docker exec claw-redis redis-cli -a henry0308 TTL gen:runner:lock
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" TTL gen:runner:lock
 ```
 
 ### 주요 구현 파일

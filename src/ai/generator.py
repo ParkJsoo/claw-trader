@@ -19,6 +19,16 @@ _GEN_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 _GEN_STOP_PCT = Decimal(os.getenv("GEN_STOP_PCT", "0.03"))
 _GEN_DAILY_CALL_CAP = int(os.getenv("GEN_DAILY_CALL_CAP", "1000"))
 
+_LUA_CAP_INCR = """
+local v = redis.call('INCR', KEYS[1])
+if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+if v > tonumber(ARGV[1]) then
+    redis.call('DECR', KEYS[1])
+    return -1
+end
+return v
+"""
+
 
 class _GeneratorDecision:
     def __init__(self, emit: bool, direction: str, size_cash: Decimal, reason: str):
@@ -69,7 +79,7 @@ class AISignalGenerator:
 
     def _get_hist(self, market: str, symbol: str) -> list[str]:
         key = f"mark_hist:{market}:{symbol}"
-        raw = self.redis.lrange(key, 0, -1)
+        raw = self.redis.lrange(key, 0, 299)
         return [r.decode() if isinstance(r, bytes) else r for r in raw]
 
     def _compute_features(self, entries: list[str], now_ms: int) -> Optional[dict[str, Any]]:
@@ -233,13 +243,10 @@ class AISignalGenerator:
 
         signal_id = str(uuid.uuid4())
 
-        # AI 호출 하드 캡 (emit 여부와 무관하게 API 호출 수 카운트)
+        # AI 호출 하드 캡 (Lua 원자적 INCR + cap check)
         call_key = f"ai:call_count:{market}:{today}"
-        call_count = self.redis.incr(call_key)
-        if call_count == 1:
-            self.redis.expire(call_key, 3 * 86400)
-        if call_count > _GEN_DAILY_CALL_CAP:
-            self.redis.decr(call_key)
+        call_count = self.redis.eval(_LUA_CAP_INCR, 1, call_key, _GEN_DAILY_CALL_CAP, 3 * 86400)
+        if call_count == -1:
             self._set_auto_pause(
                 "AI_CALL_CAP_EXCEEDED", market,
                 f"call_count={call_count} cap={_GEN_DAILY_CALL_CAP}",

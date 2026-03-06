@@ -19,6 +19,7 @@ load_dotenv()
 
 import json
 import os
+import signal as _signal
 import sys
 import time
 import urllib.error
@@ -298,7 +299,7 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
     elif text in ("/claw help", "/help"):
         _send_message(chat_id, _HELP_TEXT)
     else:
-        _send_message(chat_id, f"Unknown command: {text}\n\n{_HELP_TEXT}")
+        _send_message(chat_id, f"Unknown command.\n\n{_HELP_TEXT}")
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +325,12 @@ def main():
     if not r.set(_BOT_LOCK_KEY, "1", nx=True, ex=_BOT_LOCK_TTL):
         print("openclaw: already running (lock exists) - exiting", flush=True)
         sys.exit(0)
+    def _handle_sigterm(signum, frame):
+        r.delete(_BOT_LOCK_KEY)
+        print("openclaw: SIGTERM received, lock released", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     print(
         f"openclaw: started poll_sec={_POLL_INTERVAL_SEC} "
         f"allowed_chat={_ALLOWED_CHAT_ID}",
@@ -366,7 +373,7 @@ def main():
                         dispatch(r, chat_id, text)
                     except Exception as e:
                         print(f"openclaw: dispatch_error {e}", flush=True)
-                        _send_message(chat_id, f"Error: {e}")
+                        _send_message(chat_id, "Internal error. Check logs.")
 
             except Exception as e:
                 print(f"openclaw: poll_error {e}", flush=True)

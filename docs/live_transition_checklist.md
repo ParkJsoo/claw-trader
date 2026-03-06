@@ -71,7 +71,7 @@ python -m app.signal_generator_runner
 
 MD 신선도 확인:
 ```bash
-docker exec claw-redis redis-cli -a henry0308 GET md:last_update:US
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET md:last_update:US
 # → 현재 시각 기준 10초 이내여야 함
 ```
 
@@ -80,8 +80,8 @@ docker exec claw-redis redis-cli -a henry0308 GET md:last_update:US
 ## 📋 STEP 4 — pause 해제
 
 ```bash
-docker exec claw-redis redis-cli -a henry0308 SET claw:pause:global false
-docker exec claw-redis redis-cli -a henry0308 GET claw:pause:global
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" SET claw:pause:global false
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET claw:pause:global
 # → "false" 확인
 ```
 
@@ -123,11 +123,11 @@ python -m scripts.push_signal_kr
 
 ```bash
 # 포지션 확인
-docker exec claw-redis redis-cli -a henry0308 HGETALL position:KR:005930
-docker exec claw-redis redis-cli -a henry0308 HGETALL pnl:KR
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL position:KR:005930
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL pnl:KR
 
 # 포지션 목록
-docker exec claw-redis redis-cli -a henry0308 SMEMBERS position_index:KR
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" SMEMBERS position_index:KR
 ```
 
 ---
@@ -167,16 +167,16 @@ python -m scripts.push_signal
 
 ```bash
 # 전체 Redis 상태
-docker exec claw-redis redis-cli -a henry0308 GET claw:pause:global
-docker exec claw-redis redis-cli -a henry0308 GET md:last_update:KR
-docker exec claw-redis redis-cli -a henry0308 GET md:last_update:US
-docker exec claw-redis redis-cli -a henry0308 TTL gen:runner:lock
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET claw:pause:global
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET md:last_update:KR
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET md:last_update:US
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" TTL gen:runner:lock
 
 # AI 통계 (pause=false 후 신호 생성 시작됨)
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:gen_stats:KR:$(date +%Y%m%d)
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:gen_stats:US:$(date +%Y%m%d)
-docker exec claw-redis redis-cli -a henry0308 GET ai:call_count:KR:$(date +%Y%m%d)
-docker exec claw-redis redis-cli -a henry0308 GET ai:call_count:US:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:gen_stats:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:gen_stats:US:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:call_count:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:call_count:US:$(date +%Y%m%d)
 ```
 
 ---
@@ -203,7 +203,7 @@ docker exec claw-redis redis-cli -a henry0308 GET ai:call_count:US:$(date +%Y%m%
 
 ```bash
 # reject 로그 확인
-docker exec claw-redis redis-cli -a henry0308 LRANGE claw:reject:log 0 9
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" LRANGE claw:reject:log 0 9
 ```
 
 ---

@@ -41,22 +41,22 @@ PYTHONPATH=src python -m app.ai_eval_runner
 
 ```bash
 # 최신 판단 확인
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:eval:last:KR:005930
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:eval:last:US:AAPL
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:eval:last:KR:005930
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:eval:last:US:AAPL
 
 # 오늘 통계
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:eval_stats:KR:$(date +%Y%m%d)
-docker exec claw-redis redis-cli -a henry0308 HGETALL ai:eval_stats:US:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:eval_stats:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" HGETALL ai:eval_stats:US:$(date +%Y%m%d)
 
 # 오늘 호출 수
-docker exec claw-redis redis-cli -a henry0308 GET ai:eval_call_count:KR:$(date +%Y%m%d)
-docker exec claw-redis redis-cli -a henry0308 GET ai:eval_call_count:US:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:eval_call_count:KR:$(date +%Y%m%d)
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:eval_call_count:US:$(date +%Y%m%d)
 
 # 락 상태 (정상: 1~300)
-docker exec claw-redis redis-cli -a henry0308 TTL eval:runner:lock
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" TTL eval:runner:lock
 
 # 최근 로그 3개
-docker exec claw-redis redis-cli -a henry0308 LRANGE ai:eval_log:KR:$(date +%Y%m%d) 0 2
+docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" LRANGE ai:eval_log:KR:$(date +%Y%m%d) 0 2
 ```
 
 ---

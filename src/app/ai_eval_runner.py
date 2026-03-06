@@ -4,6 +4,7 @@ load_dotenv()
 import json
 import os
 import random
+import signal as _signal
 import sys
 import time
 from datetime import datetime, time as dtime
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 import redis
 
 from ai.generator import AISignalGenerator
+from utils.redis_helpers import parse_watchlist, today_kst
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -32,6 +34,16 @@ _STATUS_LOG_INTERVAL = float(os.getenv("EVAL_STATUS_LOG_SEC", "600"))
 _OVERLOADED_MAX_RETRIES = 2       # OverloadedError 최대 재시도 횟수
 _OVERLOADED_BACKOFF_SEC = 1.0     # 1s → 2s 지수 backoff
 _SYMBOL_JITTER_MAX_SEC = 3.0      # 심볼 간 호출 분산 최대 지터(초)
+
+_LUA_CAP_INCR = """
+local v = redis.call('INCR', KEYS[1])
+if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+if v > tonumber(ARGV[1]) then
+    redis.call('DECR', KEYS[1])
+    return -1
+end
+return v
+"""
 
 # ---------------------------------------------------------------------------
 # 목적: AI-First / No-Trade 모드
@@ -61,13 +73,8 @@ def _is_market_hours(market: str) -> bool:
     return True
 
 
-def _parse_watchlist(env_key: str) -> list[str]:
-    raw = os.getenv(env_key, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
-def _today_kst() -> str:
-    return datetime.now(_KST).strftime("%Y%m%d")
+_parse_watchlist = parse_watchlist
+_today_kst = today_kst
 
 
 def _eval_symbol(gen: AISignalGenerator, r, market: str, symbol: str, today: str) -> None:
@@ -90,13 +97,10 @@ def _eval_symbol(gen: AISignalGenerator, r, market: str, symbol: str, today: str
         r.expire(f"ai:eval_stats:{market}:{today}", 7 * 86400)
         return
 
-    # 3. eval 전용 call count 체크 (기존 ai:call_count와 별도 키)
+    # 3. eval 전용 call count 체크 (Lua 원자적 INCR + cap check)
     call_key = f"ai:eval_call_count:{market}:{today}"
-    call_count = r.incr(call_key)
-    if call_count == 1:
-        r.expire(call_key, 3 * 86400)
-    if call_count > _EVAL_DAILY_CALL_CAP:
-        r.decr(call_key)
+    call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _EVAL_DAILY_CALL_CAP, 3 * 86400)
+    if call_count == -1:
         r.hincrby(f"ai:eval_stats:{market}:{today}", "skip_call_cap", 1)
         r.expire(f"ai:eval_stats:{market}:{today}", 7 * 86400)
         print(f"eval: call_cap_reached {market}:{symbol} cap={_EVAL_DAILY_CALL_CAP}", flush=True)
@@ -189,6 +193,12 @@ def main():
     if not r.set(_EVAL_LOCK_KEY, "1", nx=True, ex=_EVAL_LOCK_TTL):
         print("eval: already running (lock exists) — exiting", flush=True)
         sys.exit(0)
+    def _handle_sigterm(signum, frame):
+        r.delete(_EVAL_LOCK_KEY)
+        print("eval: SIGTERM received, lock released", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     print("eval: lock acquired", flush=True)
 
     watchlist_kr = _parse_watchlist("GEN_WATCHLIST_KR")
@@ -239,6 +249,7 @@ def main():
                     print(f"eval: market_closed {market} skip", flush=True)
                     continue
                 for symbol in watchlist:
+                    r.expire(_EVAL_LOCK_KEY, _EVAL_LOCK_TTL)
                     time.sleep(random.uniform(0, _SYMBOL_JITTER_MAX_SEC))  # 동시 호출 분산
                     try:
                         _eval_symbol(gen, r, market, symbol, today)

@@ -159,7 +159,7 @@ class Executor:
         result = self.client.place_order(req)
 
         order_key = f"order:{self.market}:{result.order_id}"
-        self.redis.set(order_key, result.status.value)
+        self.redis.set(order_key, result.status.value, ex=7 * 86400)
 
         # Portfolio Engine용 주문 메타 (Fill 시 position 갱신에 사용)
         signal_id = signal.signal_id

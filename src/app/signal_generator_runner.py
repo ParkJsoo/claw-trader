@@ -3,6 +3,7 @@ load_dotenv()
 
 import json
 import os
+import signal as _signal
 import sys
 import time
 from datetime import datetime
@@ -14,6 +15,7 @@ import redis
 from guards.data_guard import DataGuard
 from guards.notifier import send_telegram
 from ai.generator import AISignalGenerator
+from utils.redis_helpers import parse_watchlist, today_kst
 
 _GEN_POLL_SEC = float(os.getenv("GEN_POLL_SEC", "60"))
 _GEN_MAX_SIZE_CASH_KR = Decimal(os.getenv("GEN_MAX_SIZE_CASH_KR", "500000"))
@@ -30,13 +32,8 @@ _AI_ERROR_SPIKE = int(os.getenv("GEN_AI_ERROR_SPIKE", "10"))           # 인터�
 _KST = ZoneInfo("Asia/Seoul")
 
 
-def _parse_watchlist(env_key: str) -> list[str]:
-    raw = os.getenv(env_key, "")
-    return [s.strip() for s in raw.split(",") if s.strip()]
-
-
-def _today_kst() -> str:
-    return datetime.now(_KST).strftime("%Y%m%d")
+_parse_watchlist = parse_watchlist
+_today_kst = today_kst
 
 
 def _is_paused(r) -> bool:
@@ -149,6 +146,12 @@ def main():
     if not r.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL):
         print("signal_generator: already running (lock exists) — exiting", flush=True)
         sys.exit(0)
+    def _handle_sigterm(signum, frame):
+        r.delete(_LOCK_KEY)
+        print("signal_generator: SIGTERM received, lock released", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     print("signal_generator: lock acquired", flush=True)
 
     # 시작 시 pause 상태 확인 (경고만, 강제 설정 안 함)

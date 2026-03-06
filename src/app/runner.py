@@ -3,6 +3,8 @@ load_dotenv()
 
 import json
 import os
+import signal as _signal
+import sys
 import redis
 
 import time
@@ -16,11 +18,27 @@ from exchange.ibkr.client import IbkrClient
 from guards.data_guard import DataGuard
 from ai.advisor import AIAdvisor
 
+_RUNNER_LOCK_KEY = "app:runner:lock"
+_RUNNER_LOCK_TTL = 30
+
+
 def main():
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
-        raise RuntimeError("REDIS_URL is not set")
+        print("runner: REDIS_URL not set — exiting", flush=True)
+        sys.exit(1)
     r = redis.from_url(redis_url)
+
+    # 프로세스 락 (중복 실행 방지)
+    if not r.set(_RUNNER_LOCK_KEY, "1", nx=True, ex=_RUNNER_LOCK_TTL):
+        print("runner: already running (lock exists) - exiting", flush=True)
+        sys.exit(0)
+
+    def _handle_sigterm(signum, frame):
+        r.delete(_RUNNER_LOCK_KEY)
+        print("runner: SIGTERM received, lock released", flush=True)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     kis = KisClient()
     ibkr = IbkrClient()
@@ -38,65 +56,71 @@ def main():
     if not advisor:
         print("Runner: AI advisor disabled (ANTHROPIC_API_KEY not set)")
 
-    print("Runner started. Waiting signals...")
+    print("Runner started. Waiting signals...", flush=True)
 
-    while True:
-        item = r.brpop("claw:signal:queue", timeout=5)
-        if not item:
-            continue
+    try:
+        while True:
+            r.expire(_RUNNER_LOCK_KEY, _RUNNER_LOCK_TTL)
 
-        _, raw = item
-        try:
-            data = json.loads(raw)
-            signal = Signal.model_validate(data)
-        except Exception as e:
-            print("invalid signal:", e, raw)
-            continue
-
-        try:
-            # Phase 8: DataGuard — stale market data 감지 (v1: warn only)
-            guard = data_guard.check(signal.market)
-            if not guard.allow:
-                print("data_guard_block:", signal.signal_id, guard.reason, guard.meta)
-                continue
-            if guard.severity == "WARN":
-                print("data_guard_warn:", signal.market, guard.reason, guard.meta)
-
-            # Phase 6: 신호 품질 필터 (쿨다운/중복/일일캡)
-            s_decision = strategy.check(signal)
-            if not s_decision.allow:
-                rk = f"claw:reject:{signal.market}:{signal.signal_id}"
-                mapping = {k: str(v) for k, v in s_decision.meta.items()}
-                mapping.update({
-                    "reason": s_decision.reason,
-                    "source": "strategy",
-                    "market": signal.market,
-                    "symbol": signal.symbol,
-                    "ts_ms": str(int(time.time() * 1000)),
-                })
-                r.hset(rk, mapping=mapping)
-                r.expire(rk, 86400)
-                print("strategy_reject:", signal.signal_id, s_decision.reason)
+            item = r.brpop("claw:signal:queue", timeout=5)
+            if not item:
                 continue
 
-            # Phase 8: AI Advisory (shadow mode — 실패해도 파이프라인 영향 없음)
-            if advisor:
-                try:
-                    adv = advisor.advise(signal, s_decision.reason)
-                    print("ai_advisory:", signal.signal_id, adv.recommend, adv.confidence, adv.reason)
-                except Exception as e:
-                    print("advisor_error:", signal.signal_id, e)
-
-            if signal.market == "KR":
-                st = ex_kr.execute_signal(signal)
-            elif signal.market == "US":
-                st = ex_us.execute_signal(signal)
-            else:
-                print("unknown market:", signal.market)
+            _, raw = item
+            try:
+                data = json.loads(raw)
+                signal = Signal.model_validate(data)
+            except Exception as e:
+                print("invalid signal:", e, raw)
                 continue
-            print("executed:", signal.signal_id, signal.market, st.value)
-        except Exception as e:
-            print("execution error:", signal.signal_id, e)
+
+            try:
+                # Phase 8: DataGuard — stale market data 감지 (v1: warn only)
+                guard = data_guard.check(signal.market)
+                if not guard.allow:
+                    print("data_guard_block:", signal.signal_id, guard.reason, guard.meta)
+                    continue
+                if guard.severity == "WARN":
+                    print("data_guard_warn:", signal.market, guard.reason, guard.meta)
+
+                # Phase 6: 신호 품질 필터 (쿨다운/중복/일일캡)
+                s_decision = strategy.check(signal)
+                if not s_decision.allow:
+                    rk = f"claw:reject:{signal.market}:{signal.signal_id}"
+                    mapping = {k: str(v) for k, v in s_decision.meta.items()}
+                    mapping.update({
+                        "reason": s_decision.reason,
+                        "source": "strategy",
+                        "market": signal.market,
+                        "symbol": signal.symbol,
+                        "ts_ms": str(int(time.time() * 1000)),
+                    })
+                    r.hset(rk, mapping=mapping)
+                    r.expire(rk, 86400)
+                    print("strategy_reject:", signal.signal_id, s_decision.reason)
+                    continue
+
+                # Phase 8: AI Advisory (shadow mode — 실패해도 파이프라인 영향 없음)
+                if advisor:
+                    try:
+                        adv = advisor.advise(signal, s_decision.reason)
+                        print("ai_advisory:", signal.signal_id, adv.recommend, adv.confidence, adv.reason)
+                    except Exception as e:
+                        print("advisor_error:", signal.signal_id, e)
+
+                if signal.market == "KR":
+                    st = ex_kr.execute_signal(signal)
+                elif signal.market == "US":
+                    st = ex_us.execute_signal(signal)
+                else:
+                    print("unknown market:", signal.market)
+                    continue
+                print("executed:", signal.signal_id, signal.market, st.value)
+            except Exception as e:
+                print("execution error:", signal.signal_id, e)
+    finally:
+        r.delete(_RUNNER_LOCK_KEY)
+        print("runner: lock released", flush=True)
 
 if __name__ == "__main__":
     main()
