@@ -102,17 +102,55 @@
 
 ## 📊 System Status
 
-**Current Phase:** 9 — AI-First / No-Trade (2026-03-04 진입)
+**Current Phase:** 9 → 9.5 준비 중 (2026-03-07)
 **System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause=true 유지 — 실주문 없음)
 **Current Universe Mode:** Static (.env-based watchlist)
-**Next Evolution:** AI 평가 안정화 → watchlist 확장 → OpenClaw 컨트롤 플레인
+**Next Evolution:** Phase 9 완료(KR emit_rate 10~30%) → Phase 9.5 듀얼런 기동 → Phase 10 micro trading
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen (reqMarketDataType=4) — live 구독 전까지 유지
 **md:last_update age:** KR/US 모두 정상 갱신 중 ✅
 **Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / app.ai_eval_runner / **app.openclaw_bot** ✅
 **gen:runner:lock TTL:** ~80s ✅ / **eval:runner:lock TTL:** ~300s ✅
-**AI Eval 첫 가동:** ai:eval_call_count:KR/US:20260304 = 6 확인 ✅
 **caffeinate -i -s 검증:** 뚜껑 닫아도 28초 간격 폴링 유지 — gap 없음 ✅
+
+---
+
+## ✅ PHASE 9.5 — Claude vs Qwen 듀얼런 비교 엔진 (구현 완료 2026-03-07)
+
+### 신규 파일
+- `src/ai/providers/base.py` — DecisionResult + DecisionProvider + build_dual_prompt (공통 프롬프트)
+- `src/ai/providers/claude_provider.py` — Anthropic 판단 Provider (OverloadedError retry 2회)
+- `src/ai/providers/qwen_provider.py` — Ollama REST 판단 Provider (urllib 전용)
+- `src/app/ai_dual_eval_runner.py` — 듀얼런 runner (주문 없음)
+- `docs/ai_dual_run.md` — 아키텍처 + Redis 키 + 관찰 지표
+
+### 합의 정책
+| Claude | Qwen | direction 일치 | consensus |
+|--------|------|----------------|-----------|
+| emit=true | emit=true | O | EMIT |
+| emit=true | emit=true | X | HOLD |
+| 한쪽만 emit | - | - | HOLD |
+| emit=false | emit=false | - | SKIP |
+
+### Redis 키
+```
+ai:dual:last:{provider}:{market}:{symbol}     # 최신 판단
+ai:dual_compare:{market}:{YYYYMMDD}           # 비교 통계
+ai:dual_stats:consensus:{market}:{YYYYMMDD}   # consensus 통계
+ai:dual_call_count:{market}:{YYYYMMDD}        # 라운드 캡 (2000/market/day)
+```
+
+### 기동 방법 (Ollama 설치 후)
+```bash
+ollama pull qwen2.5:7b && ollama serve
+PYTHONPATH=src ../venv/bin/python -m app.ai_dual_eval_runner
+```
+
+### Phase 9.5 완료 조건
+- [ ] match_rate ≥ 50% (1거래일 관찰)
+- [ ] claude emit_rate 10~30% (장중)
+- [ ] qwen emit_rate < 70%
+- [ ] error_rate < 5%
 
 ---
 
