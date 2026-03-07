@@ -117,5 +117,60 @@ docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" GET ai:dual_call_count:KR:
 
 ---
 
+---
+
+## Phase 10 설계 (미래)
+
+### 아키텍처
+```
+ai_dual_eval_runner (평가/저장 전용)
+        ↓
+ai:dual:last:consensus:{market}:{symbol}
+        ↓
+consensus_signal_runner (신규 — Phase 10에서만 기동)
+        ↓
+claw:signal:queue push
+        ↓
+기존 Risk Engine / Executor / Order Watcher
+```
+
+### consensus_signal_runner 처리 순서
+1. `ai:dual:last:consensus:{market}:{symbol}` 읽기
+2. consensus != EMIT → skip
+3. ts_ms 읽기 → `gen:dual_dedup:{market}:{symbol}` 비교 (이미 처리한 ts_ms면 skip)
+4. `gen:dual_cooldown:{market}:{symbol}` 확인
+5. confidence threshold 확인 (Claude emit 중 confidence >= 0.6)
+6. claw:signal:queue push
+7. dedup key 갱신 + cooldown 설정
+
+### dedup Redis 키
+```
+gen:dual_dedup:{market}:{symbol}   = last_pushed_ts_ms  # TTL 7d
+gen:dual_cooldown:{market}:{symbol} = 1                  # TTL 300s
+```
+- 평가 레이어 키(ai:dual:last:consensus) 수정하지 않음
+
+### signal 포맷 (기존 포맷 호환)
+```json
+{
+  "signal_id": "...",
+  "ts": "...",
+  "ts_ms": "...",
+  "market": "KR",
+  "symbol": "005930",
+  "direction": "LONG",
+  "entry": {"price": "...", "size_cash": "..."},
+  "stop": {"price": "..."}
+}
+```
+- size_cash = 현재가 × 1주 (KR) / $50 (US)
+- stop.price = entry.price × 0.98 (stop_loss 2%)
+
+### Qwen fallback
+- 운영 모드 플래그: `EXECUTION_MODE=dual` (기본) / `EXECUTION_MODE=claude_only`
+- match_rate < 50% + Qwen 과민 → claude_only로 전환
+
+---
+
 **작성일:** 2026-03-07
-**대상 Phase:** 9.5 — Claude vs Qwen 듀얼런
+**대상 Phase:** 9.5 — Claude vs Qwen 듀얼런 (Phase 10 설계 포함)
