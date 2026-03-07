@@ -208,6 +208,37 @@ PYTHONPATH=src ../venv/bin/python -m app.ai_dual_eval_runner
 
 ---
 
+## ✅ News Intelligence Layer (2026-03-07 구현 완료)
+
+### 신규 파일
+- `src/news/models.py` — NewsItem dataclass (reliability 필드: dart=0.95, yahoo=0.80, google=0.65)
+- `src/news/collector.py` — DART API + Google News RSS + Yahoo Finance RSS
+  - 언어 필터: KR=한글 포함 필수, US=영어 포함 필수
+- `src/news/classifier.py` — Qwen 분류/요약 (KR 한국어 프롬프트, US 영어 프롬프트)
+- `src/news/redis_writer.py` — Redis 저장 + URL dedup + get_symbol_context()
+- `src/app/news_runner.py` — 독립 프로세스 (30분 폴링, 프로세스 락)
+
+### Redis 키
+```
+news:raw:{market}:{YYYYMMDD}              # 전체 수집 (max 200, TTL 2d)
+news:symbol:{market}:{symbol}:{YYYYMMDD} # 종목별 분류 뉴스 (max 50, TTL 1d)
+news:macro:{market}:{YYYYMMDD}            # 매크로 뉴스 (max 50, TTL 1d)
+news:seen:{market}:{YYYYMMDD}             # URL dedup set (TTL 2d)
+news:stats:{market}:{YYYYMMDD}            # 통계 (TTL 7d)
+news:runner:lock                          # 프로세스 락 (TTL 1h)
+```
+
+### 기동
+```bash
+PYTHONPATH=src ../venv/bin/python -m app.news_runner
+```
+
+### 판단 통합 시점
+- get_symbol_context(r, market, symbol, today) 준비됨
+- 적용 시점: Phase 10 이후 (현재는 수집/분류/저장만)
+
+---
+
 ## 🔥 Immediate Next Priority (2026-03-06 기준)
 
 ### 현재 모드: AI-First / No-Trade
