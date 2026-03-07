@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import time
 
 from .collector import url_hash
 from .models import NewsItem
@@ -23,15 +22,17 @@ def _seen_key(market: str, today: str) -> str:
 
 
 def is_seen(r, item: NewsItem, today: str) -> bool:
+    """URL 해시 또는 content_hash 중 하나라도 seen이면 중복."""
     key = _seen_key(item.market, today)
-    h = url_hash(item.url)
-    return bool(r.sismember(key, h))
+    url_h = url_hash(item.url)
+    return bool(r.sismember(key, url_h) or r.sismember(key, item.content_hash))
 
 
 def mark_seen(r, item: NewsItem, today: str) -> None:
+    """URL 해시와 content_hash 둘 다 seen으로 등록."""
     key = _seen_key(item.market, today)
-    h = url_hash(item.url)
-    r.sadd(key, h)
+    url_h = url_hash(item.url)
+    r.sadd(key, url_h, item.content_hash)
     r.expire(key, _SEEN_TTL)
 
 
@@ -48,20 +49,19 @@ def write_item(r, item: NewsItem, today: str) -> None:
     r.ltrim(raw_key, 0, _RAW_MAX - 1)
     r.expire(raw_key, _RAW_TTL)
 
-    # 2. relevant=false 면 여기서 종료
+    # 2. relevant=false면 dedup만 등록하고 종료
     if not item.relevant:
         mark_seen(r, item, today)
         return
 
-    # 3. 종목별 저장
-    if item.symbols:
+    # 3. scope에 따라 종목별 or 매크로 저장
+    if item.scope == "symbol" and item.symbols:
         for symbol in item.symbols:
             sym_key = f"news:symbol:{item.market}:{symbol}:{today}"
             r.lpush(sym_key, payload)
             r.ltrim(sym_key, 0, _SYMBOL_MAX - 1)
             r.expire(sym_key, _SYMBOL_TTL)
     else:
-        # 종목 없으면 매크로
         macro_key = f"news:macro:{item.market}:{today}"
         r.lpush(macro_key, payload)
         r.ltrim(macro_key, 0, _MACRO_MAX - 1)
@@ -72,6 +72,7 @@ def write_item(r, item: NewsItem, today: str) -> None:
     r.hincrby(stats_key, f"impact_{item.impact}", 1)
     r.hincrby(stats_key, f"sent_{item.sentiment}", 1)
     r.hincrby(stats_key, f"src_{item.source}", 1)
+    r.hincrby(stats_key, f"scope_{item.scope}", 1)
     r.hincrby(stats_key, "total", 1)
     r.expire(stats_key, _STATS_TTL)
 
@@ -102,10 +103,11 @@ def get_symbol_context(r, market: str, symbol: str, today: str, max_items: int =
     for raw in raw_items:
         try:
             d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            impact = d.get("impact", "medium").upper()
             sentiment = d.get("sentiment", "neutral")
-            impact = d.get("impact", "medium")
             summary = d.get("ai_summary") or d.get("title", "")[:60]
-            lines.append(f"[{impact.upper()}][{sentiment}] {summary}")
+            source = d.get("source", "")
+            lines.append(f"[SYMBOL][{impact}][{sentiment}][{source}] {summary}")
         except Exception:
             pass
 
@@ -114,8 +116,10 @@ def get_symbol_context(r, market: str, symbol: str, today: str, max_items: int =
     for raw in macro_items:
         try:
             d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            impact = d.get("impact", "medium").upper()
             summary = d.get("ai_summary") or d.get("title", "")[:60]
-            lines.append(f"[MACRO] {summary}")
+            source = d.get("source", "")
+            lines.append(f"[MACRO][{impact}][{source}] {summary}")
         except Exception:
             pass
 
