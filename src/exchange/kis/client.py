@@ -35,7 +35,9 @@ class KisClient(ExchangeClient):
     def _ensure_token(self):
         if self.access_token:
             return
+        self._refresh_token()
 
+    def _refresh_token(self):
         url = f"{self.base_url}/oauth2/tokenP"
 
         resp = self.session.post(
@@ -63,6 +65,17 @@ class KisClient(ExchangeClient):
             "content-type": "application/json",
         }
 
+    def _request_with_retry(self, method: str, url: str, headers: dict, **kwargs):
+        """API 호출 + 401 시 토큰 갱신 후 1회 재시도."""
+        resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+        if resp.status_code == 401:
+            self.access_token = None
+            self._refresh_token()
+            headers["authorization"] = f"Bearer {self.access_token}"
+            resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+        resp.raise_for_status()
+        return resp
+
     def ping(self) -> bool:
         try:
             self._ensure_token()
@@ -75,8 +88,8 @@ class KisClient(ExchangeClient):
 
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
 
-        resp = self.session.get(
-            url,
+        resp = self._request_with_retry(
+            "get", url,
             headers=self._auth_headers("TTTC8434R"),
             params={
                 "CANO": self.account_no.replace("-", "")[:8],
@@ -91,9 +104,7 @@ class KisClient(ExchangeClient):
                 "CTX_AREA_FK100": "",
                 "CTX_AREA_NK100": "",
             },
-            timeout=10,
         )
-        resp.raise_for_status()
 
         data = resp.json()
 
@@ -132,13 +143,11 @@ class KisClient(ExchangeClient):
             "ORD_UNPR": str(request.limit_price),
         }
 
-        resp = self.session.post(
-            url,
+        resp = self._request_with_retry(
+            "post", url,
             headers=self._auth_headers("TTTC0802U"),
             json=payload,
-            timeout=10,
         )
-        resp.raise_for_status()
 
         data = resp.json()
 
@@ -170,13 +179,11 @@ class KisClient(ExchangeClient):
             "QTY_ALL_ORD_YN": "Y",
         }
 
-        resp = self.session.post(
-            url,
+        resp = self._request_with_retry(
+            "post", url,
             headers=self._auth_headers("TTTC0803U"),
             json=payload,
-            timeout=10,
         )
-        resp.raise_for_status()
 
         data = resp.json()
 

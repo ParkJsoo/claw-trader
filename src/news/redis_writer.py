@@ -2,9 +2,24 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 
 from .collector import url_hash
 from .models import NewsItem
+
+logger = logging.getLogger(__name__)
+
+# Claude 프롬프트에 삽입되는 summary 필터: 제어문자 → allowlist
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+_SUMMARY_SAFE_RE = re.compile(r"[^\uAC00-\uD7AF\u3130-\u318F\w\s\.,\-!?%()]")
+
+
+def _safe_summary(text: str) -> str:
+    """제어문자 제거 후 허용 문자만 남김."""
+    text = _CONTROL_CHARS_RE.sub("", text)
+    return _SUMMARY_SAFE_RE.sub("", text)[:80]
+
 
 _RAW_TTL = 2 * 86400       # 2일
 _SYMBOL_TTL = 1 * 86400    # 1일
@@ -36,10 +51,10 @@ def mark_seen(r, item: NewsItem, today: str) -> None:
     r.expire(key, _SEEN_TTL)
 
 
-def write_item(r, item: NewsItem, today: str) -> None:
-    """뉴스 아이템 Redis 저장 (dedup 포함)."""
+def write_item(r, item: NewsItem, today: str) -> bool:
+    """뉴스 아이템 Redis 저장 (dedup 포함). 저장됐으면 True, 스킵이면 False."""
     if is_seen(r, item, today):
-        return
+        return False
 
     payload = json.dumps(item.to_dict())
 
@@ -52,7 +67,7 @@ def write_item(r, item: NewsItem, today: str) -> None:
     # 2. relevant=false면 dedup만 등록하고 종료
     if not item.relevant:
         mark_seen(r, item, today)
-        return
+        return True
 
     # 3. scope에 따라 종목별 or 매크로 저장
     if item.scope == "symbol" and item.symbols:
@@ -77,17 +92,17 @@ def write_item(r, item: NewsItem, today: str) -> None:
     r.expire(stats_key, _STATS_TTL)
 
     mark_seen(r, item, today)
+    return True
 
 
 def write_batch(r, items: list[NewsItem], today: str) -> tuple[int, int]:
     """일괄 저장. (저장 건수, 스킵 건수) 반환."""
     saved = skipped = 0
     for item in items:
-        if is_seen(r, item, today):
-            skipped += 1
-        else:
-            write_item(r, item, today)
+        if write_item(r, item, today):
             saved += 1
+        else:
+            skipped += 1
     return saved, skipped
 
 
@@ -105,11 +120,11 @@ def get_symbol_context(r, market: str, symbol: str, today: str, max_items: int =
             d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
             impact = d.get("impact", "medium").upper()
             sentiment = d.get("sentiment", "neutral")
-            summary = d.get("ai_summary") or d.get("title", "")[:60]
+            summary = _safe_summary(d.get("ai_summary") or d.get("title", "")[:60])
             source = d.get("source", "")
             lines.append(f"[SYMBOL][{impact}][{sentiment}][{source}] {summary}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("get_symbol_context parse error: %s", e)
 
     # 매크로 뉴스 (최대 3건)
     macro_items = r.lrange(macro_key, 0, 2)
@@ -117,10 +132,10 @@ def get_symbol_context(r, market: str, symbol: str, today: str, max_items: int =
         try:
             d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
             impact = d.get("impact", "medium").upper()
-            summary = d.get("ai_summary") or d.get("title", "")[:60]
+            summary = _safe_summary(d.get("ai_summary") or d.get("title", "")[:60])
             source = d.get("source", "")
             lines.append(f"[MACRO][{impact}][{source}] {summary}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("get_symbol_context macro parse error: %s", e)
 
     return "\n".join(lines) if lines else ""

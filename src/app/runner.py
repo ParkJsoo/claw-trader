@@ -62,6 +62,12 @@ def main():
         while True:
             r.expire(_RUNNER_LOCK_KEY, _RUNNER_LOCK_TTL)
 
+            # pause 시 불필요한 처리 스킵 (RiskEngine에서도 체크되나, 여기서 조기 차단)
+            pause_val = r.get("claw:pause:global")
+            if pause_val and (pause_val.decode() if isinstance(pause_val, bytes) else pause_val).lower() in ("true", "1"):
+                time.sleep(5)
+                continue
+
             item = r.brpop("claw:signal:queue", timeout=5)
             if not item:
                 continue

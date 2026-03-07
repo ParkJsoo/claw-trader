@@ -8,7 +8,7 @@ import urllib.request
 import urllib.error
 from typing import Any
 
-from .base import DecisionProvider, DecisionResult, build_dual_prompt
+from .base import DecisionProvider, DecisionResult, build_dual_prompt, parse_decision_response
 
 _OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434")
 _QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen2.5:7b")
@@ -44,37 +44,13 @@ class QwenProvider(DecisionProvider):
             body = json.loads(resp.read().decode())
             return body.get("response", "")
 
-    def _parse(self, text: str) -> tuple[bool, str, float, str]:
-        """Returns (emit, direction, confidence, reason)."""
-        clean = text.strip()
-        start = clean.find("{")
-        end = clean.rfind("}")
-        if start != -1 and end != -1:
-            clean = clean[start:end + 1]
-        data = json.loads(clean)
-
-        emit = bool(data.get("emit", False))
-        direction = data.get("direction", "HOLD")
-        if direction not in ("LONG", "EXIT", "HOLD"):
-            direction = "HOLD"
-            emit = False
-
-        try:
-            confidence = float(data.get("confidence", 0.0))
-            confidence = max(0.0, min(1.0, confidence))
-        except (TypeError, ValueError):
-            confidence = 0.0
-
-        reason = str(data.get("reason", ""))[:100]
-        return emit, direction, confidence, reason
-
     def evaluate(self, market: str, symbol: str, features: dict[str, Any]) -> DecisionResult:
         prompt = build_dual_prompt(market, symbol, features)
         raw = ""
         for attempt in range(_QWEN_MAX_RETRIES + 1):
             try:
                 raw = self._call_ollama(prompt)
-                emit, direction, confidence, reason = self._parse(raw)
+                emit, direction, confidence, reason = parse_decision_response(raw)
                 return DecisionResult(
                     emit=emit,
                     direction=direction,

@@ -239,12 +239,38 @@ PYTHONPATH=src ../venv/bin/python -m app.news_runner
 
 ---
 
-## 🔥 Immediate Next Priority (2026-03-06 기준)
+## ✅ 코드 리뷰 + 보안 강화 (2026-03-07)
+
+### 보안 수정 (보안 점수 8.0/10)
+- **XXE 방어**: `defusedxml` 도입 (RSS XML 파싱)
+- **DART SSRF 방어**: `rcept_no` 14자리 숫자 정규식 검증
+- **프롬프트 인젝션 3단계 방어**:
+  1. `_sanitize_input()` — 뉴스 title/excerpt에서 인젝션 패턴 제거
+  2. `_SUMMARY_ALLOWLIST_RE` — Qwen 출력 ai_summary에 한글/영문/숫자/문장부호만 허용
+  3. `_safe_summary()` — Claude 프롬프트 삽입 전 재필터
+- **auto_pause NX**: generator의 `_set_auto_pause`에 `SET NX` 적용 → 기존 reason 덮어쓰기 방지
+- **KIS 토큰 갱신**: `_request_with_retry()` — 401 감지 시 토큰 재발급 + 1회 재시도
+
+### 품질 수정 (품질 점수 7.5/10)
+- **공통 파서 추출**: `parse_decision_response()` → `base.py` (ClaudeProvider/QwenProvider 중복 제거)
+- **write_batch 이중 is_seen 제거**: `write_item()` → bool 반환, 외부 체크 불필요
+- **매크로 키워드 env 파싱 수정**: `_load_macro_keywords()` — 빈 env 시 기본값 정상 반환
+- **classify_batch 병렬화**: `ThreadPoolExecutor(max_workers=4)` → ~4x 속도 향상
+- **runner pause 조기 체크**: 루프 초기에 pause 감지 → 불필요한 strategy/advisor 호출 제거
+- **미사용 import 정리**: claude_provider, collector의 불필요 import 제거
+
+### 주요 잔여 리스크
+- **테스트 코드 부재** — Phase 10 전 최소 테스트 필수 (RiskEngine/StrategyEngine/파서/보안 필터)
+
+---
+
+## 🔥 Immediate Next Priority (2026-03-07 기준)
 
 ### 현재 모드: AI-First / No-Trade
 - `claw:pause:global=true` 유지 — 실주문 없음
 - Phase 9 Day 1 EOD (2026-03-05): emit_rate=11.9%, error_rate=1.9% ✅
 - Phase 9 Day 2 장마감 (2026-03-06): KR emit_rate=3.2%(장마감 후), cap=2000/2000 소진
+- 2026-03-07: 뉴스 파이프라인 구현 + 코드 리뷰/보안 강화 완료
 
 ### 로드맵 (GPT 협의 확정)
 - **Phase 9** (현재): AI-First 안정화 — 2거래일 안정 확인 (월요일 KR 장중 재확인)

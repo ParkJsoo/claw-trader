@@ -65,15 +65,16 @@ class AISignalGenerator:
         return self._client
 
     def _set_auto_pause(self, reason: str, market: str, detail: str) -> None:
-        """전역 일시정지 설정 + reason/meta 기록 + TG 알림."""
+        """전역 일시정지 설정 (NX: 첫 발동만 기록) + TG 알림."""
         from guards.notifier import send_telegram
-        ts_ms = str(int(time.time() * 1000))
-        self.redis.set("claw:pause:global", "true")
-        self.redis.set("claw:pause:reason", reason)
-        self.redis.hset("claw:pause:meta", mapping={
-            "reason": reason, "market": market, "detail": detail,
-            "ts_ms": ts_ms, "source": "ai_generator",
-        })
+        set_ok = self.redis.set("claw:pause:global", "true", nx=True)
+        if set_ok:
+            ts_ms = str(int(time.time() * 1000))
+            self.redis.set("claw:pause:reason", reason)
+            self.redis.hset("claw:pause:meta", mapping={
+                "reason": reason, "market": market, "detail": detail,
+                "ts_ms": ts_ms, "source": "ai_generator",
+            })
         sent = send_telegram(f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}")
         print(f"generator: auto_pause reason={reason} market={market} detail={detail} tg_sent={sent}", flush=True)
 

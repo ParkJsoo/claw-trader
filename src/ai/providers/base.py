@@ -1,8 +1,12 @@
 """Provider 추상화 — 듀얼런 공통 인터페이스."""
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,6 +18,39 @@ class DecisionResult:
     model: str
     raw_response: str = ""
     error: str = ""       # 비어있으면 정상, non-empty면 평가 실패
+
+
+def parse_decision_response(text: str) -> tuple[bool, str, float, str]:
+    """AI 응답 JSON 파싱 → (emit, direction, confidence, reason).
+
+    Claude/Qwen 공통 파서. JSONDecodeError 시 상위에서 처리.
+    """
+    clean = text.strip()
+    start = clean.find("{")
+    end = clean.rfind("}")
+    if start != -1 and end != -1:
+        clean = clean[start:end + 1]
+
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError as e:
+        logger.debug("parse_decision_response JSON error: %s text=%r", e, clean[:200])
+        raise
+
+    emit = bool(data.get("emit", False))
+    direction = data.get("direction", "HOLD")
+    if direction not in ("LONG", "EXIT", "HOLD"):
+        direction = "HOLD"
+        emit = False
+
+    try:
+        confidence = float(data.get("confidence", 0.0))
+        confidence = max(0.0, min(1.0, confidence))
+    except (TypeError, ValueError):
+        confidence = 0.0
+
+    reason = str(data.get("reason", ""))[:100]
+    return emit, direction, confidence, reason
 
 
 class DecisionProvider:

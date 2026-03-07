@@ -2,15 +2,19 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
+import re
 import urllib.parse
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import defusedxml.ElementTree as SafeET
 import requests
 
 from .models import NewsItem
+
+logger = logging.getLogger(__name__)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -18,6 +22,8 @@ _DART_LIST_URL = "https://opendart.fss.or.kr/api/list.json"
 _GOOGLE_RSS_KR = "https://news.google.com/rss/search?q={query}&hl=ko&gl=KR&ceid=KR:ko"
 _GOOGLE_RSS_US = "https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
 _YAHOO_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline?s={symbol}&region=US&lang=en-US"
+
+_RCEPT_NO_RE = re.compile(r"^\d{14}$")  # DART 접수번호 형식 검증
 
 _SOURCE_RELIABILITY: dict[str, float] = {
     "dart": 0.95,
@@ -93,6 +99,15 @@ def _load_us_names() -> dict[str, str]:
     return mapping
 
 
+def _load_macro_keywords(env_var: str, default: list[str]) -> list[str]:
+    """env 변수에서 매크로 키워드 목록 로드. 비어있으면 default 반환."""
+    raw = os.getenv(env_var, "").strip()
+    if not raw:
+        return default
+    keywords = [kw.strip() for kw in raw.split(",") if kw.strip()]
+    return keywords if keywords else default
+
+
 def url_hash(url: str) -> str:
     return hashlib.md5(url.encode()).hexdigest()[:16]
 
@@ -117,7 +132,7 @@ def _parse_rss(xml_text: str, source: str, market: str,
                symbols: list[str]) -> list[NewsItem]:
     items: list[NewsItem] = []
     try:
-        root = ET.fromstring(xml_text)
+        root = SafeET.fromstring(xml_text)
         channel = root.find("channel")
         if channel is None:
             return items
@@ -139,8 +154,7 @@ def _parse_rss(xml_text: str, source: str, market: str,
             if not _is_language_match(title, market):
                 continue
 
-            # HTML 태그 제거 (기본)
-            import re
+            # HTML 태그 제거
             excerpt = re.sub(r"<[^>]+>", "", excerpt)[:500]
 
             items.append(NewsItem(
@@ -153,8 +167,10 @@ def _parse_rss(xml_text: str, source: str, market: str,
                 symbols=list(symbols),
                 reliability=_SOURCE_RELIABILITY.get(source, 0.65),
             ))
-    except ET.ParseError:
-        pass
+    except SafeET.ParseError as e:
+        logger.debug("RSS ParseError source=%s: %s", source, e)
+    except Exception as e:
+        logger.warning("RSS parse unexpected error source=%s: %s", source, e)
     return items
 
 
@@ -191,6 +207,11 @@ def collect_dart(api_key: str, date_str: str) -> list[NewsItem]:
             rcept_no = row.get("rcept_no", "")
             rcept_dt = row.get("rcept_dt", date_str)
 
+            # DART 접수번호 형식 검증 (14자리 숫자)
+            if not _RCEPT_NO_RE.match(rcept_no):
+                logger.warning("DART invalid rcept_no=%r, skipping", rcept_no)
+                continue
+
             title = f"[DART] {corp_name} — {report_nm}"
             url = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
@@ -209,7 +230,8 @@ def collect_dart(api_key: str, date_str: str) -> list[NewsItem]:
                 reliability=_SOURCE_RELIABILITY["dart"],
             ))
         return items
-    except Exception:
+    except Exception as e:
+        logger.warning("DART collect error: %s", e)
         return []
 
 
@@ -228,7 +250,8 @@ def collect_google_rss(query: str, market: str,
         resp.raise_for_status()
         items = _parse_rss(resp.text, source, market, symbols)
         return items[:max_items]
-    except Exception:
+    except Exception as e:
+        logger.debug("Google RSS error query=%r: %s", query, e)
         return []
 
 
@@ -240,7 +263,8 @@ def collect_yahoo_rss(symbol: str, max_items: int = 5) -> list[NewsItem]:
         resp.raise_for_status()
         items = _parse_rss(resp.text, "yahoo_us", "US", [symbol])
         return items[:max_items]
-    except Exception:
+    except Exception as e:
+        logger.debug("Yahoo RSS error symbol=%r: %s", symbol, e)
         return []
 
 
@@ -270,14 +294,10 @@ def collect_all(
     print(f"news:collect google_kr_symbol={sum(1 for i in all_items if i.source == 'google_kr')}", flush=True)
 
     # 3. Google News — KR 매크로
-    macro_kr = os.getenv("NEWS_MACRO_KR", "").split(",") or _DEFAULT_MACRO_KR
-    if not any(macro_kr):
-        macro_kr = _DEFAULT_MACRO_KR
+    macro_kr = _load_macro_keywords("NEWS_MACRO_KR", _DEFAULT_MACRO_KR)
     for kw in macro_kr[:5]:
-        kw = kw.strip()
-        if kw:
-            items = collect_google_rss(kw, "KR", [], max_per_query // 2)
-            all_items.extend(items)
+        items = collect_google_rss(kw, "KR", [], max_per_query // 2)
+        all_items.extend(items)
 
     # 4. Yahoo Finance + Google News — US 종목별
     for symbol in us_watchlist:
@@ -288,14 +308,10 @@ def collect_all(
         all_items.extend(google_items)
 
     # 5. Google News — US 매크로
-    macro_us = os.getenv("NEWS_MACRO_US", "").split(",") or _DEFAULT_MACRO_US
-    if not any(macro_us):
-        macro_us = _DEFAULT_MACRO_US
+    macro_us = _load_macro_keywords("NEWS_MACRO_US", _DEFAULT_MACRO_US)
     for kw in macro_us[:4]:
-        kw = kw.strip()
-        if kw:
-            items = collect_google_rss(kw, "US", [], max_per_query // 2)
-            all_items.extend(items)
+        items = collect_google_rss(kw, "US", [], max_per_query // 2)
+        all_items.extend(items)
 
     print(
         f"news:collect total={len(all_items)} "
