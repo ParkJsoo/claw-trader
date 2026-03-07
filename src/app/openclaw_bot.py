@@ -4,6 +4,7 @@ OpenClaw Bot - Telegram Control Plane (read-only command handler)
 Supported commands:
   /claw status      - system overall status (pause, md, runners, AI summary)
   /claw ai-status   - AI eval pipeline status (detailed)
+  /claw news        - news intelligence pipeline status
   /claw help        - command list
 
 Security:
@@ -42,6 +43,7 @@ _HELP_TEXT = (
     "OpenClaw supported commands:\n"
     "/claw status    - system overall status\n"
     "/claw ai-status - AI eval pipeline status\n"
+    "/claw news      - news intelligence status\n"
     "/claw help      - this help"
 )
 
@@ -138,6 +140,16 @@ def _safe_llen(r, key: str) -> int | None:
         return None
 
 
+def _safe_lindex(r, key: str, index: int) -> str | None:
+    try:
+        val = r.lindex(key, index)
+        if val is None:
+            return None
+        return val.decode() if isinstance(val, bytes) else val
+    except Exception:
+        return None
+
+
 def _md_age_sec(r, market: str) -> int | None:
     try:
         val = r.get(f"md:last_update:{market}")
@@ -211,11 +223,15 @@ def handle_status(r) -> str:
     # Runner locks
     eval_ttl = _safe_ttl(r, "eval:runner:lock")
     gen_ttl = _safe_ttl(r, "gen:runner:lock")
+    dual_ttl = _safe_ttl(r, "dual:runner:lock")
+    news_ttl = _safe_ttl(r, "news:runner:lock")
     bot_ttl = _safe_ttl(r, _BOT_LOCK_KEY)
     lines.append(f"\nRunners:")
-    lines.append(f"  gen:lock={f'{gen_ttl}s[OK]' if gen_ttl else '[DOWN]'}")
-    lines.append(f"  eval:lock={f'{eval_ttl}s[OK]' if eval_ttl else '[DOWN]'}")
-    lines.append(f"  openclaw:lock={f'{bot_ttl}s[OK]' if bot_ttl else '[DOWN]'}")
+    lines.append(f"  gen:   {f'{gen_ttl}s[OK]' if gen_ttl else '[DOWN]'}")
+    lines.append(f"  eval:  {f'{eval_ttl}s[OK]' if eval_ttl else '[DOWN]'}")
+    lines.append(f"  dual:  {f'{dual_ttl}s[OK]' if dual_ttl else '[DOWN]'}")
+    lines.append(f"  news:  {f'{news_ttl}s[OK]' if news_ttl else '[DOWN]'}")
+    lines.append(f"  bot:   {f'{bot_ttl}s[OK]' if bot_ttl else '[DOWN]'}")
 
     return "\n".join(lines)
 
@@ -286,6 +302,60 @@ def handle_ai_status(r) -> str:
     return "\n".join(lines)
 
 
+def handle_news(r) -> str:
+    """/claw news — 뉴스 수집 현황."""
+    today = datetime.now(_KST).strftime("%Y%m%d")
+    now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
+    lines = [f"News Intel ({now_str})"]
+
+    # Runner 상태
+    news_ttl = _safe_ttl(r, "news:runner:lock")
+    lines.append(f"runner: {f'{news_ttl}s [OK]' if news_ttl else '[DOWN]'}")
+
+    # 시장별 통계
+    for market in ("KR", "US"):
+        stats = _safe_hgetall(r, f"news:stats:{market}:{today}")
+        if not stats:
+            lines.append(f"\n{market}: no data yet")
+            continue
+
+        total = int(stats.get("total", 0))
+        high = int(stats.get("impact_high", 0))
+        pos = int(stats.get("sent_positive", 0))
+        neg = int(stats.get("sent_negative", 0))
+        lines.append(f"\n{market}: {total}건 | high={high} pos={pos} neg={neg}")
+
+        # 최신 high-impact 뉴스 1건 (종목별 우선)
+        watchlist = ["005930", "000660"] if market == "KR" else ["AAPL", "NVDA"]
+        shown = False
+        for symbol in watchlist:
+            raw = _safe_lindex(r, f"news:symbol:{market}:{symbol}:{today}", 0)
+            if raw:
+                try:
+                    d = json.loads(raw)
+                    if d.get("impact") == "high":
+                        summary = d.get("ai_summary") or d.get("title", "")[:50]
+                        sent = d.get("sentiment", "")
+                        lines.append(f"  [{symbol}][{sent}] {summary[:60]}")
+                        shown = True
+                        break
+                except Exception:
+                    pass
+
+        # high-impact 없으면 매크로 최신 1건
+        if not shown:
+            raw = _safe_lindex(r, f"news:macro:{market}:{today}", 0)
+            if raw:
+                try:
+                    d = json.loads(raw)
+                    summary = d.get("ai_summary") or d.get("title", "")[:50]
+                    lines.append(f"  [MACRO] {summary[:60]}")
+                except Exception:
+                    pass
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Command dispatcher
 # ---------------------------------------------------------------------------
@@ -296,6 +366,8 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         _send_message(chat_id, handle_status(r))
     elif text == "/claw ai-status":
         _send_message(chat_id, handle_ai_status(r))
+    elif text == "/claw news":
+        _send_message(chat_id, handle_news(r))
     elif text in ("/claw help", "/help"):
         _send_message(chat_id, _HELP_TEXT)
     else:
