@@ -102,14 +102,14 @@
 
 ## 📊 System Status
 
-**Current Phase:** 9 → 9.5 준비 중 (2026-03-07)
+**Current Phase:** 9 → 9.5 준비 중 (2026-03-09)
 **System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause=true 유지 — 실주문 없음)
 **Current Universe Mode:** Static (.env-based watchlist)
 **Next Evolution:** Phase 9 완료(KR emit_rate 10~30%) → Phase 9.5 듀얼런 기동 → Phase 10 micro trading
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen (reqMarketDataType=4) — live 구독 전까지 유지
 **md:last_update age:** KR/US 모두 정상 갱신 중 ✅
-**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / app.ai_eval_runner / **app.openclaw_bot** ✅
+**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / app.ai_eval_runner / **app.ai_dual_eval_runner** / **app.openclaw_bot** / **app.news_runner** (8개) ✅
 **gen:runner:lock TTL:** ~80s ✅ / **eval:runner:lock TTL:** ~300s ✅
 **caffeinate -i -s 검증:** 뚜껑 닫아도 28초 간격 폴링 유지 — gap 없음 ✅
 
@@ -260,17 +260,18 @@ PYTHONPATH=src ../venv/bin/python -m app.news_runner
 - **미사용 import 정리**: claude_provider, collector의 불필요 import 제거
 
 ### 주요 잔여 리스크
-- **테스트 코드 부재** — Phase 10 전 최소 테스트 필수 (RiskEngine/StrategyEngine/파서/보안 필터)
+- ~~테스트 코드 부재~~ → **2026-03-09 해결**: tests/ 신규 82개 all pass ✅
 
 ---
 
-## 🔥 Immediate Next Priority (2026-03-07 기준)
+## 🔥 Immediate Next Priority (2026-03-09 기준)
 
 ### 현재 모드: AI-First / No-Trade
 - `claw:pause:global=true` 유지 — 실주문 없음
 - Phase 9 Day 1 EOD (2026-03-05): emit_rate=11.9%, error_rate=1.9% ✅
 - Phase 9 Day 2 장마감 (2026-03-06): KR emit_rate=3.2%(장마감 후), cap=2000/2000 소진
 - 2026-03-07: 뉴스 파이프라인 구현 + 코드 리뷰/보안 강화 완료
+- 2026-03-09: 자체 코드리뷰/보안점검 + 치명 버그 수정 + 테스트 82개 all pass ✅
 
 ### 로드맵 (GPT 협의 확정)
 - **Phase 9** (현재): AI-First 안정화 — 2거래일 안정 확인 (월요일 KR 장중 재확인)
@@ -348,21 +349,22 @@ PYTHONPATH=src ../venv/bin/python -m app.news_runner
 
 ## 🚀 Guidance For Next Chat
 
-**현재 모드: AI-First / No-Trade (Phase 9) — 2026-03-06**
+**현재 모드: AI-First / No-Trade (Phase 9) — 2026-03-09**
 
 Start From:
-1. 월요일 KR 장중 emit_rate 확인: `ai:eval_stats:KR:{오늘}` → 10~30% 범위인지
-2. Phase 9 exit 조건 충족 시 → Phase 9.5 (Claude vs Qwen 듀얼런) 설계 시작
+1. KR 장중 emit_rate 확인: `ai:eval_stats:KR:{오늘}` → 10~30% 범위인지
+2. Phase 9 exit 조건 충족 시 → Phase 9.5 (Claude vs Qwen 듀얼런) 진입
 3. IBKR live 구독 완료 시 → `ibkr_feed.py:51` reqMarketDataType 4→1 변경
 
 Phase 9 AI-First Exit 조건 (충족 시 Phase 9.5 진입):
-- ✅ error_rate < 5% (현재 0.0%)
-- ⏸ emit_rate 10~30% (장중 재확인 필요 — 장마감 후 3.2%)
+- ✅ error_rate < 5%
+- ⏸ emit_rate 10~30% (장중 재확인 필요)
 - ✅ md_age < 30s
 - ✅ runner crash 없음
 - ✅ watchlist 8종목 안정
 - ✅ Risk Engine 활성
-- ⏸ 최소 2거래일 장중 안정 운영 (Day 2 장중 미확인)
+- ✅ 테스트 82개 all pass
+- ⏸ 최소 2거래일 장중 안정 운영 (장중 재확인 필요)
 
 > ⚠️ pause 해제(실주문)는 Phase 9.5 듀얼런 완료 후 Phase 10에서만
 
@@ -391,15 +393,17 @@ docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" TTL gen:runner:lock
 - src/app/signal_generator_runner.py — 헬스 모니터 + auto-pause + TG 스팸 방지
 - src/market_data/ibkr_feed.py — Delayed Frozen + reconnect backoff
 
-### 프로세스 기동 순서
+### 프로세스 기동 순서 (프로젝트 루트에서 실행)
 ```bash
-cd /Users/henry_oc/develop/claw-trader/src
-PYTHONPATH=src ../venv/bin/python -m app.runner                   # 신호 처리 파이프라인
-PYTHONPATH=src ../venv/bin/python -m app.market_data_runner       # 현재가 폴링
-PYTHONPATH=src ../venv/bin/python -m scripts.order_watcher        # 주문 감시
-PYTHONPATH=src ../venv/bin/python -m app.signal_generator_runner  # AI 신호 생성기
-PYTHONPATH=src ../venv/bin/python -m app.ai_eval_runner           # AI 평가 러너 (Phase 9 신규)
-PYTHONPATH=src ../venv/bin/python -m app.openclaw_bot             # TG 운영 봇 (Phase 9 신규)
+# /Users/henry_oc/develop/claw-trader 에서 실행
+PYTHONPATH=src venv/bin/python -m app.runner                   # 신호 처리 파이프라인
+PYTHONPATH=src venv/bin/python -m app.market_data_runner       # 현재가 폴링
+PYTHONPATH=src venv/bin/python -m scripts.order_watcher        # 주문 감시
+PYTHONPATH=src venv/bin/python -m app.signal_generator_runner  # AI 신호 생성기
+PYTHONPATH=src venv/bin/python -m app.ai_eval_runner           # AI 평가 러너
+PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner      # Claude vs Qwen 듀얼런 (Phase 9.5)
+PYTHONPATH=src venv/bin/python -m app.openclaw_bot             # TG 운영 봇
+PYTHONPATH=src venv/bin/python -m app.news_runner              # 뉴스 수집/분류 (30분 폴링)
 ```
 
 ### .env 주요 변수
@@ -452,4 +456,32 @@ GEN_AI_ERROR_SPIKE=10      # AI 오류 급증 임계값 (인터벌당)
 
 ---
 
-**Claw‑Trader Engine:** Phase 8 v4 Complete — 무인 운영 안전장치 ✅
+---
+
+## ✅ 2026-03-09 코드리뷰/보안점검 + 치명 버그 수정
+
+### 치명 버그 수정
+- **KIS BUY/SELL 미구분**: `place_order()` tr_id가 항상 TTTC0802U(매수)였음 → BUY=TTTC0802U / SELL=TTTC0801U 분기 수정 (실거래 시 매도가 매수로 처리되는 치명적 버그)
+
+### 보안/안정성 수정
+- **Signal 입력값 검증**: `SignalEntry.price/size_cash` 양수 field_validator 추가 (Pydantic)
+- **symbol 형식 검증**: `Signal.symbol` → `^[A-Z0-9]{1,10}$` 정규식 검증
+- **KIS 시크릿 마스킹**: 예외 시 `app_secret` 노출 방지 — `RuntimeError` 래핑
+
+### 원자성/안정성
+- **ai/generator.py daily_cap**: INCR/DECR 비원자 → `_LUA_CAP_INCR` Lua 스크립트로 원자화 (멀티프로세스 안전)
+- **price_near() tolerance**: 2분 초과 데이터 무효 처리 (잘못된 피처 계산 방지)
+- **strategy daily_cap DECR 롤백**: 초과 시 카운터 롤백 → 실제 통과 수만 카운트
+- **Executor cancel() 소유권 검증**: `claw:order_meta` 존재 시에만 취소 허용
+
+### 테스트 (신규 82개 all pass)
+- `tests/test_risk_engine.py` — RiskEngine 5규칙
+- `tests/test_strategy_engine.py` — StrategyEngine 3규칙
+- `tests/test_parse_decision_response.py` — AI 응답 파서
+- `tests/test_security_filters.py` — 보안 필터 (sanitize/allowlist/인젝션)
+
+커밋: `d9865dc`
+
+---
+
+**Claw‑Trader Engine:** Phase 9 → 9.5 준비 중 — 테스트 완료, 8개 프로세스 기동 ✅
