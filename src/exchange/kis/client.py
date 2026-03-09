@@ -66,13 +66,19 @@ class KisClient(ExchangeClient):
         }
 
     def _request_with_retry(self, method: str, url: str, headers: dict, **kwargs):
-        """API 호출 + 401 시 토큰 갱신 후 1회 재시도."""
-        resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+        """API 호출 + 401 시 토큰 갱신 후 1회 재시도. 예외 시 시크릿 마스킹."""
+        try:
+            resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+        except Exception as e:
+            raise RuntimeError(f"KIS API {method.upper()} request failed: {type(e).__name__}") from None
         if resp.status_code == 401:
             self.access_token = None
             self._refresh_token()
             headers["authorization"] = f"Bearer {self.access_token}"
-            resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+            try:
+                resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+            except Exception as e:
+                raise RuntimeError(f"KIS API {method.upper()} retry failed: {type(e).__name__}") from None
         resp.raise_for_status()
         return resp
 
@@ -108,7 +114,8 @@ class KisClient(ExchangeClient):
 
         data = resp.json()
 
-        output2 = data.get("output2", [{}])[0]
+        output2_list = data.get("output2") or [{}]
+        output2 = output2_list[0] if output2_list else {}
 
         equity = Decimal(output2.get("tot_evlu_amt", "0"))
         cash = Decimal(output2.get("dnca_tot_amt", "0"))
@@ -143,9 +150,11 @@ class KisClient(ExchangeClient):
             "ORD_UNPR": str(request.limit_price),
         }
 
+        # KIS tr_id: TTTC0802U=매수, TTTC0801U=매도
+        tr_id = "TTTC0802U" if request.side == OrderSide.BUY else "TTTC0801U"
         resp = self._request_with_retry(
             "post", url,
-            headers=self._auth_headers("TTTC0802U"),
+            headers=self._auth_headers(tr_id),
             json=payload,
         )
 

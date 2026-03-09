@@ -192,12 +192,17 @@ class Executor:
         return result.status
 
     def cancel(self, order_id: str) -> bool:
+        # 소유권 검증: 이 시스템에서 생성한 주문만 취소 허용
+        meta_key = f"claw:order_meta:{self.market}:{order_id}"
+        if not self.redis.exists(meta_key):
+            self._record_reject(f"CANCEL-{order_id}", "unknown_order")
+            return False
+
         ok = self.client.cancel_order(order_id)
 
         if ok:
             key = f"order:{self.market}:{order_id}"
             self.redis.set(key, "CANCELED")
-
         else:
             self._record_reject(f"CANCEL-{order_id}", "cancel_failed")
 

@@ -102,6 +102,9 @@ class AISignalGenerator:
             for ts, p in parsed:
                 if best_ts is None or abs(ts - target_ms) < abs(best_ts - target_ms):
                     best_ts, best_p = ts, p
+            # 2분 초과 시 유효 데이터 없음으로 처리 (잘못된 피처 방지)
+            if best_ts is None or abs(best_ts - target_ms) > 120_000:
+                return None
             return best_p
 
         def ret(p_old: Optional[Decimal]) -> Optional[float]:
@@ -305,13 +308,10 @@ class AISignalGenerator:
                                  emit_blocked=True, block_reason="no_position")
                 return None
 
-        # daily_cap: INCR 후 초과 시 DECR 롤백 (원자성, 단일 프로세스 전제)
+        # daily_cap: Lua 원자적 INCR + cap check (multi-process safe)
         daily_key = f"gen:daily_emit:{market}:{today}"
-        count = self.redis.incr(daily_key)
-        if count == 1:
-            self.redis.expire(daily_key, 3 * 86400)
-        if count > _GEN_DAILY_EMIT_CAP:
-            self.redis.decr(daily_key)
+        count = self.redis.eval(_LUA_CAP_INCR, 1, daily_key, _GEN_DAILY_EMIT_CAP, 3 * 86400)
+        if count == -1:
             self._save_audit(market, signal_id, symbol, features, decision, raw_response,
                              emit_blocked=True, block_reason="daily_cap")
             return None

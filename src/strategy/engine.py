@@ -112,6 +112,7 @@ class StrategyEngine:
         if cnt == 1:
             self.redis.expire(key, 3 * 86400)  # 3d TTL
         if cnt > cfg.daily_cap:
+            self.redis.decr(key)  # 초과 시 롤백 — 실제 통과 수만 카운트
             return StrategyDecision(
                 allow=False,
                 reason="DAILY_CAP",

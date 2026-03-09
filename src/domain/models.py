@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from enum import Enum
 from decimal import Decimal
 from pydantic import BaseModel, Field, field_validator
@@ -79,9 +80,27 @@ class SignalEntry(BaseModel):
     price: Decimal
     size_cash: Decimal  # 현금 기준 사이징 (레버리지 금지 철학과 정합)
 
+    @field_validator("price")
+    @classmethod
+    def price_must_be_positive(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError(f"price must be positive, got {v}")
+        return v
+
+    @field_validator("size_cash")
+    @classmethod
+    def size_cash_must_be_positive(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError(f"size_cash must be positive, got {v}")
+        return v
+
 
 class SignalStop(BaseModel):
     price: Decimal
+
+
+# KR: 숫자 6자리, US: 대문자 1-5자리 (e.g. AAPL, NVDA)
+_SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,10}$")
 
 
 class Signal(BaseModel):
@@ -92,6 +111,13 @@ class Signal(BaseModel):
     direction: Direction
     entry: SignalEntry
     stop: SignalStop
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: str) -> str:
+        if not _SYMBOL_RE.match(v):
+            raise ValueError(f"Invalid symbol format: {v!r}")
+        return v
 
 
 # =========================
