@@ -69,7 +69,11 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
     if market == "KR":
         market_ctx = (
             "Market: KR (KOSPI/KOSDAQ, Korean Won, session 09:00-15:30 KST)\n"
-            "Signal on clear 1-5min momentum with range_5m > 0.002."
+            "Emit a LONG signal only when BOTH conditions are clearly satisfied: "
+            "1. ret_5m > 0  2. range_5m > 0.004. "
+            "If ret_5m <= 0, do NOT emit LONG. "
+            "If volatility exists but directional momentum is unclear, return HOLD. "
+            "Prefer HOLD over weak or ambiguous setups."
         )
     else:
         market_ctx = (
