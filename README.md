@@ -78,14 +78,15 @@ docker run -d --name claw-redis -p 6379:6379 redis:7-alpine \
 ollama pull qwen2.5:7b && ollama serve
 
 # 5. 프로세스 기동 (순서 중요, 프로젝트 루트에서 실행)
-PYTHONPATH=src venv/bin/python -m app.runner                   # 신호 처리 파이프라인
-PYTHONPATH=src venv/bin/python -m app.market_data_runner       # 현재가 폴링
-PYTHONPATH=src venv/bin/python -m scripts.order_watcher        # 주문 감시
-PYTHONPATH=src venv/bin/python -m app.signal_generator_runner  # AI 신호 생성기
-PYTHONPATH=src venv/bin/python -m app.ai_eval_runner           # AI 평가 러너
-PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner      # Claude vs Qwen 듀얼런
-PYTHONPATH=src venv/bin/python -m app.openclaw_bot             # Telegram 제어판
-PYTHONPATH=src venv/bin/python -m app.news_runner              # 뉴스 수집/분류 (30분 폴링)
+PYTHONPATH=src venv/bin/python -m app.runner                    # 신호 처리 파이프라인
+PYTHONPATH=src venv/bin/python -m app.market_data_runner        # 현재가 폴링
+PYTHONPATH=src venv/bin/python -m scripts.order_watcher         # 주문 감시
+PYTHONPATH=src venv/bin/python -m app.signal_generator_runner   # AI 신호 생성기
+PYTHONPATH=src venv/bin/python -m app.ai_eval_runner            # AI 평가 러너
+PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner       # Claude vs Qwen 듀얼런
+PYTHONPATH=src venv/bin/python -m app.consensus_signal_runner   # Phase 10: 듀얼 합의 → Signal → queue
+PYTHONPATH=src venv/bin/python -m app.openclaw_bot              # Telegram 제어판
+PYTHONPATH=src venv/bin/python -m app.news_runner               # 뉴스 수집/분류 (30분 폴링)
 ```
 
 ---
@@ -129,6 +130,7 @@ PYTHONPATH=src pytest tests/ -v
 - `StrategyEngine` 3개 규칙 (dedupe / cooldown / daily_cap)
 - `parse_decision_response` AI 응답 파서 (confidence clamp / direction 검증)
 - 보안 필터 (sanitize_input / summary allowlist / 인젝션 패턴)
+- `consensus_signal_runner` 호가 정규화 / happy path / reject / dedup (26개)
 
 ---
 
