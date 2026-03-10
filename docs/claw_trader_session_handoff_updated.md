@@ -102,16 +102,53 @@
 
 ## 📊 System Status
 
-**Current Phase:** 9.5 — Claude vs Qwen 듀얼런 (2026-03-10 진입 선언)
+**Current Phase:** 10 준비 완료 — Phase 9.5 조건 충족, consensus_signal_runner 구현 완료 (2026-03-10)
 **System Stability:** ⭐⭐⭐⭐⭐ Production-Ready (pause=true 유지 — 실주문 없음)
 **Current Universe Mode:** Static (.env-based watchlist, KR 8종목)
-**Next Evolution:** Phase 9.5 clean full-day 확인(2026-03-11) → Phase 10 micro trading
+**Next Evolution:** Phase 9.5 clean full-day 확인(2026-03-11) → Phase 10 dry-run 시작
 **KR Pipeline:** ✅ 완전 동작 (장중 모멘텀 발생 시 신호 생성)
 **US Pipeline:** ✅ Delayed Frozen (reqMarketDataType=4) — live 구독 전까지 유지
 **md:last_update age:** KR/US 모두 정상 갱신 중 ✅
-**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / app.ai_eval_runner / **app.ai_dual_eval_runner** / **app.openclaw_bot** / **app.news_runner** (8개) ✅
+**Running Processes:** app.runner / app.market_data_runner / scripts.order_watcher / app.signal_generator_runner / app.ai_eval_runner / **app.ai_dual_eval_runner** / **app.consensus_signal_runner** / **app.openclaw_bot** / **app.news_runner** (9개) ✅
 **gen:runner:lock TTL:** ~80s ✅ / **eval:runner:lock TTL:** ~300s ✅
 **caffeinate -i -s 검증:** 뚜껑 닫아도 28초 간격 폴링 유지 — gap 없음 ✅
+
+---
+
+## ✅ PHASE 10 — consensus_signal_runner 구현 완료 (2026-03-10)
+
+### 신규 파일
+- `src/app/consensus_signal_runner.py` — dual eval → Signal 생성 → claw:signal:queue push
+- `config/phase10_kr_micro.env` — Phase 10 KR 운영값 프로파일 (cooldown=600s, max_concurrent=2)
+- `docs/phase10_dryrun_guide.md` — dry-run 체크리스트 + 장중 관찰 지표
+- `tests/test_consensus_signal_runner.py` — 24개 all pass
+
+### 처리 흐름
+```
+ai:dual:last:claude/qwen:{market}:{symbol}
+  → consensus 확인 (both emit=1, direction LONG 일치)
+  → prefilter (ret_5m > 0, range_5m > 0.004)
+  → Signal 생성 (entry.price=current_price, size_cash=current_price, stop=-2%)
+  → Pydantic 검증
+  → claw:signal:queue lpush
+  → StrategyEngine → RiskEngine → OrderExecutor (기존 파이프라인 재사용)
+```
+
+### Phase 10 Config (runner.py env var override)
+- `STRATEGY_KR_COOLDOWN_SEC=600` (기본 300 → Phase 10: 600)
+- `RISK_KR_MAX_CONCURRENT=2` (기본 5 → Phase 10: 2)
+- runner 시작 시 `runner: config kr_cooldown=600s kr_max_concurrent=2 ...` 출력
+
+### Redis 키 (신규)
+```
+consensus:stats:KR:{YYYYMMDD}          # candidate/reject 카운트
+consensus:daily_count:KR:{YYYYMMDD}    # 일별 candidate 생성 수
+consensus:audit:KR:{signal_id}          # 감사 로그 (TTL 7d)
+consensus:runner:lock                   # 프로세스 락 (TTL 120s)
+```
+
+### 테스트 현황
+- 전체: **106 all pass** (기존 82 + consensus 24)
 
 ---
 
@@ -354,12 +391,13 @@ PYTHONPATH=src ../venv/bin/python -m app.news_runner
 
 ## 🚀 Guidance For Next Chat
 
-**현재 모드: Phase 9.5 — Claude vs Qwen 듀얼런 (2026-03-10 진입 선언)**
+**현재 모드: Phase 10 준비 완료 — dry-run 대기 중 (2026-03-10)**
 
 Start From:
-1. 2026-03-11 장 종료 후 clean full-day emit_rate 확인 → Phase 9.5 최종 확정
-2. IBKR live 구독 완료 시 → `ibkr_feed.py:51` reqMarketDataType 4→1 변경
-3. Phase 9.5 확정 후 → Phase 10 micro trading 준비
+1. **[즉시]** Phase 10 dry-run 시작: `source config/phase10_kr_micro.env` → runner 재기동 → consensus_signal_runner 기동
+2. **[2026-03-11 장 전]** `docs/phase10_dryrun_guide.md` 체크리스트 5개 항목 순서대로 확인
+3. **[2026-03-11 EOD]** 장중 관찰 지표 확인 (candidate 5~30건, emit_rate 10~30%, executable 3~10건)
+4. IBKR live 구독 완료 시 → `ibkr_feed.py:51` reqMarketDataType 4→1 변경
 
 Phase 9 AI-First Exit 조건 (2026-03-10 EOD 전항목 충족 ✅):
 - ✅ error_rate < 5% (0%)
@@ -398,17 +436,21 @@ docker exec claw-redis redis-cli -a "$REDIS_PASSWORD" TTL gen:runner:lock
 - src/app/signal_generator_runner.py — 헬스 모니터 + auto-pause + TG 스팸 방지
 - src/market_data/ibkr_feed.py — Delayed Frozen + reconnect backoff
 
-### 프로세스 기동 순서 (프로젝트 루트에서 실행)
+### 프로세스 기동 순서 (Phase 10, 프로젝트 루트에서 실행)
 ```bash
+# Phase 10 config 먼저 적용 (재기동 시 반영)
+source config/phase10_kr_micro.env
+
 # /Users/henry_oc/develop/claw-trader 에서 실행
-PYTHONPATH=src venv/bin/python -m app.runner                   # 신호 처리 파이프라인
-PYTHONPATH=src venv/bin/python -m app.market_data_runner       # 현재가 폴링
-PYTHONPATH=src venv/bin/python -m scripts.order_watcher        # 주문 감시
-PYTHONPATH=src venv/bin/python -m app.signal_generator_runner  # AI 신호 생성기
-PYTHONPATH=src venv/bin/python -m app.ai_eval_runner           # AI 평가 러너
-PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner      # Claude vs Qwen 듀얼런 (Phase 9.5)
-PYTHONPATH=src venv/bin/python -m app.openclaw_bot             # TG 운영 봇
-PYTHONPATH=src venv/bin/python -m app.news_runner              # 뉴스 수집/분류 (30분 폴링)
+PYTHONPATH=src venv/bin/python -m app.runner                    # 신호 처리 파이프라인 (Phase 10 config)
+PYTHONPATH=src venv/bin/python -m app.market_data_runner        # 현재가 폴링
+PYTHONPATH=src venv/bin/python -m scripts.order_watcher         # 주문 감시
+PYTHONPATH=src venv/bin/python -m app.signal_generator_runner   # AI 신호 생성기
+PYTHONPATH=src venv/bin/python -m app.ai_eval_runner            # AI 평가 러너
+PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner       # Claude vs Qwen 듀얼런 (Phase 9.5)
+PYTHONPATH=src venv/bin/python -m app.consensus_signal_runner   # Phase 10 신규: dual → Signal → queue
+PYTHONPATH=src venv/bin/python -m app.openclaw_bot              # TG 운영 봇
+PYTHONPATH=src venv/bin/python -m app.news_runner               # 뉴스 수집/분류 (30분 폴링)
 ```
 
 ### .env 주요 변수
