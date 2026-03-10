@@ -1,1 +1,0 @@
-print('Claw-Trader bootstrap')
