@@ -63,6 +63,16 @@ def main():
 
     strategy = StrategyEngine(r, strategy_cfg)
     ex_kr = Executor(kis, r, "KR", risk=RiskEngine(r, risk_cfg, kis))
+
+    # 시작 시 적용값 출력 (장중 설정 오류 방지)
+    print(
+        f"runner: config "
+        f"kr_cooldown={strategy_cfg.kr.cooldown_sec}s "
+        f"kr_daily_cap={strategy_cfg.kr.daily_cap} "
+        f"kr_max_concurrent={risk_cfg.kr.max_concurrent_positions} "
+        f"kr_daily_loss_limit={risk_cfg.kr.daily_loss_limit}",
+        flush=True,
+    )
     ex_us = Executor(ibkr, r, "US", risk=RiskEngine(r, risk_cfg, ibkr))
 
     # Phase 8: DataGuard + AI Advisory (shadow mode)
