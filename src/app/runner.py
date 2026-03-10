@@ -43,8 +43,23 @@ def main():
     kis = KisClient()
     ibkr = IbkrClient()
 
-    risk_cfg = RiskConfig()
-    strategy_cfg = StrategyConfig()
+    # Phase 10 config — env var override (재기동 시 반영)
+    from strategy.engine import MarketStrategyConfig
+    from executor.risk import MarketRiskConfig
+    from decimal import Decimal as _D
+
+    strategy_cfg = StrategyConfig(
+        kr=MarketStrategyConfig(
+            cooldown_sec=int(os.getenv("STRATEGY_KR_COOLDOWN_SEC", "300")),
+            daily_cap=int(os.getenv("STRATEGY_KR_DAILY_CAP", "20")),
+        ),
+    )
+    risk_cfg = RiskConfig(
+        kr=MarketRiskConfig(
+            max_concurrent_positions=int(os.getenv("RISK_KR_MAX_CONCURRENT", "5")),
+            daily_loss_limit=_D(os.getenv("RISK_KR_DAILY_LOSS_LIMIT", "-500000")),
+        ),
+    )
 
     strategy = StrategyEngine(r, strategy_cfg)
     ex_kr = Executor(kis, r, "KR", risk=RiskEngine(r, risk_cfg, kis))
