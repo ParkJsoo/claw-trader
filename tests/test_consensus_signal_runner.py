@@ -231,3 +231,64 @@ class TestRunOnceReject:
         run_once("KR", "005930", r)
 
         assert r.llen("claw:signal:queue") == 0
+
+
+# ---------------------------------------------------------------------------
+# run_once — dedup (duplicate signal storm 방지)
+# ---------------------------------------------------------------------------
+
+class TestRunOnceDedup:
+    def test_same_eval_result_not_pushed_twice(self):
+        """동일 ts_ms로 두 번 poll 시 두 번째는 skip."""
+        r = fakeredis.FakeRedis()
+        # ts_ms 고정
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000000000",
+            "features_json": _make_features(),
+        })
+        r.hset("ai:dual:last:qwen:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000000000",
+            "features_json": _make_features(),
+        })
+
+        result1 = run_once("KR", "005930", r)
+        result2 = run_once("KR", "005930", r)  # 동일 ts_ms → skip
+
+        assert result1 is not None
+        assert result2 is None
+        assert r.llen("claw:signal:queue") == 1  # 1건만 push
+
+    def test_new_eval_result_is_pushed(self):
+        """ts_ms가 바뀌면 새 신호 push."""
+        r = fakeredis.FakeRedis()
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000000000",
+            "features_json": _make_features(),
+        })
+        r.hset("ai:dual:last:qwen:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000000000",
+            "features_json": _make_features(),
+        })
+
+        run_once("KR", "005930", r)
+
+        # ts_ms 갱신 (새 eval 결과)
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000120000",
+            "features_json": _make_features(),
+        })
+        r.hset("ai:dual:last:qwen:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": "1700000120000",
+            "features_json": _make_features(),
+        })
+
+        result2 = run_once("KR", "005930", r)
+
+        assert result2 is not None
+        assert r.llen("claw:signal:queue") == 2  # 2건 push

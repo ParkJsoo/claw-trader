@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import redis
 
 from domain.models import Signal, SignalEntry, SignalStop
-from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours
+from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours, is_paused
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -166,7 +166,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if not claude or not qwen:
         return None  # 아직 평가 결과 없음 — 무시 (cold start)
 
-    # 2. 데이터 무결성: features_json 파싱
+    # 2. dedup: 이미 이 ts_ms로 처리한 결과면 스킵 (중복 push 방지)
+    # dual eval runner가 새 결과를 쓰기 전까지 동일 hash 반복 읽힘
+    c_ts_ms = claude.get("ts_ms", "")
+    q_ts_ms = qwen.get("ts_ms", "")
+    seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}:{q_ts_ms}"
+    if not r.set(seen_key, "1", nx=True, ex=int(_POLL_SEC * 6)):
+        return None  # 이미 처리한 eval 결과
+
+    # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
         q_features = json.loads(qwen.get("features_json") or "{}")
@@ -352,6 +360,14 @@ def main():
     try:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
+
+            # 장외 시간 또는 pause 상태면 스킵
+            if not is_market_hours("KR"):
+                time.sleep(_POLL_SEC)
+                continue
+            if is_paused(r):
+                time.sleep(_POLL_SEC)
+                continue
 
             for symbol in watchlist_kr:
                 try:

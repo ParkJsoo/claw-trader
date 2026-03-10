@@ -455,7 +455,7 @@ PYTHONPATH=src venv/bin/python -m app.news_runner               # 뉴스 수집/
 
 ### .env 주요 변수
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY
 GEN_WATCHLIST_KR=005930,000660,...  # 실제 운영 8종목 (.env 참조)
 GEN_WATCHLIST_US=AAPL,NVDA          # 실제 값은 .env 참조
 GEN_POLL_SEC=60

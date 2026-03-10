@@ -202,7 +202,7 @@ class Executor:
 
         if ok:
             key = f"order:{self.market}:{order_id}"
-            self.redis.set(key, "CANCELED")
+            self.redis.set(key, "CANCELED", ex=7 * 86400)
         else:
             self._record_reject(f"CANCEL-{order_id}", "cancel_failed")
 

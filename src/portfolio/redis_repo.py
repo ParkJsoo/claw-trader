@@ -29,7 +29,7 @@ def _to_ts_ms(ts: str) -> str:
     if not ts or not ts.strip():
         return str(int(time.time() * 1000))
     s = ts.strip()
-    if re.match(r"^\d+\.?\d*$"):
+    if re.match(r"^\d+\.?\d*$", s):
         if len(s) >= 13:
             return s.split(".")[0][:13]
         return str(int(float(s) * 1000))
