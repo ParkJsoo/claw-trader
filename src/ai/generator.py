@@ -75,8 +75,10 @@ class AISignalGenerator:
                 "reason": reason, "market": market, "detail": detail,
                 "ts_ms": ts_ms, "source": "ai_generator",
             })
-        sent = send_telegram(f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}")
-        print(f"generator: auto_pause reason={reason} market={market} detail={detail} tg_sent={sent}", flush=True)
+            sent = send_telegram(f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}")
+            print(f"generator: auto_pause reason={reason} market={market} detail={detail} tg_sent={sent}", flush=True)
+        else:
+            print(f"generator: auto_pause already active; skip telegram reason={reason} market={market}", flush=True)
 
     def _get_hist(self, market: str, symbol: str) -> list[str]:
         key = f"mark_hist:{market}:{symbol}"
