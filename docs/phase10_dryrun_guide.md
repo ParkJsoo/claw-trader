@@ -177,3 +177,17 @@ claw:pause:global                       # "true" 유지 필수
 - [ ] signal burst 없음
 - [ ] cooldown/risk reject 분포 정상
 - [ ] claw:pause:global=true 상태 유지 (dry-run 기간)
+
+---
+
+## 7. Day별 운영 기록
+
+### Day 1 (2026-03-12)
+- candidate=54 ✅, strategy_pass=20, pipeline_error=0 ✅
+- **이슈 1**: `STRATEGY_KR_DAILY_CAP=20`이 09:00~10:30 (1.5시간) 소진 → Day 2부터 40으로 조정
+- **이슈 2**: AI call cap(1000) 소진 → `_set_auto_pause` TG 스팸 버그 발견 및 수정 (commit `23cdaf2`)
+  - 원인: `send_telegram()`이 `if set_ok:` 블록 밖에 있어 매번 발송
+  - 수정: `send_telegram`을 `if set_ok:` 블록 안으로 이동 (idempotent)
+- **Day 2 설정**: `STRATEGY_KR_DAILY_CAP=40`, `GEN_DAILY_CALL_CAP=1500`
+- **기동 주의**: `set -a && source .env && source config/phase10_kr_micro.env && set +a` 필수
+  (단순 `source`만 하면 env var가 child process에 전달 안 됨)
