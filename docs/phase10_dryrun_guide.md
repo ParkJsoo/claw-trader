@@ -191,3 +191,17 @@ claw:pause:global                       # "true" 유지 필수
 - **Day 2 설정**: `STRATEGY_KR_DAILY_CAP=40`, `GEN_DAILY_CALL_CAP=1500`
 - **기동 주의**: `set -a && source .env && source config/phase10_kr_micro.env && set +a` 필수
   (단순 `source`만 하면 env var가 child process에 전달 안 됨)
+
+### Day 2 (2026-03-13)
+- emit_rate=22.7% ✅, candidate=52, strategy_pass=40, pipeline_error=0 ✅
+- executable=0건 (KIS ACCOUNT_SNAPSHOT_ERROR — available_cash=0)
+- **이슈 1**: Anthropic API 크레딧 부족 → 10:02 AI_ERROR_SPIKE auto-pause → 재충전 후 재개
+- **이슈 2**: KIS available_cash=0 → ACCOUNT_SNAPSHOT_ERROR → 총 103,996원 입금 완료
+- **운영 팁**: REDIS_PASSWORD가 .env에 없음 → REDIS_URL에서 추출 필요
+  ```bash
+  REDIS_PASS=$(python3 -c "import urllib.parse,os; u=urllib.parse.urlparse(os.environ['REDIS_URL']); print(u.password or '')")
+  docker exec claw-redis redis-cli -a "$REDIS_PASS" GET claw:pause:global
+  ```
+- **Day 3 세팅**: 변경 없음 (daily_cap=40, AI cap=1500, cooldown=600s, max_concurrent=2)
+- **Day 3 목표**: executable 3~10건 + Risk reject 정상 분포(max_concurrent/cooldown/daily_cap) 확인 → Phase 10 exit
+- **GPT 권고**: AI call 효율(1500calls/52candidates=28.8 calls/candidate) 개선은 Phase 11에서
