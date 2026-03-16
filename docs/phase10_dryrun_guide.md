@@ -39,19 +39,20 @@ ps aux | grep consensus_signal_runner
 runner 시작 로그에 아래가 출력되는지 확인:
 
 ```
-runner: config kr_cooldown=600s kr_daily_cap=20 kr_max_concurrent=2 kr_daily_loss_limit=-500000
+runner: config kr_cooldown=600s kr_daily_cap=40 kr_max_concurrent=2 kr_daily_loss_limit=-500000
 ```
 
 값이 다르면 → `source config/phase10_kr_micro.env` 후 재기동.
 
-### ✅ 3. 실거래 차단 확인 (가장 중요)
+### ✅ 3. auto-pause 해제 확인 (가장 중요)
 
 ```bash
 redis-cli GET claw:pause:global
-# 반드시 → true
+# 반드시 → (nil)  ← Phase 10은 실거래 허용 상태로 운영
 ```
 
-`true`가 아니면 dry-run 시작 금지.
+> **주의**: Phase 10은 실제 주문 테스트 목적이므로 `claw:pause:global`이 **(nil)**이어야 정상.
+> 전날 AI_ERROR_SPIKE 등으로 auto-pause가 걸렸을 수 있음 → `DEL claw:pause:global`로 해제 후 시작.
 
 ### ✅ 4. Queue 연결 확인
 
@@ -222,3 +223,9 @@ claw:pause:global                       # "true" 유지 필수
 - **운영 규칙 추가**: 워치리스트 변경 시 **market_data_runner 포함 전체 프로세스** 재시작 필수
 - **Day 4 세팅**: 워치리스트 변경 외 동일 (daily_cap=40, AI cap=1500, cooldown=600s, max_concurrent=2, allocation_cap=100%)
 - **Day 4 목표**: 새 워치리스트 기반 신호 생성 + executable 3~10건 확인 → Phase 10 exit
+
+### Day 4 (2026-03-17)
+- 08:49 전체 9개 프로세스 기동 완료 ✅
+- pause=nil ✅, ai_pause=nil ✅, 큐 비어있음 ✅, allocation_cap=104,516원(100%) ✅
+- 구형 고가주 잔류 신호(000660/207940 등) → ALLOCATION_CAP_EXCEEDED로 자동 소진 (영향 없음)
+- 장 시작 전 모든 점검 통과 — 새 워치리스트 첫 온전한 하루
