@@ -58,6 +58,7 @@ def main():
         kr=MarketRiskConfig(
             max_concurrent_positions=int(os.getenv("RISK_KR_MAX_CONCURRENT", "5")),
             daily_loss_limit=_D(os.getenv("RISK_KR_DAILY_LOSS_LIMIT", "-500000")),
+            allocation_cap_pct=_D(os.getenv("RISK_KR_ALLOCATION_CAP_PCT", "0.20")),
         ),
     )
 
