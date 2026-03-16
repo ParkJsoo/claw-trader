@@ -205,3 +205,20 @@ claw:pause:global                       # "true" 유지 필수
 - **Day 3 세팅**: 변경 없음 (daily_cap=40, AI cap=1500, cooldown=600s, max_concurrent=2)
 - **Day 3 목표**: executable 3~10건 + Risk reject 정상 분포(max_concurrent/cooldown/daily_cap) 확인 → Phase 10 exit
 - **GPT 권고**: AI call 효율(1500calls/52candidates=28.8 calls/candidate) 개선은 Phase 11에서
+
+### Day 3 (2026-03-16)
+- candidate=24, strategy_pass=21, pipeline_error=0 ✅
+- executable=0건 ❌ — 복합 원인 (아래 이슈 참조)
+- **이슈 1**: Day 2 auto-pause 미해제 → 08:40~10:22 consensus 완전 차단 (2시간 손실)
+  - 조치: `DEL claw:pause:global` 수동 해제
+- **이슈 2**: KIS `ord_psbl_cash` 필드 없음 → `available_cash=0` → ACCOUNT_SNAPSHOT_ERROR
+  - 수정: `ord_psbl_cash or dnca_tot_amt` fallback (commit `8ec78d7`)
+- **이슈 3**: `allocation_cap_pct=20%` → cap=20,903원 → 거의 모든 종목 ALLOCATION_CAP_EXCEEDED
+  - 수정: `RISK_KR_ALLOCATION_CAP_PCT=1.00` env var 추가 (commit `3da23b2`)
+- **이슈 4**: 워치리스트 고가주(SK하이닉스 8만↑, NAVER 18만↑ 등) → 잔고 104,516원으로 주문 불가
+  - 수정: 주가 10만원 이하 종목으로 교체 `005930,105560,055550,086790,034020,010950,035720,032640`
+- **이슈 5**: 워치리스트 교체 후 `market_data_runner` 미재시작 → 새 종목 Redis 데이터 없음 → 005930만 평가
+  - 조치: market_data_runner 재시작 (장 마감 후 → 내일부터 새 종목 데이터 수집)
+- **운영 규칙 추가**: 워치리스트 변경 시 **market_data_runner 포함 전체 프로세스** 재시작 필수
+- **Day 4 세팅**: 워치리스트 변경 외 동일 (daily_cap=40, AI cap=1500, cooldown=600s, max_concurrent=2, allocation_cap=100%)
+- **Day 4 목표**: 새 워치리스트 기반 신호 생성 + executable 3~10건 확인 → Phase 10 exit
