@@ -119,7 +119,7 @@ class KisClient(ExchangeClient):
 
         equity = Decimal(output2.get("tot_evlu_amt", "0"))
         cash = Decimal(output2.get("dnca_tot_amt", "0"))
-        available = Decimal(output2.get("ord_psbl_cash", "0"))
+        available = Decimal(output2.get("ord_psbl_cash") or output2.get("dnca_tot_amt", "0"))
 
         return AccountSnapshot(
             equity=equity,
