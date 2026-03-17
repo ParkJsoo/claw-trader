@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 from redis import Redis
 
 from domain.models import Signal
 from exchange.base import ExchangeClient
+
+_KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass
@@ -170,6 +174,16 @@ class RiskEngine:
             pipe.set(detail_key, blob, nx=True, ex=86400)
             pipe.execute()
 
+    def _record_reject_counter(self, market: str, reason: str) -> None:
+        """Risk reject 일별 통계 (Phase 11: execution funnel 추적)."""
+        today = datetime.now(_KST).strftime("%Y%m%d")
+        key = f"risk:reject_count:{market}:{today}"
+        try:
+            self.redis.hincrby(key, reason, 1)
+            self.redis.expire(key, 7 * 86400)
+        except Exception:
+            pass
+
     def check(self, signal: Signal) -> RiskDecision:
         cfg = self.cfg.for_market(signal.market)
         rules = [
@@ -182,5 +196,6 @@ class RiskEngine:
         for rule in rules:
             decision = rule()
             if decision is not None:
+                self._record_reject_counter(signal.market, decision.reason)
                 return decision
         return RiskDecision(allow=True, reason="RISK_OK", meta={})  # [수정4] 빈 문자열 → RISK_OK

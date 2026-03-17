@@ -8,8 +8,23 @@ import sys
 import redis
 
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from domain.models import Signal
+_KST = ZoneInfo("Asia/Seoul")
+
+
+def _record_funnel(r, market: str, event: str) -> None:
+    """Execution funnel 일별 집계 (Phase 11: candidate→strategy→risk→executed)."""
+    today = datetime.now(_KST).strftime("%Y%m%d")
+    key = f"execution_funnel:{market}:{today}"
+    try:
+        r.hincrby(key, event, 1)
+        r.expire(key, 7 * 86400)
+    except Exception:
+        pass
+
+from domain.models import Signal, OrderStatus
 from executor.core import Executor
 from executor.risk import RiskConfig, RiskEngine
 from strategy.engine import StrategyConfig, StrategyEngine
@@ -129,6 +144,7 @@ def main():
                     })
                     r.hset(rk, mapping=mapping)
                     r.expire(rk, 86400)
+                    _record_funnel(r, signal.market, f"strategy_reject:{s_decision.reason}")
                     print("strategy_reject:", signal.signal_id, s_decision.reason)
                     continue
 
@@ -147,6 +163,10 @@ def main():
                 else:
                     print("unknown market:", signal.market)
                     continue
+                if st == OrderStatus.ERROR:
+                    _record_funnel(r, signal.market, "risk_reject")
+                else:
+                    _record_funnel(r, signal.market, "executed")
                 print("executed:", signal.signal_id, signal.market, st.value)
             except Exception as e:
                 print("execution error:", signal.signal_id, e)
