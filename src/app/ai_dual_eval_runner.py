@@ -184,7 +184,18 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
         r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
         return
 
-    # 2. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
+    # 2. Phase 11 prefilter: AI 호출 전 기본 조건 확인 (call 절감)
+    ret_1m = features.get("ret_1m")
+    try:
+        if ret_1m is not None and float(ret_1m) < -0.005:
+            # 1분 수익률 -0.5% 이하면 하락 중 → AI 호출 건너뜀
+            r.hincrby(f"ai:dual_stats:consensus:{market}:{today}", "skip_prefilter_ret1m", 1)
+            r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
+            return
+    except (TypeError, ValueError):
+        pass
+
+    # 2-b. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
     call_key = f"ai:dual_call_count:{market}:{today}"
     call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _DUAL_DAILY_CALL_CAP, 3 * 86400)
     if call_count == -1:

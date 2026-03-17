@@ -276,7 +276,10 @@ class TestRunOnceDedup:
 
         run_once("KR", "005930", r)
 
-        # ts_ms 갱신 (새 eval 결과)
+        # symbol cooldown 해제 (Phase 11: cooldown 내에서는 재emit 차단)
+        r.delete("consensus:symbol_cooldown:KR:005930")
+
+        # ts_ms 갱신 (새 eval 결과) + cooldown 해제 → push 가능
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
             "ts_ms": "1700000120000",

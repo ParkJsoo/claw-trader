@@ -47,9 +47,12 @@ _LOCK_TTL = 120  # seconds
 
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
-# Phase 10 prefilter 기준값
-_MIN_RET_5M = 0.0
+# Phase 10 prefilter 기준값 (Phase 11: ret_5m threshold 강화 0.0 → 0.001)
+_MIN_RET_5M = float(os.getenv("CONSENSUS_MIN_RET_5M", "0.001"))
 _MIN_RANGE_5M = 0.004
+
+# Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
+_SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 
 # stop loss 비율 (-2%)
 _STOP_PCT = Decimal("0.02")
@@ -208,6 +211,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if c_dir != "LONG":
         _log("runner.reject.direction_not_long", symbol=symbol, direction=c_dir)
         _record_reject(r, market, "reject_direction_not_long")
+        return None
+
+    # 4-b. Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
+    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
+    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
+        _log("runner.reject.symbol_cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
+        _record_reject(r, market, "reject_symbol_cooldown")
         return None
 
     # 5. prefilter: ret_5m, range_5m
