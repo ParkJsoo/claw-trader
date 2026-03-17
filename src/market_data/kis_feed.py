@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import os
+import redis as _redis
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import requests
+
+_REDIS_TOKEN_KEY = "kis:access_token"
+_REDIS_TOKEN_TTL = 23 * 3600  # 23시간
 
 
 class KisFeed:
@@ -23,10 +27,25 @@ class KisFeed:
 
         self.session = requests.Session()
         self.access_token: Optional[str] = None
+        self._redis: Optional[_redis.Redis] = None
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+            self._redis = _redis.from_url(redis_url, decode_responses=True)
+        except Exception:
+            pass
 
     def _ensure_token(self) -> None:
         if self.access_token:
             return
+        # Redis 캐시 조회
+        if self._redis:
+            try:
+                cached = self._redis.get(_REDIS_TOKEN_KEY)
+                if cached:
+                    self.access_token = cached
+                    return
+            except Exception:
+                pass
         resp = self.session.post(
             f"{self.base_url}/oauth2/tokenP",
             json={
@@ -38,6 +57,12 @@ class KisFeed:
         )
         resp.raise_for_status()
         self.access_token = resp.json()["access_token"]
+        # Redis에 캐시 저장
+        if self._redis:
+            try:
+                self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+            except Exception:
+                pass
 
     def _fetch_price(self, symbol: str) -> Optional[Decimal]:
         """단일 가격 요청. 호출 전 토큰이 유효해야 함."""
@@ -87,6 +112,11 @@ class KisFeed:
 
             # 401/403으로 None 반환됐을 가능성 → 토큰 재발급 후 재시도
             self.access_token = None
+            if self._redis:
+                try:
+                    self._redis.delete(_REDIS_TOKEN_KEY)
+                except Exception:
+                    pass
             self._ensure_token()
             return self._fetch_price(symbol)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import redis
 import requests
 from decimal import Decimal
 
@@ -13,6 +14,9 @@ from domain.models import (
     OrderType,
     OrderSide,
 )
+
+_REDIS_TOKEN_KEY = "kis:access_token"
+_REDIS_TOKEN_TTL = 23 * 3600  # 23시간 (KIS 토큰 유효기간 24시간)
 
 
 class KisClient(ExchangeClient):
@@ -31,10 +35,25 @@ class KisClient(ExchangeClient):
 
         self.session = requests.Session()
         self.access_token: str | None = None
+        self._redis: redis.Redis | None = None
+        try:
+            redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+            self._redis = redis.from_url(redis_url, decode_responses=True)
+        except Exception:
+            pass
 
     def _ensure_token(self):
         if self.access_token:
             return
+        # Redis 캐시 조회
+        if self._redis:
+            try:
+                cached = self._redis.get(_REDIS_TOKEN_KEY)
+                if cached:
+                    self.access_token = cached
+                    return
+            except Exception:
+                pass
         self._refresh_token()
 
     def _refresh_token(self):
@@ -53,6 +72,13 @@ class KisClient(ExchangeClient):
 
         data = resp.json()
         self.access_token = data["access_token"]
+
+        # Redis에 캐시 저장
+        if self._redis:
+            try:
+                self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+            except Exception:
+                pass
 
     def _auth_headers(self, tr_id: str):
         self._ensure_token()
@@ -73,6 +99,11 @@ class KisClient(ExchangeClient):
             raise RuntimeError(f"KIS API {method.upper()} request failed: {type(e).__name__}") from None
         if resp.status_code == 401:
             self.access_token = None
+            if self._redis:
+                try:
+                    self._redis.delete(_REDIS_TOKEN_KEY)
+                except Exception:
+                    pass
             self._refresh_token()
             headers["authorization"] = f"Bearer {self.access_token}"
             try:
@@ -188,11 +219,17 @@ class KisClient(ExchangeClient):
             "QTY_ALL_ORD_YN": "Y",
         }
 
-        resp = self._request_with_retry(
-            "post", url,
-            headers=self._auth_headers("TTTC0803U"),
-            json=payload,
-        )
+        try:
+            resp = self._request_with_retry(
+                "post", url,
+                headers=self._auth_headers("TTTC0803U"),
+                json=payload,
+            )
+        except Exception as e:
+            # 404: 주문 없음 (이미 체결/취소) → True 반환
+            if "404" in str(e):
+                return True
+            raise
 
         data = resp.json()
 
