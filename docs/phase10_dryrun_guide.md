@@ -224,8 +224,48 @@ claw:pause:global                       # "true" 유지 필수
 - **Day 4 세팅**: 워치리스트 변경 외 동일 (daily_cap=40, AI cap=1500, cooldown=600s, max_concurrent=2, allocation_cap=100%)
 - **Day 4 목표**: 새 워치리스트 기반 신호 생성 + executable 3~10건 확인 → Phase 10 exit
 
-### Day 4 (2026-03-17)
+### Day 4 (2026-03-17) — Phase 10 최종일
 - 08:49 전체 9개 프로세스 기동 완료 ✅
 - pause=nil ✅, ai_pause=nil ✅, 큐 비어있음 ✅, allocation_cap=104,516원(100%) ✅
 - 구형 고가주 잔류 신호(000660/207940 등) → ALLOCATION_CAP_EXCEEDED로 자동 소진 (영향 없음)
 - 장 시작 전 모든 점검 통과 — 새 워치리스트 첫 온전한 하루
+- candidate=54, strategy_pass=34, pipeline_error=0 ✅
+- **executable=1건 ✅** — KIS 실매수 체결 확인 (신한지주 91,200원, 구형 잔류 신호)
+- 체결 후 잔고 ~11,787원 → 매도 후 ~100,000원 복구
+- **이슈 1**: KIS 403 tokenP 한도 초과 → MD_ERROR_SPIKE(delta=147) → Redis 토큰 캐싱으로 영구 수정 (commit `8f80255`)
+- **이슈 2**: AI_CALL_CAP_EXCEEDED 13:13 auto-pause (call_count=-1, cap=1500) → AI cap 소진 시 pause 유지 (운영 규칙)
+- **워치리스트 교체**: 3만원 이하 8종목 `.env` 반영 (`010140,015760,003490,034220,011200,004020,000080,009830`)
+
+---
+
+## 8. Phase 10 EXIT 선언 (2026-03-17)
+
+**Phase 10 = EXIT 완료 ✅**
+
+### GPT(Phase 9.5 진입 및 우선순위 스레드) 판단 근거
+- end-to-end pipeline verified ✅
+- KIS execution confirmed (Day4 실매수 체결) ✅
+- pipeline_error = 0 ✅
+- major bugs fixed ✅
+
+### 4일 운영 총평
+| Day | candidate | strategy_pass | executable | 주요 이슈 |
+|-----|-----------|---------------|------------|----------|
+| 1   | 54        | 20            | 0          | daily_cap 20→40 조정 |
+| 2   | 52        | 40            | 0          | available_cash 파싱 오류, API 크레딧 |
+| 3   | 24        | 21            | 0          | 5개 이슈 동시 발생 (전부 수정) |
+| 4   | 54        | 34            | 1 ✅       | KIS 실매수 체결 확인 |
+
+### Phase 10에서 수정/완료된 항목
+- KIS available_cash 파싱 오류 수정 (`ord_psbl_cash or dnca_tot_amt` fallback)
+- `allocation_cap_pct` 100% env var 지원
+- 워치리스트 → 3만원 이하 종목으로 교체
+- KIS 토큰 Redis 캐싱 (재시작 시 403 방지)
+- `cancel_order` 404 graceful 처리
+- `_set_auto_pause` TG 스팸 수정 (idempotent)
+- AI call 효율 개선은 Phase 11로 이관
+
+### Phase 11 핵심 과제 (GPT 권고)
+- **핵심 질문**: candidate 50건에서 execution이 거의 안 나오는 이유 분석
+- symbol cooldown / evaluation throttle / duplicate eval 방지 → AI call 40~60% 감소 예상
+- 잔고 충전 후 정상 실거래 환경 구성
