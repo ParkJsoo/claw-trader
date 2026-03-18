@@ -1,4 +1,4 @@
-# 🧠 Claw‑Trader Session Handoff (Updated 2026-03-17)
+# 🧠 Claw‑Trader Session Handoff (Updated 2026-03-18)
 
 ---
 
@@ -16,27 +16,55 @@
 
 ---
 
-## 📊 Current Phase: **11 — Execution Rate 개선** (2026-03-17 진입)
+## 📊 Current Phase: **12 — 자동 매도** (2026-03-18 구현 완료)
 
-### Phase 10 → 11 전환 근거
-- Phase 10 Day 4 (2026-03-17): executable=1건 ✅ — KIS 실매수 체결 확인 → end-to-end verified
-- **핵심 문제**: execution_rate ≈ 2% (candidate→실행 전환율 목표 10~20%)
-- GPT 판단: "Signal은 많이 나오는데 실행이 안 된다 — 효율 최적화 단계"
-
-### Phase 11 목표
-| 지표 | Phase 10 결과 | Phase 11 목표 |
-|------|--------------|--------------|
-| execution_rate | ~2% | ≥ 10% |
-| AI call/day | ~1500 | ≤ 900 |
-| emit_rate | 22~27% | 10~25% |
+### Phase 11 결과 (Day 1: 2026-03-18)
+| 지표 | 결과 | 목표 |
+|------|------|------|
+| execution_rate | **62.5%** ✅ | ≥ 10% |
+| executed | 13건 | — |
+| COOLDOWN reject | 6 | — |
+| MAX_CONCURRENT reject | 4 | — |
 | pipeline_error | 0 ✅ | 0 |
-| candidate/day | 24~54 | 20~40 |
 
-### Phase 11 exit 조건 (2거래일 연속)
-- [ ] execution_rate ≥ 10%
-- [ ] AI call/day ≤ 900
-- [ ] pipeline_error = 0
-- [ ] drop reason 분포 정상 (COOLDOWN/MAX_CONCURRENT 위주)
+### Phase 12 목표 & 현황
+- **목표**: 매수 후 자동 매도로 단타 loop 완성 (매수만 하던 문제 해결)
+- **구현 완료**: position_exit_runner — 30분 time_limit 자동 매도 검증 완료 ✅
+  - 015760(한국전력), 034220(LG디스플레이) 자동 매도 성공
+
+---
+
+## ✅ Phase 12 구현 완료 (2026-03-18) — 자동 매도
+
+### position_exit_runner (신규)
+
+**`src/app/position_exit_runner.py`**
+- KIS `get_kr_holdings()` → Redis `position:KR:{symbol}` 동기화 (30초마다)
+- exit 조건 감시: stop_loss -2%, take_profit +2%, time_limit 1800s
+- 조건 충족 시 SELL limit 주문 (mark_price 기준) — global pause 무시
+- 중복 방지: `claw:exit_lock:KR:{symbol}` SET NX TTL 60s
+
+**`src/exchange/kis/client.py`**
+- `get_kr_holdings()` 추가: TTTC8434R output1 → `[{symbol, qty, avg_price}, ...]`
+- `_refresh_token()` RuntimeError 래핑 (app_secret 노출 방지)
+
+**`config/phase10_kr_micro.env`**
+```
+EXIT_POLL_SEC=30
+EXIT_STOP_LOSS_PCT=0.02
+EXIT_TAKE_PROFIT_PCT=0.02
+EXIT_TIME_LIMIT_SEC=1800
+WATCHER_TTL_CANCEL_SEC=60
+```
+
+Redis 키 추가:
+```
+position_index:KR                    # 보유 종목 Set (TTL 7d)
+position:KR:{symbol}                 # qty / avg_price / opened_ts / updated_ts
+claw:exit_lock:KR:{symbol}           # TTL 60s — 중복 매도 방지
+exit_runner:lock                     # 단일 프로세스 보장
+claw:order_meta:KR:{order_id}        # exit 매도 주문 메타
+```
 
 ---
 
@@ -213,35 +241,40 @@ mark_hist:{market}:{symbol}               # 최근 300개 (TTL 2d)
 
 ---
 
-## 🚀 프로세스 기동 순서 (Phase 11, 프로젝트 루트에서)
+## 🚀 프로세스 기동 순서 (Phase 12, 프로젝트 루트에서)
 
 ```bash
 # ⚠️ 반드시 set -a 사용
 set -a && source .env && source config/phase10_kr_micro.env && set +a
 
 # 프로세스 종료 (재시작 시)
-pkill -f "python -m app" 2>/dev/null; pkill -f "python -m scripts.order_watcher" 2>/dev/null; sleep 2
+pkill -f "python.*-m app" 2>/dev/null; pkill -f "python.*-m scripts" 2>/dev/null; sleep 2
 
-# 기동 (9개)
+# 기동 (10개)
 cd /Users/henry_oc/develop/claw-trader
 PYTHONPATH=src venv/bin/python -m app.runner >> logs/runner.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.market_data_runner >> logs/market_data.log 2>&1 &
-PYTHONPATH=src venv/bin/python -m scripts.order_watcher >> logs/order_watcher.log 2>&1 &
+PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60 PYTHONPATH=src venv/bin/python -m scripts.order_watcher >> logs/order_watcher.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.signal_generator_runner >> logs/signal_generator.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.ai_eval_runner >> logs/ai_eval.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner >> logs/ai_dual_eval.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.consensus_signal_runner >> logs/consensus_signal.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.openclaw_bot >> logs/openclaw_bot.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.news_runner >> logs/news_runner.log 2>&1 &
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runner >> logs/position_exit.log 2>&1 &
 ```
+> ⚠️ order_watcher: `PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60` 필수 (없으면 ttl=15s로 기동됨)
 
 **기동 직후 확인:**
 ```bash
-# runner config 출력 확인 (cooldown=300s 확인)
+# runner config 확인 (cooldown=300s, daily_cap=40)
 tail -5 logs/runner.log
 
-# consensus runner 확인 (poll_sec=60, cooldown=300 확인)
-tail -5 logs/consensus_signal.log
+# order_watcher TTL 확인 (ttl_cancel=60s 확인)
+tail -3 logs/order_watcher.log
+
+# position_exit_runner 확인 (started 확인)
+tail -3 logs/position_exit.log
 
 # pause 상태 확인
 REDIS_PASS=$(python3 -c "import urllib.parse,os; u=urllib.parse.urlparse(os.environ['REDIS_URL']); print(u.password or '')")
@@ -307,6 +340,8 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 | 03-13 | `8ec78d7` | KIS available_cash fallback (`ord_psbl_cash or dnca_tot_amt`) |
 | 03-16 | `3da23b2` | allocation_cap_pct env var 지원 |
 | 03-17 | `8f80255` | KIS 토큰 Redis 캐싱 (403 tokenP 해결) |
+| 03-18 | `17e0961` | position_exit_runner 2차 리뷰 수정 (avg_price/mark_price 가드 등) |
+| 03-18 | `c6453d6` | order_watcher load_dotenv override 제거 (ttl=60s 미적용 버그 수정) |
 
 ---
 
@@ -318,34 +353,40 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 | 9 | 2026-03-05~10 | AI-First 안정화 | emit_rate 27.7% ✅ |
 | 9.5 | 2026-03-10~11 | Claude+Qwen 듀얼런 | match_rate 84.7% ✅ |
 | 10 | 2026-03-12~17 | KR micro dry-run 4일 | KIS 실매수 1건 ✅ |
-| **11** | **2026-03-17~** | **Execution rate 개선** | 진행 중 |
+| 11 | 2026-03-17~18 | Execution rate 개선 | executed=13, rate=62.5% ✅ |
+| **12** | **2026-03-18~** | **자동 매도** | time_limit 매도 검증 ✅ |
 
 ---
 
 ## 🚦 다음 세션 가이드
 
-### 오늘(2026-03-17) 상태
-- Phase 11 구현 완료, 프로세스 재시작 완료 (pause 해제됨)
-- 장 마감 후: dual eval 모든 종목 HOLD — 신호 없음 (장중 확인 불가)
-- **내일(2026-03-18) 장중**이 Phase 11 첫 번째 유효 관찰 기회
+### 현재(2026-03-18) 상태
+- Phase 12 구현 완료, 프로세스 10개 기동 중
+- 자동 매도 검증 완료: 015760, 034220 time_limit 30분 → 자동 매도 ✅
+- 현재 포지션 없음 (매도 완료) — 신규 매수 가능 상태
 
 ### 다음 세션 시작 시 체크리스트
-1. `tail -20 logs/runner.log` — `kr_cooldown=300s` 확인
-2. `execution_funnel:KR:$(date +%Y%m%d)` — drop reason 분포 확인
-3. `risk:reject_count:KR:$(date +%Y%m%d)` — risk reject 원인 확인
-4. `consensus:stats:KR:$(date +%Y%m%d)` — candidate 수 확인
-5. `ai:dual_call_count:KR:$(date +%Y%m%d)` — AI call 수 확인 (목표 ≤900)
+1. `tail -5 logs/runner.log` — `kr_cooldown=300s, daily_cap=40` 확인
+2. `tail -3 logs/order_watcher.log` — `ttl_cancel=60s` 확인
+3. `tail -5 logs/position_exit.log` — `started` 또는 hold/exit 로그 확인
+4. `claw:pause:global` — pause 없음 확인
+5. `execution_funnel:KR:$(date +%Y%m%d)` — 오늘 실행 현황
+6. `position_index:KR` — 현재 보유 포지션 확인
 
-### Phase 11 Day 1 목표 (2026-03-18)
-- execution_rate ≥ 5% (개선 추세 확인)
-- drop reason 중 `COOLDOWN` 비율 감소 확인 (300초로 단축 효과)
-- AI call ≤ 900
-- pipeline_error = 0
+### Phase 12 관찰 지표
+- stop_loss / take_profit / time_limit 각각 발동 비율 확인
+- exit 후 재진입 여부 (MAX_CONCURRENT 슬롯 회복)
+- 수익/손실 패턴 (PnL은 수동 확인 필요 — FillEvent 미연동)
+
+### Phase 12 알려진 한계
+- SELL 체결 후 FillEvent가 portfolio engine에 push 안 됨 → PnL 수동 확인 필요
+- order_watcher가 KIS 주문 상태 조회 API 없음 → 체결 감지 불가
 
 ### 무인 운영 팁
 - `caffeinate -i -s &` (전원 연결 필수)
 - REDIS_PASS 추출: `python3 -c "import urllib.parse,os; u=urllib.parse.urlparse(os.environ['REDIS_URL']); print(u.password or '')"`
+- 재기동 시 order_watcher는 반드시 `PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60` 포함
 
 ---
 
-**Claw‑Trader Engine:** Phase 11 진입 (2026-03-17) — execution rate 개선 단계
+**Claw‑Trader Engine:** Phase 12 (2026-03-18) — 자동 매도 완성, 단타 loop 검증 완료
