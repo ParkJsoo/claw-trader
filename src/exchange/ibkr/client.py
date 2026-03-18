@@ -159,6 +159,35 @@ class IbkrClient(ExchangeClient):
         except Exception:
             return False
 
+    def get_us_holdings(self) -> List[dict]:
+        """IBKR portfolio 조회 → [{symbol, qty, avg_price}, ...]
+
+        qty > 0, avg_price > 0 항목만 반환.
+        """
+        if not self._connect():
+            raise RuntimeError("IBKR not connected — cannot fetch holdings")
+
+        try:
+            positions = self.ib.portfolio()
+        except Exception as e:
+            raise RuntimeError(f"IBKR portfolio() failed: {e}") from e
+
+        holdings: List[dict] = []
+        for item in positions:
+            try:
+                symbol = item.contract.symbol
+                qty = Decimal(str(item.position))
+                avg_price = Decimal(str(item.averageCost))
+                if qty > 0 and avg_price > 0:
+                    holdings.append({
+                        "symbol": symbol,
+                        "qty": qty,
+                        "avg_price": avg_price,
+                    })
+            except Exception:
+                continue
+        return holdings
+
     def get_order_fills(
         self, order_id: str
     ) -> List[dict]:

@@ -71,7 +71,7 @@ def test_sync_positions_buy_fill_on_new_symbol():
     holdings = [{"symbol": "005930", "qty": Decimal("10"), "avg_price": Decimal("70000")}]
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     assert r.llen("claw:fill:queue") == 1
     raw = r.rpop("claw:fill:queue")
@@ -93,7 +93,7 @@ def test_sync_positions_no_buy_fill_for_existing_symbol():
     holdings = [{"symbol": "005930", "qty": Decimal("10"), "avg_price": Decimal("70000")}]
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     # No new BUY fill — symbol was already in Redis
     assert r.llen("claw:fill:queue") == 0
@@ -119,7 +119,7 @@ def test_sync_positions_sell_fill_on_removed_symbol():
     holdings = []  # empty — position was sold
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     assert r.llen("claw:fill:queue") == 1
     raw = r.rpop("claw:fill:queue")
@@ -141,7 +141,7 @@ def test_sync_positions_sell_fill_no_order_meta_uses_avg_price():
     holdings = []
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     assert r.llen("claw:fill:queue") == 1
     raw = r.rpop("claw:fill:queue")
@@ -162,7 +162,7 @@ def test_sync_positions_sell_fill_zero_qty_no_push():
     holdings = []
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     assert r.llen("claw:fill:queue") == 0
 
@@ -178,7 +178,7 @@ def test_sync_positions_position_deleted_after_sell_fill():
     holdings = []
     kis = _make_kis_mock(holdings)
 
-    _sync_positions(r, kis)
+    _sync_positions(r, kis, "KR")
 
     assert not r.exists("position:KR:005930")
     assert not r.sismember("position_index:KR", "005930")

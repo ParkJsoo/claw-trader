@@ -85,6 +85,13 @@ def normalize_kr_price_tick(price: Decimal) -> Decimal:
     return Decimal((p // tick) * tick)
 
 
+def _normalize_price(market: str, price: Decimal) -> Decimal:
+    """market에 따라 가격 정규화: KR=호가단위, US=소수점 2자리."""
+    if market == "KR":
+        return normalize_kr_price_tick(price)
+    return price.quantize(Decimal("0.01"))
+
+
 # ---------------------------------------------------------------------------
 # 로깅 헬퍼
 # ---------------------------------------------------------------------------
@@ -256,9 +263,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    # 7. stop price 계산 (KR 호가 단위 정규화)
+    # 7. stop price 계산 (market-aware 정규화)
     stop_raw = current_price * (1 - _STOP_PCT)
-    stop_price = normalize_kr_price_tick(stop_raw)
+    stop_price = _normalize_price(market, stop_raw)
     if stop_price <= 0:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=f"stop_price={stop_price} <= 0")
         _record_reject(r, market, "reject_invalid_payload")
@@ -355,15 +362,18 @@ def main():
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
-    if not watchlist_kr:
-        print("consensus: GEN_WATCHLIST_KR empty — exiting", flush=True)
+    watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+
+    if not watchlist_kr and not watchlist_us:
+        print("consensus: both KR/US watchlists empty — exiting", flush=True)
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
     print(
         f"consensus: started poll_sec={_POLL_SEC} "
         f"prefilter=ret_5m>{_MIN_RET_5M} range_5m>{_MIN_RANGE_5M} "
-        f"stop_pct={_STOP_PCT} watchlist_kr={watchlist_kr}",
+        f"stop_pct={_STOP_PCT} watchlist_kr={watchlist_kr} "
+        f"watchlist_us={watchlist_us}",
         flush=True,
     )
 
@@ -371,22 +381,29 @@ def main():
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
 
-            # 장외 시간 또는 pause 상태면 스킵
-            if not is_market_hours("KR"):
-                time.sleep(_POLL_SEC)
-                continue
             if is_paused(r):
                 time.sleep(_POLL_SEC)
                 continue
 
-            # 동적 워치리스트 갱신
-            watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
+            # KR 처리 (장중일 때만)
+            if is_market_hours("KR"):
+                watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
+                for symbol in watchlist_kr:
+                    try:
+                        run_once("KR", symbol, r)
+                    except Exception as e:
+                        _log("runner.error.unexpected", market="KR",
+                             symbol=symbol, error=str(e))
 
-            for symbol in watchlist_kr:
-                try:
-                    run_once("KR", symbol, r)
-                except Exception as e:
-                    _log("runner.error.unexpected", symbol=symbol, error=str(e))
+            # US 처리 (장중일 때만)
+            if is_market_hours("US"):
+                watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+                for symbol in watchlist_us:
+                    try:
+                        run_once("US", symbol, r)
+                    except Exception as e:
+                        _log("runner.error.unexpected", market="US",
+                             symbol=symbol, error=str(e))
 
             time.sleep(_POLL_SEC)
 
