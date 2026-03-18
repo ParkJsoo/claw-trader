@@ -185,10 +185,11 @@ def main():
         flush=True,
     )
 
+    today = _today_kst()
     _health_state = {
         "last_log_ts": 0.0,
-        "md_err_prev": {"KR": 0, "US": 0},
-        "ai_err_prev": {"KR": 0, "US": 0},
+        "md_err_prev": {m: _get_md_error_total(r, m, today) for m in ("KR", "US")},
+        "ai_err_prev": {m: _get_ai_error_total(r, m, today) for m in ("KR", "US")},
     }
 
     try:
