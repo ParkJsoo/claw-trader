@@ -19,6 +19,14 @@ _GEN_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 _GEN_STOP_PCT = Decimal(os.getenv("GEN_STOP_PCT", "0.03"))
 _GEN_DAILY_CALL_CAP = int(os.getenv("GEN_DAILY_CALL_CAP", "1000"))
 
+def _secs_until_kst_midnight() -> int:
+    """오늘 자정 KST까지 남은 초 (최소 60초)."""
+    from datetime import datetime, timedelta
+    now = datetime.now(_KST)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((midnight - now).total_seconds()), 60)
+
+
 _LUA_CAP_INCR = """
 local v = redis.call('INCR', KEYS[1])
 if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
@@ -67,7 +75,7 @@ class AISignalGenerator:
     def _set_auto_pause(self, reason: str, market: str, detail: str) -> None:
         """전역 일시정지 설정 (NX: 첫 발동만 기록) + TG 알림."""
         from guards.notifier import send_telegram
-        set_ok = self.redis.set("claw:pause:global", "true", nx=True)
+        set_ok = self.redis.set("claw:pause:global", "true", nx=True, ex=_secs_until_kst_midnight())
         if set_ok:
             ts_ms = str(int(time.time() * 1000))
             self.redis.set("claw:pause:reason", reason)

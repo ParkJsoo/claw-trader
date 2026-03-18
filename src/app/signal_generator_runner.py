@@ -32,6 +32,14 @@ _AI_ERROR_SPIKE = int(os.getenv("GEN_AI_ERROR_SPIKE", "10"))           # 인터�
 _KST = ZoneInfo("Asia/Seoul")
 
 
+def _secs_until_kst_midnight() -> int:
+    """오늘 자정 KST까지 남은 초 (최소 60초)."""
+    from datetime import datetime, timedelta
+    now = datetime.now(_KST)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((midnight - now).total_seconds()), 60)
+
+
 _parse_watchlist = parse_watchlist
 _today_kst = today_kst
 
@@ -46,7 +54,7 @@ def _is_paused(r) -> bool:
 def _do_auto_pause(r, reason: str, market: str, detail: str) -> None:
     """전역 일시정지 설정 + reason/meta 기록 + TG 알림."""
     ts_ms = str(int(time.time() * 1000))
-    r.set("claw:pause:global", "true")
+    r.set("claw:pause:global", "true", ex=_secs_until_kst_midnight())
     r.set("claw:pause:reason", reason)
     r.hset("claw:pause:meta", mapping={
         "reason": reason, "market": market, "detail": detail,
