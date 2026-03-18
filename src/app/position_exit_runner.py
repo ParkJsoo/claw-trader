@@ -12,6 +12,7 @@ Exit 조건 (하나라도 충족 시):
   - Exit 조건 감시 (mark:KR:{symbol} 활용 — MarketDataRunner가 갱신)
   - SELL 주문 (limit at mark_price, global pause 무시)
   - 중복 방지: claw:exit_lock:KR:{symbol} SET NX TTL
+  - KR Fill 감지: 보유종목 diff → FillEvent push → claw:fill:queue
 
 책임 외:
   - 매수 신호 생성 (consensus_signal_runner)
@@ -19,13 +20,12 @@ Exit 조건 (하나라도 충족 시):
   - 주문 TTL 취소 (order_watcher)
 
 알려진 한계:
-  - SELL 체결 후 FillEvent가 portfolio engine에 push되지 않음 → PnL 수동 확인 필요
-    (order_watcher KR fill detection 구현 전까지)
   - 재기동 시 신규 발견 포지션의 opened_ts가 현재 시각으로 초기화됨
 """
 from dotenv import load_dotenv
 load_dotenv()
 
+import json
 import os
 import signal as _signal
 import sys
@@ -69,6 +69,46 @@ _ORDER_META_TTL = 86400
 def _log(event: str, **kwargs) -> None:
     parts = [event] + [f"{k}={v}" for k, v in kwargs.items()]
     print(f"exit_runner: {' '.join(parts)}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# FillEvent push helper
+# ---------------------------------------------------------------------------
+
+_FILL_QUEUE_KEY = "claw:fill:queue"
+_FILL_DEDUPE_TTL = 86400  # 24h — exec_id 중복 방지 키 TTL
+
+
+def _push_fill_event(r, symbol: str, side: str, qty: Decimal,
+                     price: Decimal, order_id: str) -> bool:
+    """FillEvent를 claw:fill:queue에 lpush.
+
+    exec_id 기반 setnx로 중복 push를 방지한다.
+    Returns True if pushed, False if duplicate.
+    """
+    exec_id = f"kr_fill_{order_id}"
+    dedupe_key = f"claw:fill_dedupe:{exec_id}"
+    if not r.set(dedupe_key, "1", nx=True, ex=_FILL_DEDUPE_TTL):
+        return False  # 이미 push된 이벤트
+
+    ts_ms = str(int(time.time() * 1000))
+    fill = {
+        "exec_id": exec_id,
+        "order_id": order_id,
+        "symbol": symbol,
+        "market": "KR",
+        "side": side,
+        "qty": str(qty),
+        "price": str(price),
+        "ts": ts_ms,
+        "source": "position_exit_runner",
+        "fee": "0",
+        "retry": 0,
+    }
+    r.lpush(_FILL_QUEUE_KEY, json.dumps(fill))
+    _log("fill_pushed", symbol=symbol, side=side, qty=str(qty),
+         price=str(price), exec_id=exec_id)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +181,11 @@ def _sync_positions(r, kis: KisClient) -> dict:
         else:
             opened_ts = int(time.time())
 
+        # BUY fill detection: 새로 나타난 종목 (Redis에 없었던 것)
+        if symbol not in existing:
+            order_id = f"buy_discovered_{symbol}_{int(time.time())}"
+            _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id)
+
         r.hset(pos_key, mapping={
             "qty": str(qty),
             "avg_price": str(avg_price),
@@ -155,8 +200,57 @@ def _sync_positions(r, kis: KisClient) -> dict:
         synced[symbol] = {"qty": qty, "avg_price": avg_price, "opened_ts": opened_ts}
 
     # Redis에는 있지만 KIS 잔고에 없는 종목 → 정리
+    # SELL fill detection: 사라진 종목에 대해 최근 SELL order_meta 조회 후 FillEvent push
     for sym in existing:
         if sym not in held_symbols:
+            # 삭제 전에 포지션 정보 읽기
+            pos_key = f"position:KR:{sym}"
+            raw_pos = r.hgetall(pos_key)
+            cached_qty = Decimal("0")
+            cached_avg_price = Decimal("0")
+            if raw_pos:
+                def _d(k, raw=raw_pos):
+                    key = k.encode() if isinstance(next(iter(raw)), bytes) else k
+                    v = raw.get(key, b"" if isinstance(next(iter(raw)), bytes) else "")
+                    return v.decode() if isinstance(v, bytes) else v
+                try:
+                    cached_qty = Decimal(_d("qty") or "0")
+                    cached_avg_price = Decimal(_d("avg_price") or "0")
+                except Exception:
+                    pass
+
+            # 최근 SELL order_meta 탐색
+            sell_order_id = None
+            sell_price = cached_avg_price  # fallback: avg_price
+            try:
+                order_meta_keys = r.keys("claw:order_meta:KR:*")
+                for mk in order_meta_keys:
+                    meta = r.hgetall(mk)
+                    if not meta:
+                        continue
+                    def _dm(k, m=meta):
+                        key = k.encode() if isinstance(next(iter(m)), bytes) else k
+                        v = m.get(key, b"" if isinstance(next(iter(m)), bytes) else "")
+                        return v.decode() if isinstance(v, bytes) else v
+                    if _dm("symbol") == sym and _dm("side") == "SELL":
+                        sell_order_id = mk.decode().split(":")[-1] if isinstance(mk, bytes) else mk.split(":")[-1]
+                        lp = _dm("limit_price")
+                        if lp:
+                            try:
+                                sell_price = Decimal(lp)
+                            except Exception:
+                                pass
+                        break
+            except Exception as e:
+                _log("sell_fill_meta_error", symbol=sym, error=str(e))
+
+            if sell_order_id and cached_qty > 0:
+                _push_fill_event(r, sym, "SELL", cached_qty, sell_price, sell_order_id)
+            elif cached_qty > 0:
+                # order_meta 없어도 FillEvent push (order_id 생성)
+                order_id = f"sell_discovered_{sym}_{int(time.time())}"
+                _push_fill_event(r, sym, "SELL", cached_qty, sell_price, order_id)
+
             r.delete(f"position:KR:{sym}")
             r.srem("position_index:KR", sym)
             _log("position_removed", symbol=sym, reason="not_in_kis_holdings")
