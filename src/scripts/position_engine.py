@@ -31,7 +31,7 @@ def main():
     processed = 0
     requeued = 0
     dlqed = 0
-    parse_failed = 0
+    idle_count = 0
     last_status_log = 0.0
 
     print("[position_engine] started, consuming claw:fill:queue")
@@ -40,13 +40,13 @@ def main():
         now = time.time()
 
         if fill is None:
-            parse_failed += 1
+            idle_count += 1
             if now - last_status_log >= STATUS_LOG_INTERVAL_SEC:
                 queue_len = r.llen(FILL_QUEUE_KEY)
                 dlq_len = r.llen(FILL_DLQ_KEY)
                 print(
                     f"[position_engine] status processed={processed} "
-                    f"requeued={requeued} dlqed={dlqed} parse_failed={parse_failed} "
+                    f"requeued={requeued} dlqed={dlqed} idle={idle_count} "
                     f"queue={queue_len} dlq={dlq_len}"
                 )
                 last_status_log = now
@@ -80,7 +80,7 @@ def main():
             dlq_len = r.llen(FILL_DLQ_KEY)
             print(
                 f"[position_engine] status processed={processed} "
-                f"requeued={requeued} dlqed={dlqed} parse_failed={parse_failed} "
+                f"requeued={requeued} dlqed={dlqed} idle={idle_count} "
                 f"queue={queue_len} dlq={dlq_len}"
             )
             last_status_log = now
