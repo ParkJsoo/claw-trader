@@ -217,7 +217,7 @@ consensus:symbol_cooldown:KR:{symbol}  # TTL = 180s (CONSENSUS_SYMBOL_COOLDOWN_S
 
 ### 📰 News Intelligence
 - src/news/ — DART + Google RSS + Yahoo Finance 수집/분류/저장 ✅
-- **판단 통합: Phase 11 이후 예정** (현재 수집만)
+- **Phase 14 AI 판단 통합 완료** — `ai_dual_eval_runner`가 뉴스 조회 후 프롬프트에 자동 주입
 
 ### 📊 Monitoring
 - DataGuard — md:last_update stale 감지 ✅
@@ -389,6 +389,9 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 | 03-17 | `8f80255` | KIS 토큰 Redis 캐싱 (403 tokenP 해결) |
 | 03-18 | `17e0961` | position_exit_runner 2차 리뷰 수정 (avg_price/mark_price 가드 등) |
 | 03-18 | `c6453d6` | order_watcher load_dotenv override 제거 (ttl=60s 미적용 버그 수정) |
+| 03-18 | `2f86919` | position_engine parse_failed → idle 카운터 명칭 수정 |
+| 03-18 | `0813a9d` | auto-pause TTL 없음 → 자정 KST 자동 만료 추가 (generator.py, signal_generator_runner.py) |
+| 03-18 | `26d7e06` | signal_generator 재시작 시 MD_ERROR_SPIKE 오탐 수정 (md_err_prev 누적값으로 초기화) |
 
 ---
 
@@ -400,7 +403,7 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 | 9 | 2026-03-05~10 | AI-First 안정화 | emit_rate 27.7% ✅ |
 | 9.5 | 2026-03-10~11 | Claude+Qwen 듀얼런 | match_rate 84.7% ✅ |
 | 10 | 2026-03-12~17 | KR micro dry-run 4일 | KIS 실매수 1건 ✅ |
-| 11 | 2026-03-17~18 | Execution rate 개선 | executed=13, rate=62.5% ✅ |
+| 11 | 2026-03-17~18 | Execution rate 개선 | executed=16, COOLDOWN=6, MAX_CONCURRENT=4 ✅ |
 | 12 | 2026-03-18 | 자동 매도 | time_limit 30분 매도 검증 ✅ |
 | 13 | 2026-03-18 | KR Fill Detection + PnL | realized PnL 자동 기록 ✅ |
 | **14** | **2026-03-18~** | **뉴스 통합 + 동적 워치리스트** | universe 30→8 자동 선택 ✅ |
@@ -409,18 +412,20 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 
 ## 🚦 다음 세션 가이드
 
-### 현재(2026-03-18) 상태
-- Phase 14 구현 완료, 프로세스 13개 기동 중
-- 뉴스→AI 통합, 동적 워치리스트, FillEvent PnL 파이프라인 모두 완성
-- 현재 포지션 없음 — 신규 매수 가능
+### 현재(2026-03-18 EOD) 상태
+- Phase 14 Day 1 운영 완료, 프로세스 12개 기동 중
+- AI call 1500 소진 → `claw:pause:global` TTL=자정 KST 자동 만료 설정됨
+- 포지션 없음 (011200 time_limit 30분 자동 청산 완료)
+- 내일 아침 9시 별도 조작 없이 자동 재개됨
 
 ### 다음 세션 시작 시 체크리스트
 1. `tail -5 logs/runner.log` — `kr_cooldown=300s, daily_cap=40` 확인
 2. `tail -3 logs/order_watcher.log` — `ttl_cancel=60s` 확인
 3. `tail -3 logs/watchlist_selector.log` — 선택된 종목 확인
-4. `tail -3 logs/position_engine.log` — `started, consuming claw:fill:queue` 확인
-5. `claw:pause:global` — pause 없음 확인
+4. `tail -3 logs/position_engine.log` — `idle=` 로그 확인 (parse_failed 아님)
+5. `claw:pause:global` — TTL 확인 (자정 후 None이어야 정상)
 6. `dynamic:watchlist:KR` — 현재 활성 워치리스트 확인
+7. AI call count 초기화 여부 확인 (`ai:call_count:KR:{today}` 없어야 정상)
 
 ### 관찰 지표 (Phase 14+)
 - `dynamic:watchlist:KR` — 6시간마다 갱신되는 종목 확인
