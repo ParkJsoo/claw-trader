@@ -16,21 +16,61 @@
 
 ---
 
-## 📊 Current Phase: **12 — 자동 매도** (2026-03-18 구현 완료)
+## 📊 Current Phase: **14 — 뉴스 통합 + 동적 워치리스트** (2026-03-18 완료)
 
-### Phase 11 결과 (Day 1: 2026-03-18)
-| 지표 | 결과 | 목표 |
-|------|------|------|
-| execution_rate | **62.5%** ✅ | ≥ 10% |
-| executed | 13건 | — |
-| COOLDOWN reject | 6 | — |
-| MAX_CONCURRENT reject | 4 | — |
-| pipeline_error | 0 ✅ | 0 |
+### Phase 이력 (2026-03-18 하루 완성)
+| Phase | 내용 | 결과 |
+|-------|------|------|
+| 11 | Execution rate 개선 | executed=13, rate=62.5% ✅ |
+| 12 | 자동 매도 (position_exit_runner) | time_limit 30분 검증 ✅ |
+| 13 | KR Fill Detection + PnL | realized PnL 자동 기록 ✅ |
+| **14** | **뉴스 → AI + 동적 워치리스트** | universe 30→8 자동 선택 ✅ |
 
-### Phase 12 목표 & 현황
-- **목표**: 매수 후 자동 매도로 단타 loop 완성 (매수만 하던 문제 해결)
-- **구현 완료**: position_exit_runner — 30분 time_limit 자동 매도 검증 완료 ✅
-  - 015760(한국전력), 034220(LG디스플레이) 자동 매도 성공
+### 현재 자동화 수준
+```
+뉴스 수집 → AI 판단 시 자동 참조 ✅
+워치리스트 → 6시간마다 뉴스+모멘텀 기반 자동 교체 ✅
+매수 신호 → AI(Claude+Qwen) 자동 생성 ✅
+매수 실행 → 자동 ✅
+자동 매도 (손절 -2% / 익절 +2% / 30분) → 자동 ✅
+PnL 기록 → 자동 ✅
+```
+
+사람이 해야 하는 것: 프로세스 기동, 자금 관리, 긴급 pause
+
+---
+
+## ✅ Phase 14 구현 완료 (2026-03-18) — 뉴스 통합 + 동적 워치리스트
+
+### 동적 워치리스트 (`src/app/watchlist_selector_runner.py`)
+- `GEN_UNIVERSE_KR` 30종목 → 뉴스 sentiment/impact 스코어링 + 모멘텀
+- 상위 8종목(`UNIVERSE_SELECT_COUNT`) 선택 → `dynamic:watchlist:KR` Redis SET (TTL 8h)
+- 6시간마다 갱신 (`interval_sec=21600`)
+- ai_dual_eval_runner / consensus_signal_runner / market_data_runner 모두 동적 워치리스트 사용
+
+### 뉴스 → AI 프롬프트 통합
+- `ai_dual_eval_runner._eval_symbol()`: 오늘/어제 뉴스 3건 자동 fetch
+- `base.py build_dual_prompt()`: news_summary 있을 때 "최근 뉴스" 섹션 추가
+
+Redis 키 추가:
+```
+dynamic:watchlist:KR          # 현재 활성 워치리스트 SET (TTL 8h)
+```
+
+---
+
+## ✅ Phase 13 구현 완료 (2026-03-18) — KR Fill Detection + PnL
+
+- `position_exit_runner._sync_positions()`: 잔고 diff → BUY/SELL FillEvent → `claw:fill:queue`
+- `scripts/position_engine`: fill queue 소비 → Portfolio Engine → realized PnL 자동 기록
+- exec_id setnx 중복 방지 (TTL 24h), retry/DLQ 내장
+
+Redis 키 추가:
+```
+claw:fill:queue               # FillEvent 큐 (lpush/brpop)
+claw:fill:dlq                 # 처리 실패 DLQ
+claw:fill_dedupe:{exec_id}    # 중복 push 방지 (TTL 24h)
+```
 
 ---
 
@@ -241,7 +281,7 @@ mark_hist:{market}:{symbol}               # 최근 300개 (TTL 2d)
 
 ---
 
-## 🚀 프로세스 기동 순서 (Phase 12, 프로젝트 루트에서)
+## 🚀 프로세스 기동 순서 (Phase 14, 프로젝트 루트에서)
 
 ```bash
 # ⚠️ 반드시 set -a 사용
@@ -263,9 +303,11 @@ PYTHONPATH=src venv/bin/python -m app.openclaw_bot >> logs/openclaw_bot.log 2>&1
 PYTHONPATH=src venv/bin/python -m app.news_runner >> logs/news_runner.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runner >> logs/position_exit.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_engine >> logs/position_engine.log 2>&1 &
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_runner >> logs/watchlist_selector.log 2>&1 &
 ```
 > ⚠️ order_watcher: `PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60` 필수 (없으면 ttl=15s로 기동됨)
 > ⚠️ position_engine: fill queue 소비 프로세스 — 미기동 시 PnL 기록 안 됨
+> ⚠️ watchlist_selector: 미기동 시 env 고정 워치리스트로 fallback됨 (동작은 하나 동적 선택 안 됨)
 
 **기동 직후 확인:**
 ```bash
@@ -359,39 +401,37 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 | 9.5 | 2026-03-10~11 | Claude+Qwen 듀얼런 | match_rate 84.7% ✅ |
 | 10 | 2026-03-12~17 | KR micro dry-run 4일 | KIS 실매수 1건 ✅ |
 | 11 | 2026-03-17~18 | Execution rate 개선 | executed=13, rate=62.5% ✅ |
-| **12** | **2026-03-18~** | **자동 매도** | time_limit 매도 검증 ✅ |
+| 12 | 2026-03-18 | 자동 매도 | time_limit 30분 매도 검증 ✅ |
+| 13 | 2026-03-18 | KR Fill Detection + PnL | realized PnL 자동 기록 ✅ |
+| **14** | **2026-03-18~** | **뉴스 통합 + 동적 워치리스트** | universe 30→8 자동 선택 ✅ |
 
 ---
 
 ## 🚦 다음 세션 가이드
 
 ### 현재(2026-03-18) 상태
-- Phase 12 구현 완료, 프로세스 10개 기동 중
-- 자동 매도 검증 완료: 015760, 034220 time_limit 30분 → 자동 매도 ✅
-- 현재 포지션 없음 (매도 완료) — 신규 매수 가능 상태
+- Phase 14 구현 완료, 프로세스 13개 기동 중
+- 뉴스→AI 통합, 동적 워치리스트, FillEvent PnL 파이프라인 모두 완성
+- 현재 포지션 없음 — 신규 매수 가능
 
 ### 다음 세션 시작 시 체크리스트
 1. `tail -5 logs/runner.log` — `kr_cooldown=300s, daily_cap=40` 확인
 2. `tail -3 logs/order_watcher.log` — `ttl_cancel=60s` 확인
-3. `tail -5 logs/position_exit.log` — `started` 또는 hold/exit 로그 확인
-4. `claw:pause:global` — pause 없음 확인
-5. `execution_funnel:KR:$(date +%Y%m%d)` — 오늘 실행 현황
-6. `position_index:KR` — 현재 보유 포지션 확인
+3. `tail -3 logs/watchlist_selector.log` — 선택된 종목 확인
+4. `tail -3 logs/position_engine.log` — `started, consuming claw:fill:queue` 확인
+5. `claw:pause:global` — pause 없음 확인
+6. `dynamic:watchlist:KR` — 현재 활성 워치리스트 확인
 
-### Phase 12 관찰 지표
-- stop_loss / take_profit / time_limit 각각 발동 비율 확인
-- exit 후 재진입 여부 (MAX_CONCURRENT 슬롯 회복)
-- 수익/손실 패턴 (PnL은 수동 확인 필요 — FillEvent 미연동)
-
-### Phase 13 완료 (2026-03-18) — KR Fill Detection
-- position_exit_runner: 잔고 diff → BUY/SELL FillEvent push → `claw:fill:queue`
-- scripts/position_engine: fill queue 소비 → Portfolio Engine apply_fill → realized PnL 자동 기록
-- exec_id setnx 중복 방지, retry/DLQ 내장
-- **PnL 파이프라인 완성**: 매수 체결 → FillEvent(BUY) → 매도 체결 → FillEvent(SELL) → realized PnL
+### 관찰 지표 (Phase 14+)
+- `dynamic:watchlist:KR` — 6시간마다 갱신되는 종목 확인
+- `position_engine` 로그 — FillEvent 처리 확인
+- `pnl:KR` Redis 키 — realized PnL 누적 확인
+- stop_loss / take_profit / time_limit 발동 비율
 
 ### 알려진 한계
-- order_watcher가 KIS 주문 상태 조회 API 없음 → 체결 감지는 holdings diff 방식 사용
-- 재기동 시 이미 push된 BUY fill이 중복 push될 수 있음 (dedupe TTL 24h로 방지)
+- KIS 주문 상태 조회 API 없음 → 체결 감지는 holdings diff 방식
+- 재기동 시 BUY fill 중복 push 가능 (dedupe TTL 24h로 방지)
+- US 거래 미활성 (IBKR reqMarketDataType=4 유지 중)
 
 ### 무인 운영 팁
 - `caffeinate -i -s &` (전원 연결 필수)
