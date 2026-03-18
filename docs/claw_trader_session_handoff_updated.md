@@ -262,8 +262,10 @@ PYTHONPATH=src venv/bin/python -m app.consensus_signal_runner >> logs/consensus_
 PYTHONPATH=src venv/bin/python -m app.openclaw_bot >> logs/openclaw_bot.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.news_runner >> logs/news_runner.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runner >> logs/position_exit.log 2>&1 &
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_engine >> logs/position_engine.log 2>&1 &
 ```
 > ⚠️ order_watcher: `PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60` 필수 (없으면 ttl=15s로 기동됨)
+> ⚠️ position_engine: fill queue 소비 프로세스 — 미기동 시 PnL 기록 안 됨
 
 **기동 직후 확인:**
 ```bash
@@ -275,6 +277,9 @@ tail -3 logs/order_watcher.log
 
 # position_exit_runner 확인 (started 확인)
 tail -3 logs/position_exit.log
+
+# position_engine 확인 (started, consuming claw:fill:queue)
+tail -3 logs/position_engine.log
 
 # pause 상태 확인
 REDIS_PASS=$(python3 -c "import urllib.parse,os; u=urllib.parse.urlparse(os.environ['REDIS_URL']); print(u.password or '')")
@@ -378,9 +383,15 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 - exit 후 재진입 여부 (MAX_CONCURRENT 슬롯 회복)
 - 수익/손실 패턴 (PnL은 수동 확인 필요 — FillEvent 미연동)
 
-### Phase 12 알려진 한계
-- SELL 체결 후 FillEvent가 portfolio engine에 push 안 됨 → PnL 수동 확인 필요
-- order_watcher가 KIS 주문 상태 조회 API 없음 → 체결 감지 불가
+### Phase 13 완료 (2026-03-18) — KR Fill Detection
+- position_exit_runner: 잔고 diff → BUY/SELL FillEvent push → `claw:fill:queue`
+- scripts/position_engine: fill queue 소비 → Portfolio Engine apply_fill → realized PnL 자동 기록
+- exec_id setnx 중복 방지, retry/DLQ 내장
+- **PnL 파이프라인 완성**: 매수 체결 → FillEvent(BUY) → 매도 체결 → FillEvent(SELL) → realized PnL
+
+### 알려진 한계
+- order_watcher가 KIS 주문 상태 조회 API 없음 → 체결 감지는 holdings diff 방식 사용
+- 재기동 시 이미 push된 BUY fill이 중복 push될 수 있음 (dedupe TTL 24h로 방지)
 
 ### 무인 운영 팁
 - `caffeinate -i -s &` (전원 연결 필수)
