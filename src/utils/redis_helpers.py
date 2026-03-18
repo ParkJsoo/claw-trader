@@ -36,6 +36,26 @@ def is_market_hours(market: str) -> bool:
     return True
 
 
+def load_watchlist(r, market: str, env_key: str) -> list[str]:
+    """동적 워치리스트 우선 조회 → fallback으로 env var 사용.
+
+    Redis SET `dynamic:watchlist:{market}` 가 있으면 해당 심볼 사용,
+    없으면 기존 env var (GEN_WATCHLIST_KR 등) fallback.
+    """
+    redis_key = f"dynamic:watchlist:{market}"
+    try:
+        members = r.smembers(redis_key)
+        if members:
+            symbols = sorted(
+                m.decode() if isinstance(m, bytes) else m
+                for m in members
+            )
+            return symbols
+    except Exception:
+        pass
+    return parse_watchlist(env_key)
+
+
 def is_paused(r) -> bool:
     """claw:pause:global 상태 확인 (true/1/yes 모두 처리)."""
     try:

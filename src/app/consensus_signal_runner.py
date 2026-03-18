@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import redis
 
 from domain.models import Signal, SignalEntry, SignalStop
-from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours, is_paused
+from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours, is_paused
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -354,7 +354,7 @@ def main():
 
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
-    watchlist_kr = parse_watchlist("GEN_WATCHLIST_KR")
+    watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
     if not watchlist_kr:
         print("consensus: GEN_WATCHLIST_KR empty — exiting", flush=True)
         r.delete(_LOCK_KEY)
@@ -378,6 +378,9 @@ def main():
             if is_paused(r):
                 time.sleep(_POLL_SEC)
                 continue
+
+            # 동적 워치리스트 갱신
+            watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
 
             for symbol in watchlist_kr:
                 try:

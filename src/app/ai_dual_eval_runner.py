@@ -15,7 +15,8 @@ import redis
 from ai.generator import AISignalGenerator
 from ai.providers.claude_provider import ClaudeProvider
 from ai.providers.qwen_provider import QwenProvider
-from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours
+from news.redis_writer import get_symbol_context
+from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -204,6 +205,16 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
         print(f"dual: call_cap_reached {market}:{symbol} cap={_DUAL_DAILY_CALL_CAP}", flush=True)
         return
 
+    # 2-c. 뉴스 컨텍스트 추가 (있으면 AI 프롬프트에 포함)
+    news_ctx = get_symbol_context(r, market, symbol, today, max_items=3)
+    if not news_ctx:
+        # 오늘 뉴스 없으면 어제 뉴스 확인
+        from datetime import datetime, timedelta
+        yesterday = (datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(days=1)).strftime("%Y%m%d")
+        news_ctx = get_symbol_context(r, market, symbol, yesterday, max_items=3)
+    if news_ctx:
+        features["news_summary"] = news_ctx
+
     # 3. 두 provider 평가
     c_result = claude.evaluate(market, symbol, features)
     q_result = qwen.evaluate(market, symbol, features)
@@ -260,8 +271,8 @@ def main():
 
     print("dual: lock acquired", flush=True)
 
-    watchlist_kr = parse_watchlist("GEN_WATCHLIST_KR")
-    watchlist_us = parse_watchlist("GEN_WATCHLIST_US")
+    watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
+    watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
 
     gen = AISignalGenerator(r)      # feature 계산 유틸로만 사용
     claude = ClaudeProvider()
@@ -300,6 +311,10 @@ def main():
                         f"compare=[{cmp_str or 'none'}]",
                         flush=True,
                     )
+
+            # 동적 워치리스트 갱신 (매 폴링마다 Redis 확인)
+            watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
+            watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
 
             # AI 평가 (pause 상태와 무관 — No-Trade 모드)
             for market, watchlist in [("KR", watchlist_kr), ("US", watchlist_us)]:

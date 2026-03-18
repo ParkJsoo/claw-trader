@@ -13,7 +13,7 @@ from market_data.kis_feed import KisFeed
 from market_data.ibkr_feed import IbkrFeed
 from market_data.updater import MarketDataUpdater
 from portfolio.redis_repo import RedisPositionRepository
-from utils.redis_helpers import parse_watchlist
+from utils.redis_helpers import parse_watchlist, load_watchlist
 
 POLL_INTERVAL = int(os.getenv("MD_POLL_INTERVAL", "3"))
 
@@ -48,14 +48,30 @@ def main():
     updater = MarketDataUpdater(r, repo, kis_feed, ibkr_feed)
 
     watchlist = {
-        "KR": _parse_watchlist("GEN_WATCHLIST_KR"),
-        "US": _parse_watchlist("GEN_WATCHLIST_US"),
+        "KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR"),
+        "US": load_watchlist(r, "US", "GEN_WATCHLIST_US"),
     }
     print(f"md_runner: started poll_interval={POLL_INTERVAL}s watchlist={watchlist}", flush=True)
+
+    _wl_refresh_counter = 0
+    _WL_REFRESH_EVERY = 20  # 매 20 폴링(~60초)마다 워치리스트 갱신
 
     try:
         while True:
             r.expire(_MD_LOCK_KEY, _MD_LOCK_TTL)
+
+            # 주기적 동적 워치리스트 갱신
+            _wl_refresh_counter += 1
+            if _wl_refresh_counter >= _WL_REFRESH_EVERY:
+                _wl_refresh_counter = 0
+                new_wl = {
+                    "KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR"),
+                    "US": load_watchlist(r, "US", "GEN_WATCHLIST_US"),
+                }
+                if new_wl != watchlist:
+                    print(f"md_runner: watchlist updated {watchlist} -> {new_wl}", flush=True)
+                    watchlist = new_wl
+
             try:
                 updater.run_once(watchlist)
             except Exception:

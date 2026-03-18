@@ -81,6 +81,9 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
             "Signal on clear 1-5min momentum with range_5m > 0.003."
         )
 
+    # 뉴스 컨텍스트 (있으면 추가)
+    news_summary = features.get("news_summary", "")
+
     lines = [
         "You are a cash-only equity trading signal evaluator.",
         "Decide whether to emit a trading signal based on recent price momentum.",
@@ -91,12 +94,23 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
         f"1-min return: {fmt(features['ret_1m'])}",
         f"5-min return: {fmt(features['ret_5m'])}",
         f"5-min range: {fmt(features['range_5m'])}",
+    ]
+
+    if news_summary:
+        lines.append("")
+        lines.append("최근 뉴스:")
+        for news_line in news_summary.split("\n"):
+            if news_line.strip():
+                lines.append(f"- {news_line.strip()}")
+
+    lines.extend([
         "",
         "Constraints: cash-only, no short selling.",
         "direction must be LONG (enter), EXIT (close position), or HOLD (do nothing).",
         "confidence must be between 0.0 and 1.0.",
+        "Consider news sentiment when making your decision, but prioritize price momentum.",
         "",
         "Respond with JSON only (no markdown, no extra text):",
         '{"emit": true|false, "direction": "LONG|EXIT|HOLD", "confidence": 0.0-1.0, "reason": "<100 chars"}',
-    ]
+    ])
     return "\n".join(lines)
