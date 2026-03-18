@@ -56,7 +56,7 @@ def main():
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     kis = KisClient()
-    ibkr = IbkrClient()
+    ibkr = IbkrClient() if os.getenv("IBKR_ACCOUNT_ID") else None
 
     # Phase 10 config — env var override (재기동 시 반영)
     from strategy.engine import MarketStrategyConfig
@@ -89,7 +89,7 @@ def main():
         f"kr_daily_loss_limit={risk_cfg.kr.daily_loss_limit}",
         flush=True,
     )
-    ex_us = Executor(ibkr, r, "US", risk=RiskEngine(r, risk_cfg, ibkr))
+    ex_us = Executor(ibkr, r, "US", risk=RiskEngine(r, risk_cfg, ibkr)) if ibkr else None
 
     # Phase 8: DataGuard + AI Advisory (shadow mode)
     data_guard = DataGuard(r)
@@ -159,12 +159,17 @@ def main():
                 if signal.market == "KR":
                     st = ex_kr.execute_signal(signal)
                 elif signal.market == "US":
+                    if ex_us is None:
+                        print("runner: US executor not configured (IBKR_ACCOUNT_ID not set)")
+                        continue
                     st = ex_us.execute_signal(signal)
                 else:
                     print("unknown market:", signal.market)
                     continue
                 if st == OrderStatus.ERROR:
                     _record_funnel(r, signal.market, "risk_reject")
+                elif st == OrderStatus.REJECTED:
+                    _record_funnel(r, signal.market, "broker_reject")
                 else:
                     _record_funnel(r, signal.market, "executed")
                 print("executed:", signal.signal_id, signal.market, st.value)

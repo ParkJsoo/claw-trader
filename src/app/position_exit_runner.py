@@ -198,10 +198,21 @@ def _sync_positions(r, client, market: str) -> dict:
             opened_ts = int(time.time())
 
         # BUY fill detection: 새로 나타난 종목 (Redis에 없었던 것)
+        # 이미 Redis에 qty>0 포지션이 있으면 중복 fill 방지
         if symbol not in existing:
-            order_id = f"buy_discovered_{symbol}_{int(time.time())}"
-            _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id,
-                             market=market)
+            existing_qty_raw = r.hget(pos_key, "qty")
+            already_tracked = False
+            if existing_qty_raw is not None:
+                try:
+                    already_tracked = Decimal(
+                        existing_qty_raw.decode() if isinstance(existing_qty_raw, bytes) else existing_qty_raw
+                    ) > 0
+                except Exception:
+                    pass
+            if not already_tracked:
+                order_id = f"buy_discovered_{symbol}_{int(time.time())}"
+                _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id,
+                                 market=market)
 
         r.hset(pos_key, mapping={
             "qty": str(qty),
@@ -240,7 +251,7 @@ def _sync_positions(r, client, market: str) -> dict:
             sell_order_id = None
             sell_price = cached_avg_price  # fallback: avg_price
             try:
-                order_meta_keys = r.keys(f"claw:order_meta:{market}:*")
+                order_meta_keys = list(r.scan_iter(match=f"claw:order_meta:{market}:*", count=100))
                 for mk in order_meta_keys:
                     meta = r.hgetall(mk)
                     if not meta:

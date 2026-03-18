@@ -1,10 +1,17 @@
 """공통 Redis/운영 헬퍼."""
 import os
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
+
+
+def secs_until_kst_midnight() -> int:
+    """오늘 자정 KST까지 남은 초 (최소 60초)."""
+    now = datetime.now(_KST)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    return max(int((midnight - now).total_seconds()), 60)
 
 
 def parse_watchlist(env_key: str) -> list[str]:

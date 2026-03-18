@@ -39,7 +39,7 @@ class OrderWatcher:
         self.r = redis.from_url(cfg.redis_url)
 
         # 브로커 클라이언트(Watcher는 "조회/취소" 용도)
-        self.ibkr = IbkrClient()
+        self.ibkr = IbkrClient() if os.getenv("IBKR_ACCOUNT_ID") else None
         self.kis = KisClient()
 
         # Portfolio Engine (Fill → Position 갱신)
@@ -98,7 +98,7 @@ class OrderWatcher:
         IBKR의 orderId로 상태 조회.
         반환: "SUBMITTED" | "FILLED" | "CANCELED" | "REJECTED" | None(조회불가)
         """
-        if not self.ibkr.ping():
+        if self.ibkr is None or not self.ibkr.ping():
             return None
 
         try:
@@ -140,6 +140,8 @@ class OrderWatcher:
         브로커에 취소 요청.
         """
         if market == "US":
+            if self.ibkr is None:
+                return False
             return self.ibkr.cancel_order(order_id)
         if market == "KR":
             return self.kis.cancel_order(order_id)

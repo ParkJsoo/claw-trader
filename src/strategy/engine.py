@@ -9,6 +9,16 @@ from zoneinfo import ZoneInfo
 _KST = ZoneInfo("Asia/Seoul")
 
 from pydantic import BaseModel, Field
+
+_LUA_CAP_INCR = """
+local v = redis.call('INCR', KEYS[1])
+if v == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
+if v > tonumber(ARGV[1]) then
+    redis.call('DECR', KEYS[1])
+    return -1
+end
+return v
+"""
 from redis import Redis
 
 from domain.models import Signal
@@ -104,20 +114,16 @@ class StrategyEngine:
     def _rule_daily_cap(self, signal: Signal, cfg: MarketStrategyConfig) -> Optional[StrategyDecision]:
         """
         시장별 일일 최대 신호 수 제한.
-        INCR → TTL 세팅(첫 번째에만) → cap 초과 여부 판단.
+        Lua 원자적 INCR+cap check (multi-process safe, DECR 롤백 내장).
         """
         today = datetime.now(_KST).strftime("%Y%m%d")
         key = f"strategy:daily_count:{signal.market}:{today}"
-        cnt = self.redis.incr(key)
-        if cnt == 1:
-            self.redis.expire(key, 3 * 86400)  # 3d TTL
-        if cnt > cfg.daily_cap:
-            self.redis.decr(key)  # 초과 시 롤백 — 실제 통과 수만 카운트
+        cnt = self.redis.eval(_LUA_CAP_INCR, 1, key, cfg.daily_cap, 3 * 86400)
+        if cnt == -1:
             return StrategyDecision(
                 allow=False,
                 reason="DAILY_CAP",
                 meta={
-                    "count": cnt,
                     "cap": cfg.daily_cap,
                     "market": signal.market,
                     "date": today,

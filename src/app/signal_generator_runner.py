@@ -15,7 +15,7 @@ import redis
 from guards.data_guard import DataGuard
 from guards.notifier import send_telegram
 from ai.generator import AISignalGenerator
-from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours
+from utils.redis_helpers import parse_watchlist, today_kst, is_market_hours, secs_until_kst_midnight as _secs_until_kst_midnight
 
 _GEN_POLL_SEC = float(os.getenv("GEN_POLL_SEC", "60"))
 _GEN_MAX_SIZE_CASH_KR = Decimal(os.getenv("GEN_MAX_SIZE_CASH_KR", "500000"))
@@ -32,13 +32,6 @@ _AI_ERROR_SPIKE = int(os.getenv("GEN_AI_ERROR_SPIKE", "10"))           # 인터�
 _KST = ZoneInfo("Asia/Seoul")
 
 
-def _secs_until_kst_midnight() -> int:
-    """오늘 자정 KST까지 남은 초 (최소 60초)."""
-    from datetime import datetime, timedelta
-    now = datetime.now(_KST)
-    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return max(int((midnight - now).total_seconds()), 60)
-
 
 _parse_watchlist = parse_watchlist
 _today_kst = today_kst
@@ -52,17 +45,20 @@ def _is_paused(r) -> bool:
 
 
 def _do_auto_pause(r, reason: str, market: str, detail: str) -> None:
-    """전역 일시정지 설정 + reason/meta 기록 + TG 알림."""
+    """전역 일시정지 설정 (NX: 첫 발동만 기록) + reason/meta 기록 + TG 알림."""
     ts_ms = str(int(time.time() * 1000))
-    r.set("claw:pause:global", "true", ex=_secs_until_kst_midnight())
-    r.set("claw:pause:reason", reason)
-    r.hset("claw:pause:meta", mapping={
-        "reason": reason, "market": market, "detail": detail,
-        "ts_ms": ts_ms, "source": "signal_generator",
-    })
-    msg = f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}"
-    sent = send_telegram(msg)
-    print(f"signal_generator: auto_pause reason={reason} market={market} {detail} tg_sent={sent}", flush=True)
+    set_ok = r.set("claw:pause:global", "true", nx=True, ex=_secs_until_kst_midnight())
+    if set_ok:
+        r.set("claw:pause:reason", reason)
+        r.hset("claw:pause:meta", mapping={
+            "reason": reason, "market": market, "detail": detail,
+            "ts_ms": ts_ms, "source": "signal_generator",
+        })
+        msg = f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}"
+        sent = send_telegram(msg)
+        print(f"signal_generator: auto_pause reason={reason} market={market} {detail} tg_sent={sent}", flush=True)
+    else:
+        print(f"signal_generator: auto_pause already active; skip telegram reason={reason} market={market}", flush=True)
 
 
 def _md_age_sec(r, market: str) -> float:

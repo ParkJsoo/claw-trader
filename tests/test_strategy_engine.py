@@ -11,6 +11,24 @@ from domain.models import Signal, SignalEntry, SignalStop
 from strategy.engine import StrategyConfig, StrategyEngine, MarketStrategyConfig
 
 
+class FakeRedisWithEval(fakeredis.FakeRedis):
+    """fakeredis에 _LUA_CAP_INCR Lua 스크립트를 Python으로 구현한 서브클래스."""
+
+    def eval(self, script: str, numkeys: int, *keys_and_args):
+        if numkeys == 1 and len(keys_and_args) >= 2:
+            key = keys_and_args[0]
+            cap = int(keys_and_args[1])
+            ttl = int(keys_and_args[2]) if len(keys_and_args) >= 3 else None
+            v = self.incr(key)
+            if v == 1 and ttl is not None:
+                self.expire(key, ttl)
+            if v > cap:
+                self.decr(key)
+                return -1
+            return v
+        raise NotImplementedError("eval not supported for this script in tests")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -46,13 +64,13 @@ def _make_engine(r, **cfg_overrides) -> StrategyEngine:
 
 class TestRuleDedupe:
     def test_first_signal_passes(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         d = eng.check(_make_signal())
         assert d.allow is True
 
     def test_duplicate_signal_blocked(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         eng.check(_make_signal(signal_id="dup-001"))
         d = eng.check(_make_signal(signal_id="dup-001"))
@@ -60,7 +78,7 @@ class TestRuleDedupe:
         assert d.reason == "DUP_SIGNAL"
 
     def test_different_signal_ids_pass(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         d1 = eng.check(_make_signal(signal_id="sig-A", symbol="005930"))
         d2 = eng.check(_make_signal(signal_id="sig-B", symbol="000660"))  # 다른 symbol → cooldown 없음
@@ -68,7 +86,7 @@ class TestRuleDedupe:
         assert d2.allow is True
 
     def test_different_markets_independent(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         eng.check(_make_signal(signal_id="sig-001", market="KR"))
         # 동일 signal_id지만 다른 market → 별도 dedupe 키
@@ -82,13 +100,13 @@ class TestRuleDedupe:
 
 class TestRuleCooldown:
     def test_no_cooldown_passes(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, cooldown_sec=300)
         d = eng.check(_make_signal())
         assert d.allow is True
 
     def test_within_cooldown_blocked(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, cooldown_sec=300)
         eng.check(_make_signal(signal_id="sig-A"))
         # 다른 signal_id, 같은 symbol → cooldown 적용
@@ -98,7 +116,7 @@ class TestRuleCooldown:
         assert d.meta["remaining_sec"] > 0
 
     def test_after_cooldown_passes(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, cooldown_sec=1)
         eng.check(_make_signal(signal_id="sig-A"))
         time.sleep(1.1)
@@ -106,7 +124,7 @@ class TestRuleCooldown:
         assert d.allow is True
 
     def test_corrupt_cooldown_value_passes(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         r.set("strategy:cooldown:KR:005930", "not_a_number")
         eng = _make_engine(r, cooldown_sec=300)
         d = eng.check(_make_signal())
@@ -120,7 +138,7 @@ class TestRuleCooldown:
 
 class TestRuleDailyCap:
     def test_under_cap_passes(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         symbols = ["005930", "000660", "035420", "005380", "051910"]
         eng = _make_engine(r, daily_cap=5)
         for i, sym in enumerate(symbols):
@@ -128,7 +146,7 @@ class TestRuleDailyCap:
             assert d.allow is True
 
     def test_over_cap_blocked(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, daily_cap=2)
         eng.check(_make_signal(signal_id="sig-A", symbol="005930"))
         eng.check(_make_signal(signal_id="sig-B", symbol="000660"))
@@ -139,7 +157,7 @@ class TestRuleDailyCap:
 
     def test_cap_counts_all_signals_including_blocked(self):
         """daily_count는 reject 포함해서 증가함"""
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, daily_cap=1)
         eng.check(_make_signal(signal_id="sig-A", symbol="005930"))  # pass (count=1)
         d = eng.check(_make_signal(signal_id="sig-B", symbol="000660"))  # count=2 → blocked
@@ -153,14 +171,14 @@ class TestRuleDailyCap:
 
 class TestStrategyOk:
     def test_fresh_signal_strategy_ok(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         d = eng.check(_make_signal())
         assert d.allow is True
         assert d.reason == "STRATEGY_OK"
 
     def test_cooldown_set_after_pass(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r, cooldown_sec=300)
         eng.check(_make_signal(signal_id="sig-A"))
         # cooldown key가 설정되어 있어야 함
@@ -170,7 +188,7 @@ class TestStrategyOk:
         assert abs(ts - int(time.time() * 1000)) < 2000
 
     def test_pass_count_incremented(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         eng.check(_make_signal(signal_id="sig-A"))
         from datetime import datetime
@@ -180,7 +198,7 @@ class TestStrategyOk:
         assert cnt == b"1"
 
     def test_reject_count_incremented(self):
-        r = fakeredis.FakeRedis()
+        r = FakeRedisWithEval()
         eng = _make_engine(r)
         eng.check(_make_signal(signal_id="dup"))
         eng.check(_make_signal(signal_id="dup"))  # DUP_SIGNAL

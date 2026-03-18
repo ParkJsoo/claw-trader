@@ -19,12 +19,7 @@ _GEN_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 _GEN_STOP_PCT = Decimal(os.getenv("GEN_STOP_PCT", "0.03"))
 _GEN_DAILY_CALL_CAP = int(os.getenv("GEN_DAILY_CALL_CAP", "1000"))
 
-def _secs_until_kst_midnight() -> int:
-    """오늘 자정 KST까지 남은 초 (최소 60초)."""
-    from datetime import datetime, timedelta
-    now = datetime.now(_KST)
-    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    return max(int((midnight - now).total_seconds()), 60)
+from utils.redis_helpers import secs_until_kst_midnight as _secs_until_kst_midnight
 
 
 _LUA_CAP_INCR = """
@@ -322,19 +317,21 @@ class AISignalGenerator:
                                  emit_blocked=True, block_reason="no_position")
                 return None
 
-        # daily_cap: Lua 원자적 INCR + cap check (multi-process safe)
-        daily_key = f"gen:daily_emit:{market}:{today}"
-        count = self.redis.eval(_LUA_CAP_INCR, 1, daily_key, _GEN_DAILY_EMIT_CAP, 3 * 86400)
-        if count == -1:
-            self._save_audit(market, signal_id, symbol, features, decision, raw_response,
-                             emit_blocked=True, block_reason="daily_cap")
-            return None
-
-        # 심볼별 쿨다운 (daily_cap 통과 후)
+        # 심볼별 쿨다운 먼저 체크 (daily_cap 소비 전에 차단 — cap 낭비 방지)
         cooldown_key = f"gen:cooldown:{market}:{symbol}"
         if not self.redis.set(cooldown_key, "1", nx=True, ex=_GEN_COOLDOWN_SEC):
             self._save_audit(market, signal_id, symbol, features, decision, raw_response,
                              emit_blocked=True, block_reason="cooldown")
+            return None
+
+        # daily_cap: Lua 원자적 INCR + cap check (multi-process safe)
+        daily_key = f"gen:daily_emit:{market}:{today}"
+        count = self.redis.eval(_LUA_CAP_INCR, 1, daily_key, _GEN_DAILY_EMIT_CAP, 3 * 86400)
+        if count == -1:
+            # daily_cap 초과 시 쿨다운 키 삭제 (다음 루프에서 재시도 가능하게)
+            self.redis.delete(cooldown_key)
+            self._save_audit(market, signal_id, symbol, features, decision, raw_response,
+                             emit_blocked=True, block_reason="daily_cap")
             return None
 
         # 시장별 stop_price 라운딩 (KR=원 단위, US=센트 단위) + <= 0 방어
