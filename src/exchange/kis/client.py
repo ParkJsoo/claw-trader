@@ -206,6 +206,45 @@ class KisClient(ExchangeClient):
             raw=data,
         )
 
+    def get_kr_holdings(self) -> list[dict]:
+        """KIS 잔고조회 output1 → 보유종목 리스트.
+        Returns: [{"symbol": str, "qty": Decimal, "avg_price": Decimal}, ...]
+        """
+        resp = self._request_with_retry(
+            "get",
+            f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance",
+            headers=self._auth_headers("TTTC8434R"),
+            params={
+                "CANO": self.account_no.replace("-", "")[:8],
+                "ACNT_PRDT_CD": self.product_code,
+                "AFHR_FLPR_YN": "N",
+                "OFL_YN": "N",
+                "INQR_DVSN": "02",
+                "UNPR_DVSN": "01",
+                "FUND_STTL_ICLD_YN": "Y",
+                "FNCG_AMT_AUTO_RDPT_YN": "N",
+                "PRCS_DVSN": "01",
+                "CTX_AREA_FK100": "",
+                "CTX_AREA_NK100": "",
+            },
+        )
+        data = resp.json()
+        result = []
+        for item in (data.get("output1") or []):
+            symbol = (item.get("pdno") or "").strip()
+            qty_str = (item.get("hldg_qty") or "0").replace(",", "").strip()
+            avg_str = (item.get("pchs_avg_pric") or "0").replace(",", "").strip()
+            if not symbol:
+                continue
+            try:
+                qty = Decimal(qty_str)
+                avg_price = Decimal(avg_str)
+                if qty > 0:
+                    result.append({"symbol": symbol, "qty": qty, "avg_price": avg_price})
+            except Exception:
+                continue
+        return result
+
     def cancel_order(self, order_id: str) -> bool:
         self._ensure_token()
 
