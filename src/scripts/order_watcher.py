@@ -9,7 +9,7 @@ from app.order_watcher import OrderWatcher, WatcherConfig
 
 def main():
     # 프로젝트 루트의 .env 로드
-    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
     cfg = WatcherConfig(
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
