@@ -59,18 +59,23 @@ class KisClient(ExchangeClient):
     def _refresh_token(self):
         url = f"{self.base_url}/oauth2/tokenP"
 
-        resp = self.session.post(
-            url,
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
+        try:
+            resp = self.session.post(
+                url,
+                json={
+                    "grant_type": "client_credentials",
+                    "appkey": self.app_key,
+                    "appsecret": self.app_secret,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
 
         data = resp.json()
+        if "access_token" not in data:
+            raise RuntimeError(f"KIS token refresh: unexpected response rt_cd={data.get('rt_cd')}")
         self.access_token = data["access_token"]
 
         # Redis에 캐시 저장
@@ -239,7 +244,7 @@ class KisClient(ExchangeClient):
             try:
                 qty = Decimal(qty_str)
                 avg_price = Decimal(avg_str)
-                if qty > 0:
+                if qty > 0 and avg_price > 0:
                     result.append({"symbol": symbol, "qty": qty, "avg_price": avg_price})
             except Exception:
                 continue

@@ -57,7 +57,7 @@ if not (Decimal("0") < _STOP_LOSS_PCT < Decimal("1")):
 if not (Decimal("0") < _TAKE_PROFIT_PCT < Decimal("1")):
     raise ValueError(f"EXIT_TAKE_PROFIT_PCT must be 0 < x < 1, got {_TAKE_PROFIT_PCT}")
 
-_EXIT_LOCK_TTL = 300   # 5분: 중복 매도 방지
+_EXIT_LOCK_TTL = 60    # 1분: 중복 매도 방지 (SIGKILL 시 공백 최소화)
 _POSITION_TTL = 7 * 86400
 _ORDER_META_TTL = 86400
 
@@ -83,8 +83,10 @@ def _load_cached_positions(r) -> dict:
         raw = r.hgetall(f"position:KR:{symbol}")
         if not raw:
             continue
+        use_bytes = isinstance(next(iter(raw)), bytes)
         def d(k):
-            v = raw.get(k.encode() if isinstance(list(raw.keys())[0], bytes) else k, b"")
+            key = k.encode() if use_bytes else k
+            v = raw.get(key, b"" if use_bytes else "")
             return v.decode() if isinstance(v, bytes) else v
         try:
             qty = Decimal(d("qty") or "0")
@@ -183,6 +185,8 @@ def _get_mark_price(r, symbol: str):
 
 def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None."""
+    if avg_price <= 0 or mark_price <= 0:
+        return None
     stop_price = avg_price * (1 - _STOP_LOSS_PCT)
     take_price = avg_price * (1 + _TAKE_PROFIT_PCT)
     held_sec = int(time.time()) - opened_ts
@@ -271,7 +275,7 @@ def run_once(r, kis: KisClient) -> None:
             continue
 
         mark_price = _get_mark_price(r, symbol)
-        if mark_price is None:
+        if mark_price is None or mark_price <= 0:
             _log("no_mark_price", symbol=symbol)
             continue
 
