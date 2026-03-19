@@ -410,25 +410,57 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 
 ---
 
+## ✅ 2026-03-19 작업 완료
+
+### 코드리뷰 8건 수정 (`e01ed7c`)
+- CRITICAL: `r.keys()` → `scan_iter` (O(N) 블로킹 제거)
+- CRITICAL: IbkrClient 조건부 초기화 (KR-only 기동 시 크래시 방지)
+- CRITICAL: strategy daily_cap → Lua 원자화 (race condition 제거)
+- CRITICAL: BUY fill 감지 시 기존 포지션 존재 여부 체크 (PnL 중복 방지)
+- 기타: signal_generator_runner NX 가드, runner REJECTED 주문 broker_reject 분류 등
+
+### US 자동매매 기능 추가 (`dc5e997`)
+- `IbkrClient.get_us_holdings()` 구현
+- `position_exit_runner` KR/US 통합
+- `consensus_signal_runner` US watchlist 처리
+- `config/phase10_us_micro.env` 신규 작성
+
+### US 동적 워치리스트 추가 (`668214e`)
+- `watchlist_selector_runner.py` — GEN_UNIVERSE_US → `dynamic:watchlist:US` (KR과 동일 로직)
+- `phase10_us_micro.env` — `GEN_UNIVERSE_US` 25종목 추가 (S&P500 대형주)
+- KR/US 데이터 레이어 동등화 완료
+
+### KR vs US 현황 (2026-03-19 기준)
+| 컴포넌트 | KR | US |
+|----------|----|----|
+| consensus_signal_runner | ✅ | ✅ |
+| ai_dual_eval_runner | ✅ | ✅ |
+| position_exit_runner | ✅ | ✅ |
+| 동적 워치리스트 | ✅ | ✅ |
+| 뉴스 수집 | ✅ | ✅ |
+| 시장 데이터 | ✅ 실시간 | ⚠️ Delayed Frozen (의도적) |
+
+---
+
 ## 🚦 다음 세션 가이드
 
-### 현재(2026-03-18 EOD) 상태
-- Phase 14 Day 1 운영 완료, 프로세스 12개 기동 중
-- AI call 1500 소진 → `claw:pause:global` TTL=자정 KST 자동 만료 설정됨
-- 포지션 없음 (011200 time_limit 30분 자동 청산 완료)
-- 내일 아침 9시 별도 조작 없이 자동 재개됨
+### 현재(2026-03-19) 상태
+- Phase 14 + US 데이터 레이어 동등화 완료
+- 테스트 141개 all pass
+- main 브랜치 clean, origin 동기화 완료
+- US 거래는 코드 완비, 실시간 데이터 구독만 미활성 (의도적)
 
 ### 다음 세션 시작 시 체크리스트
 1. `tail -5 logs/runner.log` — `kr_cooldown=300s, daily_cap=40` 확인
 2. `tail -3 logs/order_watcher.log` — `ttl_cancel=60s` 확인
-3. `tail -3 logs/watchlist_selector.log` — 선택된 종목 확인
+3. `tail -3 logs/watchlist_selector.log` — KR/US 선택된 종목 확인
 4. `tail -3 logs/position_engine.log` — `idle=` 로그 확인 (parse_failed 아님)
-5. `claw:pause:global` — TTL 확인 (자정 후 None이어야 정상)
-6. `dynamic:watchlist:KR` — 현재 활성 워치리스트 확인
-7. AI call count 초기화 여부 확인 (`ai:call_count:KR:{today}` 없어야 정상)
+5. `claw:pause:global` — None이어야 정상
+6. `dynamic:watchlist:KR`, `dynamic:watchlist:US` — 활성 워치리스트 확인
+7. AI call count 초기화 여부 확인
 
 ### 관찰 지표 (Phase 14+)
-- `dynamic:watchlist:KR` — 6시간마다 갱신되는 종목 확인
+- `dynamic:watchlist:KR` / `dynamic:watchlist:US` — 6시간마다 갱신 확인
 - `position_engine` 로그 — FillEvent 처리 확인
 - `pnl:KR` Redis 키 — realized PnL 누적 확인
 - stop_loss / take_profit / time_limit 발동 비율
@@ -436,7 +468,8 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 ### 알려진 한계
 - KIS 주문 상태 조회 API 없음 → 체결 감지는 holdings diff 방식
 - 재기동 시 BUY fill 중복 push 가능 (dedupe TTL 24h로 방지)
-- US 거래 미활성 (IBKR reqMarketDataType=4 유지 중)
+- US 거래 미활성 (IBKR reqMarketDataType=4 유지 중 — 의도적)
+- realized_pnl=0 (Phase 14 Day 1 체결 16건이지만 PnL 기록 0 → position_engine 소비 여부 확인 필요)
 
 ### 무인 운영 팁
 - `caffeinate -i -s &` (전원 연결 필수)
@@ -445,4 +478,4 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 
 ---
 
-**Claw‑Trader Engine:** Phase 12 (2026-03-18) — 자동 매도 완성, 단타 loop 검증 완료
+**Claw‑Trader Engine:** Phase 14 + US 데이터 레이어 (2026-03-19) — KR/US 동등화 완료, 테스트 141개 all pass
