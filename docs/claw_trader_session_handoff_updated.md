@@ -1,4 +1,4 @@
-# 🧠 Claw‑Trader Session Handoff (Updated 2026-03-18)
+# 🧠 Claw‑Trader Session Handoff (Updated 2026-03-19)
 
 ---
 
@@ -16,15 +16,16 @@
 
 ---
 
-## 📊 Current Phase: **14 — 뉴스 통합 + 동적 워치리스트** (2026-03-18 완료)
+## 📊 Current Phase: **14 완료 + AI call 최적화** (2026-03-19)
 
-### Phase 이력 (2026-03-18 하루 완성)
+### Phase 이력
 | Phase | 내용 | 결과 |
 |-------|------|------|
 | 11 | Execution rate 개선 | executed=13, rate=62.5% ✅ |
 | 12 | 자동 매도 (position_exit_runner) | time_limit 30분 검증 ✅ |
-| 13 | KR Fill Detection + PnL | realized PnL 자동 기록 ✅ |
-| **14** | **뉴스 → AI + 동적 워치리스트** | universe 30→8 자동 선택 ✅ |
+| 13 | KR/US Fill Detection + PnL | realized PnL 자동 기록 ✅ |
+| **14** | **뉴스 → AI + 동적 워치리스트 (KR/US)** | universe 30→8 자동 선택 ✅ |
+| **14+** | **AI call 최적화 + 봇 PnL** | ~900 call/day 목표 ✅ |
 
 ### 현재 자동화 수준
 ```
@@ -59,7 +60,29 @@ dynamic:watchlist:KR          # 현재 활성 워치리스트 SET (TTL 8h)
 
 ---
 
-## ✅ Phase 13 구현 완료 (2026-03-18) — KR Fill Detection + PnL
+## ✅ 2026-03-19 개선 사항 (커밋 6c6e73d)
+
+### AI call 최적화 (Issue 3)
+- `ai_dual_eval_runner.py`: `DUAL_POLL_SEC` 120→180, `DUAL_DAILY_CALL_CAP` 2000→500/market
+- ret_5m/range_5m prefilter 추가 (consensus_signal_runner와 동일 기준) — AI call 전 차단
+- `config/phase10_kr_micro.env`에 `DUAL_POLL_SEC=180`, `DUAL_DAILY_CALL_CAP=500` 추가
+- 예상 효과: 일일 ~900 call (Phase 14 Day 1의 1500/1500 소진 방지)
+
+### news_runner 동적 워치리스트 반영 (Issue 5)
+- `_get_watchlists()`: `parse_watchlist()` → `load_watchlist()` (Redis dynamic 우선)
+- 매 폴링 시 watchlist 갱신 (watchlist_selector 6시간 변경 자동 반영)
+
+### TG 봇 PnL 커맨드 (Issue 6)
+- `/claw pnl`: realized/unrealized PnL + 오픈 포지션 목록 (qty, avg_price, unrealized)
+- `pnl:{market}` hash + `position_index:{market}` sorted set + `position:{market}:{symbol}` hash 조회
+
+### 확인된 사항
+- **US Fill Detection**: `_sync_positions()` KR/US 동일 로직 — IbkrClient.get_us_holdings() 기반 ✅
+- **market_data_runner 자동 갱신**: 60초마다 Redis dynamic watchlist 자동 반영 — 재시작 불필요 ✅
+
+---
+
+## ✅ Phase 13 구현 완료 (2026-03-18) — KR/US Fill Detection + PnL
 
 - `position_exit_runner._sync_positions()`: 잔고 diff → BUY/SELL FillEvent → `claw:fill:queue`
 - `scripts/position_engine`: fill queue 소비 → Portfolio Engine → realized PnL 자동 기록
