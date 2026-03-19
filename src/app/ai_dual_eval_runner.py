@@ -24,9 +24,13 @@ from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_m
 _DUAL_LOCK_KEY = "dual:runner:lock"
 _DUAL_LOCK_TTL = 300          # > DUAL_POLL_SEC + 최대 처리 시간
 
-_DUAL_POLL_SEC = float(os.getenv("DUAL_POLL_SEC", "120"))
-_DUAL_DAILY_CALL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "2000"))   # 시장별 라운드 캡
+_DUAL_POLL_SEC = float(os.getenv("DUAL_POLL_SEC", "180"))
+_DUAL_DAILY_CALL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "500"))    # 시장별 일일 캡
 _DUAL_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
+
+# prefilter: consensus_signal_runner와 동일 기준 (AI call 전 차단으로 call 절감)
+_DUAL_MIN_RET_5M = float(os.getenv("CONSENSUS_MIN_RET_5M", "0.001"))
+_DUAL_MIN_RANGE_5M = 0.004
 _DUAL_LOG_MAX = 500           # 시장별 일일 로그 최대 보관 수
 _DUAL_JITTER_MAX_SEC = 3.0    # 심볼 간 호출 분산 최대 지터(초)
 _DUAL_TTL = 7 * 86400
@@ -196,7 +200,24 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     except (TypeError, ValueError):
         pass
 
-    # 2-b. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
+    # 2-b. ret_5m / range_5m prefilter (consensus_signal_runner 기준과 동일)
+    # AI call 후 어차피 reject될 신호를 사전 차단 → call 절감
+    try:
+        ret_5m_val = features.get("ret_5m")
+        range_5m_val = features.get("range_5m")
+        stats_key = f"ai:dual_stats:consensus:{market}:{today}"
+        if ret_5m_val is not None and float(ret_5m_val) <= _DUAL_MIN_RET_5M:
+            r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
+            r.expire(stats_key, _DUAL_TTL)
+            return
+        if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
+            r.hincrby(stats_key, "skip_prefilter_range5m", 1)
+            r.expire(stats_key, _DUAL_TTL)
+            return
+    except (TypeError, ValueError):
+        pass
+
+    # 2-c. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
     call_key = f"ai:dual_call_count:{market}:{today}"
     call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _DUAL_DAILY_CALL_CAP, 3 * 86400)
     if call_count == -1:

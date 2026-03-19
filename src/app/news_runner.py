@@ -39,9 +39,9 @@ _KST = ZoneInfo("Asia/Seoul")
 # 런타임
 # ---------------------------------------------------------------------------
 
-def _get_watchlists() -> tuple[list[str], list[str]]:
-    from utils.redis_helpers import parse_watchlist
-    return parse_watchlist("GEN_WATCHLIST_KR"), parse_watchlist("GEN_WATCHLIST_US")
+def _get_watchlists(r) -> tuple[list[str], list[str]]:
+    from utils.redis_helpers import load_watchlist
+    return load_watchlist(r, "KR", "GEN_WATCHLIST_KR"), load_watchlist(r, "US", "GEN_WATCHLIST_US")
 
 
 def _run_once(r, today: str, kr_watchlist: list[str], us_watchlist: list[str]) -> None:
@@ -113,7 +113,7 @@ def main() -> None:
         sys.exit(0)
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
-    kr_watchlist, us_watchlist = _get_watchlists()
+    kr_watchlist, us_watchlist = _get_watchlists(r)
     print(
         f"news: started poll_sec={_POLL_SEC} "
         f"qwen_classify={_QWEN_CLASSIFY} "
@@ -126,6 +126,8 @@ def main() -> None:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
             today = today_kst()
+            # 매 폴링 시 동적 워치리스트 갱신 (watchlist_selector 변경 반영)
+            kr_watchlist, us_watchlist = _get_watchlists(r)
             try:
                 _run_once(r, today, kr_watchlist, us_watchlist)
             except Exception as e:

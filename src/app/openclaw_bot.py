@@ -5,6 +5,7 @@ Supported commands:
   /claw status      - system overall status (pause, md, runners, AI summary)
   /claw ai-status   - AI eval pipeline status (detailed)
   /claw news        - news intelligence pipeline status
+  /claw pnl         - realized/unrealized PnL + open positions
   /claw help        - command list
 
 Security:
@@ -44,6 +45,7 @@ _HELP_TEXT = (
     "/claw status    - system overall status\n"
     "/claw ai-status - AI eval pipeline status\n"
     "/claw news      - news intelligence status\n"
+    "/claw pnl       - PnL + open positions\n"
     "/claw help      - this help"
 )
 
@@ -356,6 +358,44 @@ def handle_news(r) -> str:
     return "\n".join(lines)
 
 
+def handle_pnl(r) -> str:
+    """/claw pnl — realized/unrealized PnL + 오픈 포지션."""
+    now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
+    lines = [f"PnL ({now_str})"]
+
+    for market in ("KR", "US"):
+        pnl_raw = _safe_hgetall(r, f"pnl:{market}")
+        realized = pnl_raw.get("realized_pnl", "0")
+        unrealized = pnl_raw.get("unrealized_pnl", "0")
+        currency = pnl_raw.get("currency", "KRW" if market == "KR" else "USD")
+        lines.append(f"\n{market} ({currency}):")
+        lines.append(f"  realized:   {float(realized):+.2f}")
+        lines.append(f"  unrealized: {float(unrealized):+.2f}")
+
+        # 오픈 포지션 목록 (position_index sorted set)
+        try:
+            symbols = r.zrange(f"position_index:{market}", 0, -1)
+            symbols = [s.decode() if isinstance(s, bytes) else s for s in symbols]
+        except Exception:
+            symbols = []
+
+        if symbols:
+            lines.append(f"  positions ({len(symbols)}):")
+            for sym in symbols:
+                pos = _safe_hgetall(r, f"position:{market}:{sym}")
+                if not pos:
+                    continue
+                qty = pos.get("qty", "0")
+                avg = pos.get("avg_price", "0")
+                upnl = pos.get("unrealized_pnl", "")
+                upnl_str = f" upnl={float(upnl):+.2f}" if upnl else ""
+                lines.append(f"    {sym}: qty={qty} avg={float(avg):.2f}{upnl_str}")
+        else:
+            lines.append("  positions: (none)")
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Command dispatcher
 # ---------------------------------------------------------------------------
@@ -368,6 +408,8 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         _send_message(chat_id, handle_ai_status(r))
     elif text == "/claw news":
         _send_message(chat_id, handle_news(r))
+    elif text == "/claw pnl":
+        _send_message(chat_id, handle_pnl(r))
     elif text in ("/claw help", "/help"):
         _send_message(chat_id, _HELP_TEXT)
     else:
