@@ -110,11 +110,12 @@ def test_sync_positions_sell_fill_on_removed_symbol():
         "qty": "10", "avg_price": "70000", "opened_ts": "1000000", "updated_ts": "1000000", "currency": "KRW"
     })
     r.sadd("position_index:KR", "005930")
-    # Store a matching SELL order_meta
+    # Store a matching SELL order_meta + reverse-lookup key (set by _place_sell)
     r.hset("claw:order_meta:KR:order-sell-001", mapping={
         "symbol": "005930", "side": "SELL", "qty": "10", "limit_price": "72000",
         "exit_reason": "take_profit", "first_seen_ts": "1000000", "source": "exit_runner",
     })
+    r.set("claw:exit_order:KR:005930", "order-sell-001")
 
     holdings = []  # empty — position was sold
     kis = _make_kis_mock(holdings)

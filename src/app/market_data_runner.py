@@ -18,7 +18,7 @@ from utils.redis_helpers import parse_watchlist, load_watchlist
 POLL_INTERVAL = int(os.getenv("MD_POLL_INTERVAL", "3"))
 
 _MD_LOCK_KEY = "md:runner:lock"
-_MD_LOCK_TTL = 30  # poll interval + 여유
+_MD_LOCK_TTL = max(60, POLL_INTERVAL * 10 + 30)  # poll interval의 10배 + 여유
 
 
 _parse_watchlist = parse_watchlist

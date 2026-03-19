@@ -40,7 +40,7 @@ import redis
 from exchange.kis.client import KisClient
 from exchange.ibkr.client import IbkrClient
 from domain.models import PlaceOrderRequest, OrderSide, OrderType, OrderStatus
-from utils.redis_helpers import is_market_hours
+from utils.redis_helpers import is_market_hours, today_kst
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -247,43 +247,44 @@ def _sync_positions(r, client, market: str) -> dict:
                 except Exception:
                     pass
 
-            # 최근 SELL order_meta 탐색
+            # 역방향 조회 키로 SELL order_id 직접 조회 (scan_iter 제거)
             sell_order_id = None
             sell_price = cached_avg_price  # fallback: avg_price
             try:
-                order_meta_keys = list(r.scan_iter(match=f"claw:order_meta:{market}:*", count=100))
-                for mk in order_meta_keys:
-                    meta = r.hgetall(mk)
-                    if not meta:
-                        continue
-                    def _dm(k, m=meta):
-                        key = k.encode() if isinstance(next(iter(m)), bytes) else k
-                        v = m.get(key, b"" if isinstance(next(iter(m)), bytes) else "")
-                        return v.decode() if isinstance(v, bytes) else v
-                    if _dm("symbol") == sym and _dm("side") == "SELL":
-                        sell_order_id = mk.decode().split(":")[-1] if isinstance(mk, bytes) else mk.split(":")[-1]
+                exit_order_raw = r.get(f"claw:exit_order:{market}:{sym}")
+                if exit_order_raw:
+                    oid = exit_order_raw.decode() if isinstance(exit_order_raw, bytes) else exit_order_raw
+                    meta = r.hgetall(f"claw:order_meta:{market}:{oid}")
+                    if meta:
+                        is_bytes = isinstance(next(iter(meta)), bytes)
+                        def _dm(k, m=meta, b=is_bytes):
+                            key = k.encode() if b else k
+                            v = m.get(key, b"" if b else "")
+                            return v.decode() if isinstance(v, bytes) else v
                         lp = _dm("limit_price")
                         if lp:
                             try:
                                 sell_price = Decimal(lp)
                             except Exception:
                                 pass
-                        break
+                        sell_order_id = oid
             except Exception as e:
-                _log("sell_fill_meta_error", market=market, symbol=sym,
-                     error=str(e))
+                _log("sell_fill_meta_error", market=market, symbol=sym, error=str(e))
 
             if sell_order_id and cached_qty > 0:
                 _push_fill_event(r, sym, "SELL", cached_qty, sell_price,
                                  sell_order_id, market=market)
             elif cached_qty > 0:
-                # order_meta 없어도 FillEvent push (order_id 생성)
-                order_id = f"sell_discovered_{sym}_{int(time.time())}"
+                # order_meta 없어도 FillEvent push (날짜 기반 결정론적 ID로 중복 방지)
+                order_id = f"sell_discovered_{sym}_{today_kst()}"
                 _push_fill_event(r, sym, "SELL", cached_qty, sell_price,
                                  order_id, market=market)
 
-            r.delete(f"position:{market}:{sym}")
-            r.srem(idx_key, sym)
+            # 원자적 삭제 (process crash 시 position_index 고아 방지)
+            pipe = r.pipeline()
+            pipe.delete(f"position:{market}:{sym}")
+            pipe.srem(idx_key, sym)
+            pipe.execute()
             _log("position_removed", market=market, symbol=sym,
                  reason="not_in_holdings")
 
@@ -374,6 +375,8 @@ def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
         "source": "exit_runner",
     })
     r.expire(f"claw:order_meta:{market}:{order_id}", _ORDER_META_TTL)
+    # 역방향 조회 키: symbol → order_id (scan_iter 없이 직접 조회)
+    r.set(f"claw:exit_order:{market}:{symbol}", order_id, ex=_ORDER_META_TTL)
 
     _log("sell_submitted",
          market=market, symbol=symbol, order_id=order_id,

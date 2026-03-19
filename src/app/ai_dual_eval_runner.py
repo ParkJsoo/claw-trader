@@ -100,7 +100,7 @@ def _save_provider(r, provider: str, market: str, symbol: str, today: str,
 
     # 일일 로그 (list)
     log_key = f"ai:dual_log:{provider}:{market}:{today}"
-    r.lpush(log_key, json.dumps({**payload, "raw": result.raw_response[:300]}))
+    r.lpush(log_key, json.dumps({**payload, "raw": (result.raw_response or "")[:300]}))
     r.ltrim(log_key, 0, _DUAL_LOG_MAX - 1)
     r.expire(log_key, 30 * 86400)
 

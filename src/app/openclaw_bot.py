@@ -11,7 +11,7 @@ Supported commands:
 Security:
   - Only responds to TG_ALLOWED_CHAT_ID
   - Non-allowed chat_id: silent
-  - Redis read-only - no system state changes
+  - Redis: status commands read-only; /claw pause on|off writes Redis (PIN protected)
   - Self-lock: ops:openclaw_bot:lock (prevents duplicate process)
   - Duplicate update_id dedup: ops:tg:seen:{update_id}
 """
@@ -385,6 +385,13 @@ def handle_pause_off(r, pin: str) -> str:
     return f"RESUMED at {now_str}"
 
 
+def _safe_float(val, default: float = 0.0) -> float:
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def handle_pnl(r) -> str:
     """/claw pnl — realized/unrealized PnL + 오픈 포지션."""
     now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
@@ -392,17 +399,17 @@ def handle_pnl(r) -> str:
 
     for market in ("KR", "US"):
         pnl_raw = _safe_hgetall(r, f"pnl:{market}")
-        realized = pnl_raw.get("realized_pnl", "0")
-        unrealized = pnl_raw.get("unrealized_pnl", "0")
+        realized = _safe_float(pnl_raw.get("realized_pnl", "0"))
+        unrealized = _safe_float(pnl_raw.get("unrealized_pnl", "0"))
         currency = pnl_raw.get("currency", "KRW" if market == "KR" else "USD")
         lines.append(f"\n{market} ({currency}):")
-        lines.append(f"  realized:   {float(realized):+.2f}")
-        lines.append(f"  unrealized: {float(unrealized):+.2f}")
+        lines.append(f"  realized:   {realized:+.2f}")
+        lines.append(f"  unrealized: {unrealized:+.2f}")
 
-        # 오픈 포지션 목록 (position_index sorted set)
+        # 오픈 포지션 목록 (position_index는 SET — smembers 사용)
         try:
-            symbols = r.zrange(f"position_index:{market}", 0, -1)
-            symbols = [s.decode() if isinstance(s, bytes) else s for s in symbols]
+            raw_members = r.smembers(f"position_index:{market}")
+            symbols = sorted(s.decode() if isinstance(s, bytes) else s for s in raw_members)
         except Exception:
             symbols = []
 
@@ -413,10 +420,10 @@ def handle_pnl(r) -> str:
                 if not pos:
                     continue
                 qty = pos.get("qty", "0")
-                avg = pos.get("avg_price", "0")
-                upnl = pos.get("unrealized_pnl", "")
-                upnl_str = f" upnl={float(upnl):+.2f}" if upnl else ""
-                lines.append(f"    {sym}: qty={qty} avg={float(avg):.2f}{upnl_str}")
+                avg = _safe_float(pos.get("avg_price", "0"))
+                upnl_raw = pos.get("unrealized_pnl", "")
+                upnl_str = f" upnl={_safe_float(upnl_raw):+.2f}" if upnl_raw else ""
+                lines.append(f"    {sym}: qty={qty} avg={avg:.2f}{upnl_str}")
         else:
             lines.append("  positions: (none)")
 
@@ -515,7 +522,8 @@ def main():
                         print(f"openclaw: ignored unauthorized chat_id={chat_id}", flush=True)
                         continue
 
-                    print(f"openclaw: cmd chat={chat_id} text={text!r}", flush=True)
+                    log_text = " ".join(text.split()[:3])  # PIN 등 민감 인자 제외
+    print(f"openclaw: cmd chat={chat_id} text={log_text!r}", flush=True)
                     try:
                         dispatch(r, chat_id, text)
                     except Exception as e:

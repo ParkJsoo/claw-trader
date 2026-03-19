@@ -181,7 +181,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     c_ts_ms = claude.get("ts_ms", "")
     q_ts_ms = qwen.get("ts_ms", "")
     seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}:{q_ts_ms}"
-    if not r.set(seen_key, "1", nx=True, ex=int(_POLL_SEC * 6)):
+    if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
         return None  # 이미 처리한 eval 결과
 
     # 3. 데이터 무결성: features_json 파싱
@@ -220,13 +220,6 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_direction_not_long")
         return None
 
-    # 4-b. Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
-    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
-    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
-        _log("runner.reject.symbol_cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
-        _record_reject(r, market, "reject_symbol_cooldown")
-        return None
-
     # 5. prefilter: ret_5m, range_5m
     try:
         ret_5m_raw   = c_features.get("ret_5m")
@@ -261,6 +254,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     except (InvalidOperation, ValueError) as e:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=f"current_price: {e}")
         _record_reject(r, market, "reject_invalid_payload")
+        return None
+
+    # 6-b. Phase 11: symbol-level cooldown — prefilter 통과 후 설정 (phantom cooldown 방지)
+    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
+    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
+        _log("runner.reject.symbol_cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
+        _record_reject(r, market, "reject_symbol_cooldown")
         return None
 
     # 7. stop price 계산 (market-aware 정규화)
