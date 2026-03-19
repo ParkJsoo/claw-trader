@@ -523,7 +523,7 @@ def main():
                         continue
 
                     log_text = " ".join(text.split()[:3])  # PIN 등 민감 인자 제외
-    print(f"openclaw: cmd chat={chat_id} text={log_text!r}", flush=True)
+                    print(f"openclaw: cmd chat={chat_id} text={log_text!r}", flush=True)
                     try:
                         dispatch(r, chat_id, text)
                     except Exception as e:
