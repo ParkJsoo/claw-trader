@@ -154,14 +154,18 @@ def main() -> None:
         # fallback: 기존 워치리스트를 유니버스로 사용
         universe_kr = parse_watchlist("GEN_WATCHLIST_KR")
 
-    if not universe_kr:
+    universe_us = parse_watchlist("GEN_UNIVERSE_US")
+    if not universe_us:
+        universe_us = parse_watchlist("GEN_WATCHLIST_US")
+
+    if not universe_kr and not universe_us:
         print("watchlist_selector: no universe defined — exiting", flush=True)
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
     print(
         f"watchlist_selector: started interval_sec={_SELECT_INTERVAL_SEC} "
-        f"select_count={_SELECT_COUNT} universe_kr={universe_kr}",
+        f"select_count={_SELECT_COUNT} universe_kr={universe_kr} universe_us={universe_us}",
         flush=True,
     )
 
@@ -169,14 +173,23 @@ def main() -> None:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
 
-            selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
-            write_watchlist(r, "KR", selected)
+            if universe_kr:
+                selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
+                write_watchlist(r, "KR", selected)
+                print(
+                    f"watchlist_selector: KR selected={selected} "
+                    f"from universe={len(universe_kr)} symbols",
+                    flush=True,
+                )
 
-            print(
-                f"watchlist_selector: KR selected={selected} "
-                f"from universe={len(universe_kr)} symbols",
-                flush=True,
-            )
+            if universe_us:
+                selected_us = select_watchlist(r, "US", universe_us, _SELECT_COUNT)
+                write_watchlist(r, "US", selected_us)
+                print(
+                    f"watchlist_selector: US selected={selected_us} "
+                    f"from universe={len(universe_us)} symbols",
+                    flush=True,
+                )
 
             # 다음 선정까지 대기 (30초 단위로 lock 갱신)
             remaining = _SELECT_INTERVAL_SEC
