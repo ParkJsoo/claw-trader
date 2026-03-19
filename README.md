@@ -89,8 +89,6 @@ set -a && source .env && source config/phase10_kr_micro.env && set +a
 PYTHONPATH=src venv/bin/python -m app.runner >> logs/runner.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.market_data_runner >> logs/market_data.log 2>&1 &
 PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60 PYTHONPATH=src venv/bin/python -m scripts.order_watcher >> logs/order_watcher.log 2>&1 &
-PYTHONPATH=src venv/bin/python -m app.signal_generator_runner >> logs/signal_generator.log 2>&1 &
-PYTHONPATH=src venv/bin/python -m app.ai_eval_runner >> logs/ai_eval.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner >> logs/ai_dual_eval.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.consensus_signal_runner >> logs/consensus_signal.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.openclaw_bot >> logs/openclaw_bot.log 2>&1 &
@@ -98,6 +96,8 @@ PYTHONPATH=src venv/bin/python -m app.news_runner >> logs/news_runner.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runner >> logs/position_exit.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_engine >> logs/position_engine.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_runner >> logs/watchlist_selector.log 2>&1 &
+# ⚠️ signal_generator_runner / ai_eval_runner 은 Phase 9 레거시 — Phase 10+에서 기동 금지
+# (signal_generator_runner가 claw:signal:queue에 중복 push하여 consensus_signal_runner와 충돌)
 ```
 
 ---

@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import redis
@@ -42,12 +42,16 @@ _ALLOWED_CHAT_ID = os.getenv("TG_ALLOWED_CHAT_ID", "")
 
 _HELP_TEXT = (
     "OpenClaw supported commands:\n"
-    "/claw status    - system overall status\n"
-    "/claw ai-status - AI eval pipeline status\n"
-    "/claw news      - news intelligence status\n"
-    "/claw pnl       - PnL + open positions\n"
-    "/claw help      - this help"
+    "/claw status      - system overall status\n"
+    "/claw ai-status   - AI eval pipeline status\n"
+    "/claw news        - news intelligence status\n"
+    "/claw pnl         - PnL + open positions\n"
+    "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
+    "/claw pause off   - 일시정지 해제\n"
+    "/claw help        - this help"
 )
+
+_TG_PAUSE_PIN = os.getenv("TG_PAUSE_PIN", "")
 
 _BOT_LOCK_KEY = "ops:openclaw_bot:lock"
 _BOT_LOCK_TTL = 60  # seconds — renewed each loop
@@ -205,22 +209,27 @@ def handle_status(r) -> str:
     lines.append(f"  hist KR:005930={kr_hist_str}")
     lines.append(f"  hist US:AAPL={us_hist_str}")
 
-    # AI summary
+    # AI summary (dual eval consensus)
     lines.append(f"\nAI:")
     for market in ("KR", "US"):
-        stats = _safe_hgetall(r, f"ai:eval_stats:{market}:{today}")
+        stats = _safe_hgetall(r, f"ai:dual_stats:consensus:{market}:{today}")
         emit = int(stats.get("emit", 0))
-        no_emit = int(stats.get("no_emit", 0))
-        errors = sum(int(v) for k, v in stats.items() if k.startswith("error_"))
-        total = emit + no_emit + errors + sum(int(v) for k, v in stats.items() if k.startswith("skip_"))
+        hold = int(stats.get("hold", 0))
+        skip = int(stats.get("skip", 0))
+        prefilter = sum(
+            int(stats.get(k, 0)) for k in (
+                "skip_prefilter_ret1m", "skip_prefilter_ret5m",
+                "skip_prefilter_range5m", "skip_call_cap",
+                "skip_cold_start", "skip_feature_error",
+            )
+        )
+        total = emit + hold + skip + prefilter
         if total == 0:
             lines.append(f"  {market}: no data yet")
         else:
             emit_rate = emit / total * 100
-            err_rate = errors / total * 100
-            emit_ind = "OK" if 10 <= emit_rate <= 30 else "!"
-            err_ind = "OK" if err_rate < 5 else "ERR"
-            lines.append(f"  {market}: emit={emit_rate:.1f}%[{emit_ind}] err={err_rate:.1f}%[{err_ind}]")
+            emit_ind = "OK" if 5 <= emit_rate <= 40 else "!"
+            lines.append(f"  {market}: emit={emit_rate:.1f}%[{emit_ind}] calls={_safe_int(r, f'ai:dual_call_count:{market}:{today}') or 0}/500")
 
     # Runner locks
     eval_ttl = _safe_ttl(r, "eval:runner:lock")
@@ -241,57 +250,50 @@ def handle_status(r) -> str:
 def handle_ai_status(r) -> str:
     today = datetime.now(_KST).strftime("%Y%m%d")
     now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
-    lines = [f"AI Eval Status ({now_str})"]
+    lines = [f"AI Dual Eval Status ({now_str})"]
 
     for market in ("KR", "US"):
-        stats = _safe_hgetall(r, f"ai:eval_stats:{market}:{today}")
+        # dual eval consensus 통계
+        stats = _safe_hgetall(r, f"ai:dual_stats:consensus:{market}:{today}")
         emit = int(stats.get("emit", 0))
-        no_emit = int(stats.get("no_emit", 0))
-        errors = sum(
-            int(v) for k, v in stats.items() if k.startswith("error_")
+        hold = int(stats.get("hold", 0))
+        skip = int(stats.get("skip", 0))
+        skip_prefilter = sum(
+            int(stats.get(k, 0)) for k in (
+                "skip_prefilter_ret1m", "skip_prefilter_ret5m",
+                "skip_prefilter_range5m", "skip_call_cap",
+                "skip_cold_start", "skip_feature_error",
+            )
         )
-        skip = sum(
-            int(v) for k, v in stats.items() if k.startswith("skip_")
-        )
-        total = emit + no_emit + errors + skip
+        total = emit + hold + skip + skip_prefilter
 
-        call_count = _safe_int(r, f"ai:eval_call_count:{market}:{today}")
-        call_str = f"{call_count}/2000" if call_count is not None else "(none)"
+        call_count = _safe_int(r, f"ai:dual_call_count:{market}:{today}")
+        call_str = f"{call_count}/500" if call_count is not None else "(none)"
 
         if total == 0:
             lines.append(f"\n{market}: no data yet")
             continue
 
         emit_rate = emit / total * 100
-        err_rate = errors / total * 100
-        emit_ind = "OK" if 10.0 <= emit_rate <= 30.0 else "!"
-        err_ind = "OK" if err_rate < 5.0 else "ERR"
-
         lines.append(f"\n{market}:")
-        lines.append(f"  emit_rate: {emit_rate:.1f}% ({emit}/{total}) [{emit_ind}]")
-        lines.append(f"  error_rate: {err_rate:.1f}% [{err_ind}]")
+        lines.append(f"  emit={emit} hold={hold} skip={skip} prefilter={skip_prefilter} total={total}")
+        lines.append(f"  emit_rate: {emit_rate:.1f}% [{'OK' if 5 <= emit_rate <= 40 else '!'}]")
         lines.append(f"  call_count: {call_str}")
 
         sample_symbol = "005930" if market == "KR" else "AAPL"
-        last_key = f"ai:eval:last:{market}:{sample_symbol}"
-        direction = _safe_hget(r, last_key, "direction") or "(none)"
-        emit_val = _safe_hget(r, last_key, "emit")
-        if emit_val == "1":
-            emit_label = "emit=True"
-        elif emit_val == "0":
-            emit_label = "emit=False"
-        else:
-            emit_label = "(none)"
-        lines.append(f"  last({sample_symbol}): {direction} {emit_label}")
+        last = _safe_hgetall(r, f"ai:dual:last:consensus:{market}:{sample_symbol}")
+        if last:
+            consensus = last.get("consensus", "(none)")
+            direction = last.get("direction", "")
+            c_emit = last.get("claude_emit", "")
+            q_emit = last.get("qwen_emit", "")
+            lines.append(f"  last({sample_symbol}): {consensus}/{direction} c={c_emit} q={q_emit}")
 
-    eval_ttl = _safe_ttl(r, "eval:runner:lock")
-    gen_ttl = _safe_ttl(r, "gen:runner:lock")
-    eval_str = f"{eval_ttl}s [OK]" if eval_ttl else "[DOWN]"
-    gen_str = f"{gen_ttl}s [OK]" if gen_ttl else "[DOWN]"
-
+    dual_ttl = _safe_ttl(r, "dual:runner:lock")
+    consensus_ttl = _safe_ttl(r, "consensus:runner:lock")
     lines.append(f"\nRunners:")
-    lines.append(f"  eval:runner:lock: {eval_str}")
-    lines.append(f"  gen:runner:lock:  {gen_str}")
+    lines.append(f"  dual:runner:lock:      {f'{dual_ttl}s [OK]' if dual_ttl else '[DOWN]'}")
+    lines.append(f"  consensus:runner:lock: {f'{consensus_ttl}s [OK]' if consensus_ttl else '[DOWN]'}")
 
     try:
         pause_val = r.get("claw:pause:global")
@@ -358,6 +360,33 @@ def handle_news(r) -> str:
     return "\n".join(lines)
 
 
+def _secs_until_midnight() -> int:
+    now = datetime.now(_KST)
+    midnight = datetime(now.year, now.month, now.day, tzinfo=_KST) + timedelta(days=1)
+    return max(60, int((midnight - now).total_seconds()))
+
+
+def handle_pause_on(r, pin: str) -> str:
+    """/claw pause on [PIN] — 전역 일시정지."""
+    if _TG_PAUSE_PIN and pin != _TG_PAUSE_PIN:
+        return "PIN 오류. 명령: /claw pause on <PIN>"
+    ttl = _secs_until_midnight()
+    r.set("claw:pause:global", "true", ex=ttl)
+    r.set("claw:pause:reason", "manual_tg")
+    now_str = datetime.now(_KST).strftime("%H:%M KST")
+    return f"PAUSED at {now_str} (TTL={ttl//3600}h{(ttl%3600)//60}m, 자정 KST 자동 만료)"
+
+
+def handle_pause_off(r, pin: str) -> str:
+    """/claw pause off [PIN] — 일시정지 해제."""
+    if _TG_PAUSE_PIN and pin != _TG_PAUSE_PIN:
+        return "PIN 오류. 명령: /claw pause off <PIN>"
+    r.delete("claw:pause:global")
+    r.delete("claw:pause:reason")
+    now_str = datetime.now(_KST).strftime("%H:%M KST")
+    return f"RESUMED at {now_str}"
+
+
 def handle_pnl(r) -> str:
     """/claw pnl — realized/unrealized PnL + 오픈 포지션."""
     now_str = datetime.now(_KST).strftime("%Y-%m-%d %H:%M KST")
@@ -410,6 +439,12 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         _send_message(chat_id, handle_news(r))
     elif text == "/claw pnl":
         _send_message(chat_id, handle_pnl(r))
+    elif text.startswith("/claw pause on"):
+        pin = text[len("/claw pause on"):].strip()
+        _send_message(chat_id, handle_pause_on(r, pin))
+    elif text.startswith("/claw pause off"):
+        pin = text[len("/claw pause off"):].strip()
+        _send_message(chat_id, handle_pause_off(r, pin))
     elif text in ("/claw help", "/help"):
         _send_message(chat_id, _HELP_TEXT)
     else:
