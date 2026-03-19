@@ -7,7 +7,7 @@ import random
 import signal as _signal
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import redis
@@ -230,13 +230,12 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     news_ctx = get_symbol_context(r, market, symbol, today, max_items=3)
     if not news_ctx:
         # 오늘 뉴스 없으면 어제 뉴스 확인
-        from datetime import datetime, timedelta
         yesterday = (datetime.now(ZoneInfo("Asia/Seoul")) - timedelta(days=1)).strftime("%Y%m%d")
         news_ctx = get_symbol_context(r, market, symbol, yesterday, max_items=3)
     if news_ctx:
         features["news_summary"] = news_ctx
 
-    # 3. 두 provider 평가
+    # 2-d. 뉴스 컨텍스트 추가 완료 → 3. 두 provider 평가
     c_result = claude.evaluate(market, symbol, features)
     q_result = qwen.evaluate(market, symbol, features)
 

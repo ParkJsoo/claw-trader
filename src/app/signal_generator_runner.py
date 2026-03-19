@@ -49,11 +49,13 @@ def _do_auto_pause(r, reason: str, market: str, detail: str) -> None:
     ts_ms = str(int(time.time() * 1000))
     set_ok = r.set("claw:pause:global", "true", nx=True, ex=_secs_until_kst_midnight())
     if set_ok:
-        r.set("claw:pause:reason", reason)
+        ttl = _secs_until_kst_midnight()
+        r.set("claw:pause:reason", reason, ex=ttl)
         r.hset("claw:pause:meta", mapping={
             "reason": reason, "market": market, "detail": detail,
             "ts_ms": ts_ms, "source": "signal_generator",
         })
+        r.expire("claw:pause:meta", ttl)
         msg = f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}"
         sent = send_telegram(msg)
         print(f"signal_generator: auto_pause reason={reason} market={market} {detail} tg_sent={sent}", flush=True)

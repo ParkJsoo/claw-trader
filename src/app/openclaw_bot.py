@@ -26,10 +26,12 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import redis
+
+from utils.redis_helpers import secs_until_kst_midnight as _secs_until_kst_midnight
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,6 +54,7 @@ _HELP_TEXT = (
 )
 
 _TG_PAUSE_PIN = os.getenv("TG_PAUSE_PIN", "")
+_DUAL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "500"))
 
 _BOT_LOCK_KEY = "ops:openclaw_bot:lock"
 _BOT_LOCK_TTL = 60  # seconds — renewed each loop
@@ -229,7 +232,7 @@ def handle_status(r) -> str:
         else:
             emit_rate = emit / total * 100
             emit_ind = "OK" if 5 <= emit_rate <= 40 else "!"
-            lines.append(f"  {market}: emit={emit_rate:.1f}%[{emit_ind}] calls={_safe_int(r, f'ai:dual_call_count:{market}:{today}') or 0}/500")
+            lines.append(f"  {market}: emit={emit_rate:.1f}%[{emit_ind}] calls={_safe_int(r, f'ai:dual_call_count:{market}:{today}') or 0}/{_DUAL_CAP}")
 
     # Runner locks
     eval_ttl = _safe_ttl(r, "eval:runner:lock")
@@ -268,7 +271,7 @@ def handle_ai_status(r) -> str:
         total = emit + hold + skip + skip_prefilter
 
         call_count = _safe_int(r, f"ai:dual_call_count:{market}:{today}")
-        call_str = f"{call_count}/500" if call_count is not None else "(none)"
+        call_str = f"{call_count}/{_DUAL_CAP}" if call_count is not None else "(none)"
 
         if total == 0:
             lines.append(f"\n{market}: no data yet")
@@ -360,19 +363,13 @@ def handle_news(r) -> str:
     return "\n".join(lines)
 
 
-def _secs_until_midnight() -> int:
-    now = datetime.now(_KST)
-    midnight = datetime(now.year, now.month, now.day, tzinfo=_KST) + timedelta(days=1)
-    return max(60, int((midnight - now).total_seconds()))
-
-
 def handle_pause_on(r, pin: str) -> str:
     """/claw pause on [PIN] — 전역 일시정지."""
     if _TG_PAUSE_PIN and pin != _TG_PAUSE_PIN:
         return "PIN 오류. 명령: /claw pause on <PIN>"
-    ttl = _secs_until_midnight()
+    ttl = _secs_until_kst_midnight()
     r.set("claw:pause:global", "true", ex=ttl)
-    r.set("claw:pause:reason", "manual_tg")
+    r.set("claw:pause:reason", "manual_tg", ex=ttl)
     now_str = datetime.now(_KST).strftime("%H:%M KST")
     return f"PAUSED at {now_str} (TTL={ttl//3600}h{(ttl%3600)//60}m, 자정 KST 자동 만료)"
 
@@ -383,6 +380,7 @@ def handle_pause_off(r, pin: str) -> str:
         return "PIN 오류. 명령: /claw pause off <PIN>"
     r.delete("claw:pause:global")
     r.delete("claw:pause:reason")
+    r.delete("claw:pause:meta")
     now_str = datetime.now(_KST).strftime("%H:%M KST")
     return f"RESUMED at {now_str}"
 

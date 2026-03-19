@@ -21,7 +21,7 @@ import redis
 from news.collector import collect_all
 from news.classifier import classify_batch
 from news.redis_writer import write_batch
-from utils.redis_helpers import today_kst
+from utils.redis_helpers import today_kst, load_watchlist
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -40,7 +40,6 @@ _KST = ZoneInfo("Asia/Seoul")
 # ---------------------------------------------------------------------------
 
 def _get_watchlists(r) -> tuple[list[str], list[str]]:
-    from utils.redis_helpers import load_watchlist
     return load_watchlist(r, "KR", "GEN_WATCHLIST_KR"), load_watchlist(r, "US", "GEN_WATCHLIST_US")
 
 

@@ -73,11 +73,13 @@ class AISignalGenerator:
         set_ok = self.redis.set("claw:pause:global", "true", nx=True, ex=_secs_until_kst_midnight())
         if set_ok:
             ts_ms = str(int(time.time() * 1000))
-            self.redis.set("claw:pause:reason", reason)
+            ttl = _secs_until_kst_midnight()
+            self.redis.set("claw:pause:reason", reason, ex=ttl)
             self.redis.hset("claw:pause:meta", mapping={
                 "reason": reason, "market": market, "detail": detail,
                 "ts_ms": ts_ms, "source": "ai_generator",
             })
+            self.redis.expire("claw:pause:meta", ttl)
             sent = send_telegram(f"[CLAW] AUTO-PAUSE: {reason}\nmarket={market}\n{detail}")
             print(f"generator: auto_pause reason={reason} market={market} detail={detail} tg_sent={sent}", flush=True)
         else:
