@@ -41,6 +41,7 @@ from exchange.kis.client import KisClient
 from exchange.ibkr.client import IbkrClient
 from domain.models import PlaceOrderRequest, OrderSide, OrderType, OrderStatus
 from utils.redis_helpers import is_market_hours, today_kst
+from guards.notifier import send_telegram
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -424,6 +425,19 @@ def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
     _log("sell_submitted",
          market=market, symbol=symbol, order_id=order_id,
          qty=str(qty), price=str(limit_price), reason=reason)
+
+    # SELL 주문접수 알림
+    try:
+        currency = "KRW" if market == "KR" else "USD"
+        send_telegram(
+            f"[CLAW] SELL 주문접수\n"
+            f"market={market} symbol={symbol}\n"
+            f"qty={qty} price={limit_price} {currency}\n"
+            f"reason={reason} order_id={order_id}"
+        )
+    except Exception:
+        pass
+
     return True
 
 

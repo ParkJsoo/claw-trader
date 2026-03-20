@@ -17,6 +17,7 @@ from domain.models import (
 from exchange.base import ExchangeClient
 from executor.risk import RiskEngine, RiskDecision
 from portfolio.redis_repo import RedisPositionRepository
+from guards.notifier import send_telegram
 
 
 def _push_fills_from_executor(
@@ -184,6 +185,20 @@ class Executor:
                 self.client, self.redis, self.market, result.order_id,
                 req.symbol, req.side, req.qty, req.limit_price, signal_id,
             )
+
+        # BUY 주문접수/체결 알림
+        if result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+            try:
+                currency = "KRW" if self.market == "KR" else "USD"
+                side_str = req.side.value
+                send_telegram(
+                    f"[CLAW] {side_str} 주문접수\n"
+                    f"market={self.market} symbol={req.symbol}\n"
+                    f"qty={req.qty} price={req.limit_price} {currency}\n"
+                    f"order_id={result.order_id}"
+                )
+            except Exception:
+                pass
 
         if result.status in (OrderStatus.REJECTED, OrderStatus.ERROR):
             self._record_reject(signal.signal_id, "broker_rejected", {
