@@ -304,9 +304,10 @@ def _sync_positions(r, client, market: str) -> dict:
                 _push_fill_event(r, sym, "SELL", cached_qty, sell_price,
                                  order_id, market=market)
 
-            # 원자적 삭제 (process crash 시 position_index 고아 방지)
+            # position_index에서 즉시 제거 (exit_runner 재처리 방지)
+            # position hash는 60초 TTL 유지 — position_engine이 SELL fill 처리 시 avg_price 읽을 수 있도록
             pipe = r.pipeline()
-            pipe.delete(f"position:{market}:{sym}")
+            pipe.expire(f"position:{market}:{sym}", 60)
             pipe.srem(idx_key, sym)
             pipe.execute()
             _log("position_removed", market=market, symbol=sym,

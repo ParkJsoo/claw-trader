@@ -169,7 +169,7 @@ def test_sync_positions_sell_fill_zero_qty_no_push():
 
 
 def test_sync_positions_position_deleted_after_sell_fill():
-    """SELL fill push 후 Redis 포지션이 삭제되어야 함."""
+    """SELL fill push 후 position_index 즉시 제거, position hash는 TTL=60 유지."""
     r = fakeredis.FakeRedis()
     r.hset("position:KR:005930", mapping={
         "qty": "10", "avg_price": "70000", "opened_ts": "1000000", "updated_ts": "1000000", "currency": "KRW"
@@ -181,7 +181,10 @@ def test_sync_positions_position_deleted_after_sell_fill():
 
     _sync_positions(r, kis, "KR")
 
-    assert not r.exists("position:KR:005930")
+    # position hash는 TTL=60으로 유지 (position_engine이 avg_price 읽을 수 있도록)
+    assert r.exists("position:KR:005930")
+    assert r.ttl("position:KR:005930") > 0
+    # position_index에서는 즉시 제거 (exit_runner 재처리 방지)
     assert not r.sismember("position_index:KR", "005930")
 
 
