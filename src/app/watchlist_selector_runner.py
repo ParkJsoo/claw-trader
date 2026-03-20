@@ -108,16 +108,17 @@ def select_watchlist(r, market: str, universe: list[str], count: int) -> list[st
 
     scored = []
     for symbol in universe:
-        # KR: mark price 기준 가격 필터 (잔고로 매수 불가한 고가주 제외)
+        # KR: mark price 기준 가격 필터 (잔고로 매수 불가한 고가주 및 mark 없는 종목 제외)
         if market == "KR":
             price_raw = r.get(f"mark:KR:{symbol}")
-            if price_raw:
-                try:
-                    price = float(price_raw.decode() if isinstance(price_raw, bytes) else price_raw)
-                    if price > _KR_MAX_PRICE:
-                        continue
-                except (ValueError, TypeError):
-                    pass
+            if not price_raw:
+                continue  # mark 데이터 없으면 제외 (AI 신호 불가)
+            try:
+                price = float(price_raw.decode() if isinstance(price_raw, bytes) else price_raw)
+                if price > _KR_MAX_PRICE:
+                    continue
+            except (ValueError, TypeError):
+                continue
 
         s = score_symbol(r, market, symbol, today)
         scored.append((symbol, s))

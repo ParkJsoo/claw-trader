@@ -70,7 +70,10 @@ class TestScoreSymbol:
 class TestSelectWatchlist:
     def test_selects_top_n(self):
         r = fakeredis.FakeRedis()
-        # A: score 2, B: score 0, C: score 1
+        # A: score 2, B: score 0, C: score 1 — 모두 5만원 이하 mark 설정
+        r.set("mark:KR:A", "30000")
+        r.set("mark:KR:B", "30000")
+        r.set("mark:KR:C", "30000")
         r.lpush("news:symbol:KR:A:20260318",
                 json.dumps({"sentiment": "positive", "impact": "high"}))
         r.lpush("news:symbol:KR:C:20260318",
@@ -84,6 +87,8 @@ class TestSelectWatchlist:
 
     def test_returns_all_if_universe_smaller_than_count(self):
         r = fakeredis.FakeRedis()
+        r.set("mark:KR:A", "30000")
+        r.set("mark:KR:B", "30000")
 
         from unittest.mock import patch
         with patch("app.watchlist_selector_runner.today_kst", return_value="20260318"):
