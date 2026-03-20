@@ -214,13 +214,37 @@ def _sync_positions(r, client, market: str) -> dict:
                 _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id,
                                  market=market)
 
-        r.hset(pos_key, mapping={
-            "qty": str(qty),
-            "avg_price": str(avg_price),
-            "opened_ts": str(opened_ts),
-            "updated_ts": str(now_ms),
-            "currency": currency,
-        })
+        # stop_pct/take_pct: 새 포지션이면 signal_pct에서 읽기, 기존이면 유지
+        if symbol not in existing:
+            pct_raw = r.hgetall(f"claw:signal_pct:{market}:{symbol}")
+            def _dpct(k, default, _raw=pct_raw):
+                if _raw:
+                    use_bytes = isinstance(next(iter(_raw)), bytes)
+                    key = k.encode() if use_bytes else k
+                    v = _raw.get(key)
+                    if v:
+                        return v.decode() if isinstance(v, bytes) else v
+                return default
+            stop_pct_val = _dpct("stop_pct", "0.0200")
+            take_pct_val = _dpct("take_pct", "0.0200")
+            pos_mapping = {
+                "qty": str(qty),
+                "avg_price": str(avg_price),
+                "opened_ts": str(opened_ts),
+                "updated_ts": str(now_ms),
+                "currency": currency,
+                "stop_pct": stop_pct_val,
+                "take_pct": take_pct_val,
+            }
+        else:
+            pos_mapping = {
+                "qty": str(qty),
+                "avg_price": str(avg_price),
+                "opened_ts": str(opened_ts),
+                "updated_ts": str(now_ms),
+                "currency": currency,
+            }
+        r.hset(pos_key, mapping=pos_mapping)
         r.expire(pos_key, _POSITION_TTL)
         r.sadd(idx_key, symbol)
         r.expire(idx_key, _POSITION_TTL)
@@ -310,18 +334,36 @@ def _get_mark_price(r, market: str, symbol: str):
 # Exit 조건 판단
 # ---------------------------------------------------------------------------
 
-def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int):
-    """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None."""
+def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None):
+    """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
+
+    pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
+    """
     if avg_price <= 0 or mark_price <= 0:
         return None
-    stop_price = avg_price * (1 - _STOP_LOSS_PCT)
-    take_price = avg_price * (1 + _TAKE_PROFIT_PCT)
+
+    # position hash에서 동적 pct 읽기 (없으면 전역 기본값 fallback)
+    if pos:
+        try:
+            stop_pct = Decimal(pos.get("stop_pct") or str(_STOP_LOSS_PCT))
+        except Exception:
+            stop_pct = _STOP_LOSS_PCT
+        try:
+            take_pct = Decimal(pos.get("take_pct") or str(_TAKE_PROFIT_PCT))
+        except Exception:
+            take_pct = _TAKE_PROFIT_PCT
+    else:
+        stop_pct = _STOP_LOSS_PCT
+        take_pct = _TAKE_PROFIT_PCT
+
+    stop_price = avg_price * (1 - stop_pct)
+    take_price = avg_price * (1 + take_pct)
     held_sec = int(time.time()) - opened_ts
 
     if mark_price <= stop_price:
-        return f"stop_loss(mark={mark_price:.0f}<=stop={stop_price:.0f})"
+        return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
     if mark_price >= take_price:
-        return f"take_profit(mark={mark_price:.0f}>=take={take_price:.0f})"
+        return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
     if held_sec >= _TIME_LIMIT_SEC:
         return f"time_limit(held={held_sec}s>={_TIME_LIMIT_SEC}s)"
     return None
@@ -418,16 +460,32 @@ def _run_market(r, client, market: str) -> None:
             _log("no_mark_price", market=market, symbol=symbol)
             continue
 
-        reason = _check_exit(avg_price, mark_price, opened_ts)
+        # position hash 전체 읽기 (stop_pct/take_pct 포함)
+        pos_key = f"position:{market}:{symbol}"
+        pos_hash_raw = r.hgetall(pos_key)
+        pos_hash: dict = {}
+        if pos_hash_raw:
+            for k, v in pos_hash_raw.items():
+                dk = k.decode() if isinstance(k, bytes) else k
+                dv = v.decode() if isinstance(v, bytes) else v
+                pos_hash[dk] = dv
+
+        reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash)
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             held_sec = int(time.time()) - opened_ts
+            try:
+                _stop_pct = Decimal(pos_hash.get("stop_pct") or str(_STOP_LOSS_PCT))
+                _take_pct = Decimal(pos_hash.get("take_pct") or str(_TAKE_PROFIT_PCT))
+            except Exception:
+                _stop_pct = _STOP_LOSS_PCT
+                _take_pct = _TAKE_PROFIT_PCT
             _log("hold", market=market, symbol=symbol,
                  avg=str(avg_price), mark=str(mark_price),
                  pnl_pct=f"{pnl_pct:+.2f}%",
                  held_sec=held_sec,
-                 stop=str((avg_price * (1 - _STOP_LOSS_PCT)).quantize(q_unit)),
-                 take=str((avg_price * (1 + _TAKE_PROFIT_PCT)).quantize(q_unit)))
+                 stop=str((avg_price * (1 - _stop_pct)).quantize(q_unit)),
+                 take=str((avg_price * (1 + _take_pct)).quantize(q_unit)))
             continue
 
         # Exit 조건 충족 → 매도 lock 획득 후 주문

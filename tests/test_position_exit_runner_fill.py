@@ -183,3 +183,101 @@ def test_sync_positions_position_deleted_after_sell_fill():
 
     assert not r.exists("position:KR:005930")
     assert not r.sismember("position_index:KR", "005930")
+
+
+# ---------------------------------------------------------------------------
+# _check_exit — dynamic pct
+# ---------------------------------------------------------------------------
+
+from app.position_exit_runner import _check_exit, _STOP_LOSS_PCT, _TAKE_PROFIT_PCT
+
+
+def test_check_exit_uses_dynamic_stop_pct():
+    """pos hash의 stop_pct가 전역값보다 크면 해당 값을 사용한다."""
+    avg = Decimal("100000")
+    # stop_pct=0.03 → stop_price=97000; mark=97500 → no stop-loss with global 0.02 stop
+    # but also no stop-loss with dynamic 0.03 stop (97500 > 97000)
+    pos = {"stop_pct": "0.03", "take_pct": "0.04"}
+    mark = Decimal("97500")
+    result = _check_exit(avg, mark, int(time.time()), pos=pos)
+    assert result is None  # 97500 > 97000, not triggered
+
+    # mark=96900 → below dynamic stop 97000 → triggered
+    mark2 = Decimal("96900")
+    result2 = _check_exit(avg, mark2, int(time.time()), pos=pos)
+    assert result2 is not None
+    assert "stop_loss" in result2
+
+
+def test_check_exit_uses_dynamic_take_pct():
+    """pos hash의 take_pct가 전역값보다 크면 해당 값을 사용한다."""
+    avg = Decimal("100000")
+    # take_pct=0.04 → take_price=104000; global take_pct=0.02 → 102000
+    pos = {"stop_pct": "0.015", "take_pct": "0.04"}
+    mark = Decimal("103000")
+    # with global 0.02: 103000 >= 102000 → triggered
+    # with dynamic 0.04: 103000 < 104000 → not triggered
+    result = _check_exit(avg, mark, int(time.time()), pos=pos)
+    assert result is None  # dynamic 0.04 not reached
+
+    mark2 = Decimal("104001")
+    result2 = _check_exit(avg, mark2, int(time.time()), pos=pos)
+    assert result2 is not None
+    assert "take_profit" in result2
+
+
+def test_check_exit_fallback_when_no_pos():
+    """pos=None이면 전역 기본값을 사용한다."""
+    avg = Decimal("100000")
+    stop_price = avg * (1 - _STOP_LOSS_PCT)
+    # mark just below global stop
+    mark = stop_price - Decimal("1")
+    result = _check_exit(avg, mark, int(time.time()), pos=None)
+    assert result is not None
+    assert "stop_loss" in result
+
+
+def test_check_exit_fallback_when_pos_missing_keys():
+    """pos에 stop_pct/take_pct 키가 없으면 전역 기본값 fallback."""
+    avg = Decimal("100000")
+    pos = {"qty": "10", "currency": "KRW"}  # no stop_pct/take_pct
+    stop_price = avg * (1 - _STOP_LOSS_PCT)
+    mark = stop_price - Decimal("1")
+    result = _check_exit(avg, mark, int(time.time()), pos=pos)
+    assert result is not None
+    assert "stop_loss" in result
+
+
+# ---------------------------------------------------------------------------
+# _sync_positions — stop_pct/take_pct 저장 검증
+# ---------------------------------------------------------------------------
+
+def test_sync_positions_saves_signal_pct_for_new_symbol():
+    """새 BUY 포지션 발견 시 claw:signal_pct 값이 position hash에 저장된다."""
+    r = fakeredis.FakeRedis()
+    # signal_pct 키 사전 저장 (consensus_signal_runner가 저장하는 값)
+    r.hset("claw:signal_pct:KR:005930", mapping={"stop_pct": "0.0180", "take_pct": "0.0300"})
+
+    holdings = [{"symbol": "005930", "qty": Decimal("10"), "avg_price": Decimal("70000")}]
+    kis = _make_kis_mock(holdings)
+
+    _sync_positions(r, kis, "KR")
+
+    pos_raw = r.hgetall("position:KR:005930")
+    pos = {k.decode(): v.decode() for k, v in pos_raw.items()}
+    assert pos.get("stop_pct") == "0.0180"
+    assert pos.get("take_pct") == "0.0300"
+
+
+def test_sync_positions_uses_default_pct_when_no_signal_pct():
+    """signal_pct 키가 없으면 기본값 0.0200이 저장된다."""
+    r = fakeredis.FakeRedis()
+    holdings = [{"symbol": "105560", "qty": Decimal("5"), "avg_price": Decimal("50000")}]
+    kis = _make_kis_mock(holdings)
+
+    _sync_positions(r, kis, "KR")
+
+    pos_raw = r.hgetall("position:KR:105560")
+    pos = {k.decode(): v.decode() for k, v in pos_raw.items()}
+    assert pos.get("stop_pct") == "0.0200"
+    assert pos.get("take_pct") == "0.0200"

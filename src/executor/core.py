@@ -172,6 +172,8 @@ class Executor:
                 "qty": str(req.qty),
                 "limit_price": str(req.limit_price),
                 "signal_id": signal_id,
+                "stop_pct": str(signal.stop_pct) if signal.stop_pct else "0.02",
+                "take_pct": str(signal.take_pct) if signal.take_pct else "0.02",
             },
         )
         self.redis.expire(meta_key, 24 * 3600)

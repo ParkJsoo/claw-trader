@@ -111,6 +111,8 @@ class Signal(BaseModel):
     direction: Direction
     entry: SignalEntry
     stop: SignalStop
+    stop_pct: Optional[Decimal] = None
+    take_pct: Optional[Decimal] = None
 
     @field_validator("symbol")
     @classmethod

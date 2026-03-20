@@ -54,11 +54,19 @@ _MIN_RANGE_5M = 0.004
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
 _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 
-# stop loss 비율 (-2%)
-_STOP_PCT = Decimal("0.02")
-
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
+
+
+# ---------------------------------------------------------------------------
+# 동적 stop/take pct 계산
+# ---------------------------------------------------------------------------
+
+def _dynamic_pcts(range_5m: float) -> tuple:
+    """range_5m 기반 동적 stop/take pct 계산."""
+    stop = max(0.015, range_5m * 1.2)
+    take = max(0.020, range_5m * 2.0)
+    return Decimal(str(round(stop, 4))), Decimal(str(round(take, 4)))
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +271,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_symbol_cooldown")
         return None
 
-    # 7. stop price 계산 (market-aware 정규화)
-    stop_raw = current_price * (1 - _STOP_PCT)
+    # 7. stop/take pct 동적 계산 + stop price 계산 (market-aware 정규화)
+    stop_pct, take_pct = _dynamic_pcts(range_5m)
+    stop_raw = current_price * (1 - stop_pct)
     stop_price = _normalize_price(market, stop_raw)
     if stop_price <= 0:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=f"stop_price={stop_price} <= 0")
@@ -312,6 +321,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "qwen_emit": 1,
         "ret_5m": ret_5m,
         "range_5m": range_5m,
+        "stop_pct": str(stop_pct),
+        "take_pct": str(take_pct),
     }
 
     try:
@@ -319,6 +330,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     except Exception as e:
         _log("runner.error.publish_failed", symbol=symbol, signal_id=signal_id, error=str(e))
         return None
+
+    # stop_pct/take_pct를 exit runner가 읽을 수 있도록 저장 (TTL 1시간)
+    r.hset(f"claw:signal_pct:{market}:{symbol}", mapping={
+        "stop_pct": str(stop_pct),
+        "take_pct": str(take_pct),
+    })
+    r.expire(f"claw:signal_pct:{market}:{symbol}", 3600)
 
     # 10. 감사 로그 / 통계
     _save_audit(r, market, signal, ret_5m, range_5m)
@@ -330,6 +348,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         market=market,
         entry_price=str(current_price),
         stop_price=str(stop_price),
+        stop_pct=str(stop_pct),
+        take_pct=str(take_pct),
         ret_5m=f"{ret_5m:.4f}",
         range_5m=f"{range_5m:.4f}",
     )
@@ -372,7 +392,8 @@ def main():
     print(
         f"consensus: started poll_sec={_POLL_SEC} "
         f"prefilter=ret_5m>{_MIN_RET_5M} range_5m>{_MIN_RANGE_5M} "
-        f"stop_pct={_STOP_PCT} watchlist_kr={watchlist_kr} "
+        f"stop_pct=dynamic(range_5m*1.2,min=0.015) take_pct=dynamic(range_5m*2.0,min=0.020) "
+        f"watchlist_kr={watchlist_kr} "
         f"watchlist_us={watchlist_us}",
         flush=True,
     )

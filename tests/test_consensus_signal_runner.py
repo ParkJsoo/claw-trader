@@ -105,12 +105,13 @@ class TestRunOnceHappyPath:
 
     def test_stop_price_is_normalized(self):
         r = fakeredis.FakeRedis()
-        # 70000 * 0.98 = 68600 → tick=100 → 68600 (이미 딱 떨어짐)
+        # range_5m=0.005 → stop_pct=max(0.015, 0.005*1.2)=0.015
+        # stop_raw = 70000 * 0.985 = 68950 → tick=100 → 68900
         _set_dual(r, "KR", "005930", features_json=_make_features(current_price="70000"))
 
         result = run_once("KR", "005930", r)
 
-        assert result["stop"]["price"] == "68600"
+        assert result["stop"]["price"] == "68900"
 
     def test_audit_saved(self):
         r = fakeredis.FakeRedis()
