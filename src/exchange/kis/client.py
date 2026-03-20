@@ -250,6 +250,102 @@ class KisClient(ExchangeClient):
                 continue
         return result
 
+    def get_volume_rank(
+        self,
+        price_min: int = 1000,
+        price_max: int = 50000,
+        min_vol: int = 100000,
+    ) -> list[dict]:
+        """거래량 순위 상위 종목 조회 (FHPST01740000).
+
+        Returns: [{"symbol": str, "name": str, "price": int, "volume": int}, ...]
+        """
+        url = f"{self.base_url}/uapi/domestic-stock/v1/quotations/volume-rank"
+        resp = self._request_with_retry(
+            "get",
+            url,
+            headers=self._auth_headers("FHPST01740000"),
+            params={
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20171",
+                "FID_INPUT_ISCD": "0000",
+                "FID_DIV_CLS_CODE": "0",
+                "FID_BLNG_CLS_CODE": "0",
+                "FID_TRGT_CLS_CODE": "111111111",
+                "FID_TRGT_EXLS_CLS_CODE": "000000",
+                "FID_INPUT_PRICE_1": str(price_min),
+                "FID_INPUT_PRICE_2": str(price_max),
+                "FID_VOL_CNT": str(min_vol),
+                "FID_INPUT_DATE_1": "",
+            },
+        )
+        data = resp.json()
+        result = []
+        for item in (data.get("output") or []):
+            symbol = (item.get("mksc_shrn_iscd") or "").strip()
+            if not symbol:
+                continue
+            try:
+                result.append({
+                    "symbol": symbol,
+                    "name": item.get("hts_kor_isnm", ""),
+                    "price": int(item.get("stck_prpr", "0").replace(",", "") or 0),
+                    "volume": int(item.get("acml_vol", "0").replace(",", "") or 0),
+                })
+            except (ValueError, TypeError):
+                continue
+        return result
+
+    def get_fluctuation_rank(
+        self,
+        price_min: int = 1000,
+        price_max: int = 50000,
+        min_rate: float = 1.0,
+    ) -> list[dict]:
+        """등락률(상승률) 순위 상위 종목 조회 (FHPST01700000).
+
+        Returns: [{"symbol": str, "name": str, "price": int, "change_rate": float}, ...]
+        """
+        url = f"{self.base_url}/uapi/domestic-stock/v1/ranking/fluctuation"
+        resp = self._request_with_retry(
+            "get",
+            url,
+            headers=self._auth_headers("FHPST01700000"),
+            params={
+                "fid_cond_mrkt_div_code": "J",
+                "fid_cond_scr_div_code": "20170",
+                "fid_input_iscd": "0000",
+                "fid_rank_sort_cls_code": "0",
+                "fid_input_cnt_1": "0",
+                "fid_prc_cls_code": "1",
+                "fid_input_price_1": str(price_min),
+                "fid_input_price_2": str(price_max),
+                "fid_vol_cnt": "100000",
+                "fid_trgt_cls_code": "0",
+                "fid_trgt_exls_cls_code": "0",
+                "fid_div_cls_code": "0",
+                "fid_rsfl_rate1": str(min_rate),
+                "fid_rsfl_rate2": "30",
+            },
+        )
+        data = resp.json()
+        result = []
+        for item in (data.get("output") or []):
+            # 실제 응답 필드명: stck_shrn_iscd (등락률 API)
+            symbol = (item.get("stck_shrn_iscd") or "").strip()
+            if not symbol:
+                continue
+            try:
+                result.append({
+                    "symbol": symbol,
+                    "name": item.get("hts_kor_isnm", ""),
+                    "price": int(item.get("stck_prpr", "0").replace(",", "") or 0),
+                    "change_rate": float(item.get("prdy_ctrt", "0") or 0),
+                })
+            except (ValueError, TypeError):
+                continue
+        return result
+
     def cancel_order(self, order_id: str) -> bool:
         self._ensure_token()
 

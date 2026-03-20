@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
+import logging
 import os
 import signal as _signal
 import sys
@@ -20,6 +21,8 @@ from zoneinfo import ZoneInfo
 import redis
 
 from utils.redis_helpers import parse_watchlist, today_kst
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -142,6 +145,71 @@ def write_watchlist(r, market: str, symbols: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 동적 유니버스 선정 (거래량 + 등락률 교집합)
+# ---------------------------------------------------------------------------
+
+_DYNAMIC_VOLUME_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_VOLUME_TOP_N", "30"))
+_DYNAMIC_FLUCT_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_FLUCT_TOP_N", "30"))
+_DYNAMIC_FALLBACK_N = int(os.getenv("WATCHLIST_DYNAMIC_FALLBACK_N", "20"))
+
+
+def select_watchlist_dynamic(r, count: int) -> list[str] | None:
+    """KIS API로 거래량/등락률 순위 교집합 → 동적 universe 자동 선정.
+
+    1. 거래량 순위 상위 N개 + 등락률 순위 상위 N개 교집합 → universe
+    2. 교집합이 없으면 거래량 순위 상위 FALLBACK_N개 사용
+    3. KisClient 사용 불가 시 None 반환 (호출측에서 기존 로직 fallback)
+
+    Returns: 선정된 심볼 리스트, 또는 None (fallback 필요)
+    """
+    try:
+        from exchange.kis.client import KisClient
+        kis = KisClient()
+    except Exception as e:
+        print(f"watchlist_selector: KisClient unavailable ({e}) — skipping dynamic", flush=True)
+        return None
+
+    try:
+        vol_items = kis.get_volume_rank(price_min=1000, price_max=50000, min_vol=100000)
+        flu_items = kis.get_fluctuation_rank(price_min=1000, price_max=50000, min_rate=1.0)
+    except Exception as e:
+        print(f"watchlist_selector: KIS rank API error ({e}) — skipping dynamic", flush=True)
+        return None
+
+    vol_symbols = [item["symbol"] for item in vol_items[:_DYNAMIC_VOLUME_TOP_N]]
+    flu_symbols = [item["symbol"] for item in flu_items[:_DYNAMIC_FLUCT_TOP_N]]
+
+    vol_set = set(vol_symbols)
+    flu_set = set(flu_symbols)
+    intersection = [s for s in vol_symbols if s in flu_set]  # vol 순서 유지
+
+    if intersection:
+        universe = intersection
+        print(
+            f"watchlist_selector: dynamic universe intersection={len(universe)} "
+            f"(vol_top={len(vol_symbols)}, flu_top={len(flu_symbols)})",
+            flush=True,
+        )
+    else:
+        universe = vol_symbols[:_DYNAMIC_FALLBACK_N]
+        print(
+            f"watchlist_selector: dynamic universe fallback to vol_top={len(universe)} "
+            f"(no intersection between vol/flu)",
+            flush=True,
+        )
+
+    if not universe:
+        return None
+
+    # KIS API에서 이미 가격 필터 적용됐으므로 mark 없어도 허용 (score만 적용)
+    today = today_kst()
+    scored = [(sym, score_symbol(r, "KR", sym, today)) for sym in universe]
+    scored.sort(key=lambda x: -x[1])
+    selected = [sym for sym, _ in scored[:count]]
+    return selected
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -173,29 +241,49 @@ def main() -> None:
     if not universe_us:
         universe_us = parse_watchlist("GEN_WATCHLIST_US")
 
-    if not universe_kr and not universe_us:
-        print("watchlist_selector: no universe defined — exiting", flush=True)
-        r.delete(_LOCK_KEY)
-        sys.exit(1)
-
     print(
         f"watchlist_selector: started interval_sec={_SELECT_INTERVAL_SEC} "
         f"select_count={_SELECT_COUNT} universe_kr={universe_kr} universe_us={universe_us}",
         flush=True,
     )
 
+    _use_dynamic_kr = os.getenv("WATCHLIST_KR_DYNAMIC", "true").lower() not in ("false", "0", "no")
+
+    # dynamic 모드이면 universe_kr 없어도 KIS API로 선정 가능
+    if not universe_kr and not universe_us and not _use_dynamic_kr:
+        print("watchlist_selector: no universe defined — exiting", flush=True)
+        r.delete(_LOCK_KEY)
+        sys.exit(1)
+
     try:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
 
-            if universe_kr:
-                selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
-                write_watchlist(r, "KR", selected)
-                print(
-                    f"watchlist_selector: KR selected={selected} "
-                    f"from universe={len(universe_kr)} symbols",
-                    flush=True,
-                )
+            if universe_kr or _use_dynamic_kr:
+                if _use_dynamic_kr:
+                    selected = select_watchlist_dynamic(r, _SELECT_COUNT)
+                    if selected is None:
+                        # KIS 클라이언트 불가 → 기존 env var universe fallback
+                        selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT) if universe_kr else []
+                        print(
+                            f"watchlist_selector: KR fallback static selected={selected} "
+                            f"from universe={len(universe_kr)} symbols",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"watchlist_selector: KR dynamic selected={selected}",
+                            flush=True,
+                        )
+                else:
+                    selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
+                    print(
+                        f"watchlist_selector: KR selected={selected} "
+                        f"from universe={len(universe_kr)} symbols",
+                        flush=True,
+                    )
+                if selected:
+                    write_watchlist(r, "KR", selected)
 
             if universe_us:
                 selected_us = select_watchlist(r, "US", universe_us, _SELECT_COUNT)
