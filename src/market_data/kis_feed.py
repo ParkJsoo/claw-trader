@@ -46,16 +46,19 @@ class KisFeed:
                     return
             except Exception:
                 pass
-        resp = self.session.post(
-            f"{self.base_url}/oauth2/tokenP",
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
+        try:
+            resp = self.session.post(
+                f"{self.base_url}/oauth2/tokenP",
+                json={
+                    "grant_type": "client_credentials",
+                    "appkey": self.app_key,
+                    "appsecret": self.app_secret,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
         self.access_token = resp.json()["access_token"]
         # Redis에 캐시 저장
         if self._redis:
@@ -86,7 +89,10 @@ class KisFeed:
             print(f"kis_token_expired: {symbol} status={resp.status_code}")
             return None
 
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"KIS price request failed: {type(e).__name__}") from None
 
         raw = resp.json().get("output", {}).get("stck_prpr", "")
         price_str = str(raw).replace(",", "").strip() if raw else ""

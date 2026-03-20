@@ -115,7 +115,10 @@ class KisClient(ExchangeClient):
                 resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
             except Exception as e:
                 raise RuntimeError(f"KIS API {method.upper()} retry failed: {type(e).__name__}") from None
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except Exception as e:
+            raise RuntimeError(f"KIS API {method.upper()} status={resp.status_code}: {type(e).__name__}") from None
         return resp
 
     def ping(self) -> bool:

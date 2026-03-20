@@ -153,7 +153,7 @@ _DYNAMIC_FLUCT_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_FLUCT_TOP_N", "30"))
 _DYNAMIC_FALLBACK_N = int(os.getenv("WATCHLIST_DYNAMIC_FALLBACK_N", "20"))
 
 
-def select_watchlist_dynamic(r, count: int) -> list[str] | None:
+def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None:
     """KIS API로 거래량/등락률 순위 교집합 → 동적 universe 자동 선정.
 
     1. 거래량 순위 상위 N개 + 등락률 순위 상위 N개 교집합 → universe
@@ -162,12 +162,14 @@ def select_watchlist_dynamic(r, count: int) -> list[str] | None:
 
     Returns: 선정된 심볼 리스트, 또는 None (fallback 필요)
     """
-    try:
-        from exchange.kis.client import KisClient
-        kis = KisClient()
-    except Exception as e:
-        print(f"watchlist_selector: KisClient unavailable ({e}) — skipping dynamic", flush=True)
-        return None
+    kis = kis_client
+    if kis is None:
+        try:
+            from exchange.kis.client import KisClient
+            kis = KisClient()
+        except Exception as e:
+            print(f"watchlist_selector: KisClient unavailable ({e}) — skipping dynamic", flush=True)
+            return None
 
     try:
         vol_items = kis.get_volume_rank(price_min=1000, price_max=50000, min_vol=100000)
@@ -249,6 +251,15 @@ def main() -> None:
 
     _use_dynamic_kr = os.getenv("WATCHLIST_KR_DYNAMIC", "true").lower() not in ("false", "0", "no")
 
+    # H3: KisClient 1회 생성 후 재사용 (세션 누수 방지)
+    _kis_client = None
+    if _use_dynamic_kr:
+        try:
+            from exchange.kis.client import KisClient
+            _kis_client = KisClient()
+        except Exception as e:
+            print(f"watchlist_selector: KisClient init failed ({e}), will retry per cycle", flush=True)
+
     # dynamic 모드이면 universe_kr 없어도 KIS API로 선정 가능
     if not universe_kr and not universe_us and not _use_dynamic_kr:
         print("watchlist_selector: no universe defined — exiting", flush=True)
@@ -261,7 +272,7 @@ def main() -> None:
 
             if universe_kr or _use_dynamic_kr:
                 if _use_dynamic_kr:
-                    selected = select_watchlist_dynamic(r, _SELECT_COUNT)
+                    selected = select_watchlist_dynamic(r, _SELECT_COUNT, kis_client=_kis_client)
                     if selected is None:
                         # KIS 클라이언트 불가 → 기존 env var universe fallback
                         selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT) if universe_kr else []

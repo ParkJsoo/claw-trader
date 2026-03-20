@@ -145,11 +145,11 @@ class Executor:
         decision = self.risk.check(signal)
         if not decision.allow:
             self._record_reject(signal.signal_id, decision.reason, decision.meta)
-            return OrderStatus.ERROR
+            return OrderStatus.RISK_REJECTED
 
         if not self._lock_signal(signal.signal_id):
             self._record_reject(signal.signal_id, "idempotency_duplicate")
-            return OrderStatus.ERROR
+            return OrderStatus.RISK_REJECTED
 
         try:
             req = self.build_order_from_signal(signal)
@@ -158,6 +158,11 @@ class Executor:
             return OrderStatus.ERROR
 
         result = self.client.place_order(req)
+
+        # C2: BUY 주문 제출 시 buy_pending 키 설정 (position_exit_runner race condition 방지)
+        if req.side == OrderSide.BUY and result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
+            pending_key = f"claw:buy_pending:{self.market}:{req.symbol}"
+            self.redis.set(pending_key, "1", ex=120)
 
         order_key = f"order:{self.market}:{result.order_id}"
         self.redis.set(order_key, result.status.value, ex=7 * 86400)

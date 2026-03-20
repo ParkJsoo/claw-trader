@@ -34,6 +34,7 @@ class OrderStatus(str, Enum):
     FILLED = "FILLED"
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
+    RISK_REJECTED = "RISK_REJECTED"
     ERROR = "ERROR"
 
 

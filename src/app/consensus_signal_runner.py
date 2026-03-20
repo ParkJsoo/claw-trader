@@ -37,6 +37,10 @@ import redis
 from domain.models import Signal, SignalEntry, SignalStop
 from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours, is_paused
 
+# H1: 잔고 비율 기반 size_cash 계산
+_SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
+_SIZE_CASH_PCT_US = float(os.getenv("CONSENSUS_US_SIZE_CASH_PCT", "0.30"))
+
 # ---------------------------------------------------------------------------
 # 상수
 # ---------------------------------------------------------------------------
@@ -103,6 +107,30 @@ def _normalize_price(market: str, price: Decimal) -> Decimal:
 # ---------------------------------------------------------------------------
 # 로깅 헬퍼
 # ---------------------------------------------------------------------------
+
+def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
+    """H1: 잔고 비율 기반 size_cash 계산. 실패 시 1주(current_price) fallback."""
+    pct = _SIZE_CASH_PCT_KR if market == "KR" else _SIZE_CASH_PCT_US
+    try:
+        if market == "KR":
+            from exchange.kis.client import KisClient
+            client = KisClient()
+        else:
+            from exchange.ibkr.client import IbkrClient
+            client = IbkrClient()
+        snapshot = client.get_account_snapshot()
+        available = snapshot.available_cash
+        if available <= 0:
+            return current_price  # fallback: 1주
+        size_cash = Decimal(str(float(available) * pct))
+        # qty = size_cash / price 가 1 미만이면 1주 fallback
+        if size_cash < current_price:
+            return current_price
+        return size_cash
+    except Exception as e:
+        _log("size_cash_fallback", market=market, reason=str(e))
+        return current_price  # fallback: 1주
+
 
 def _log(event: str, **kwargs) -> None:
     parts = [event] + [f"{k}={v}" for k, v in kwargs.items()]
@@ -284,6 +312,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     signal_id = str(uuid.uuid4())
     ts = datetime.now(_KST).isoformat()
 
+    # H1: 잔고 비율 기반 size_cash 계산
+    size_cash = _calc_size_cash(market, current_price)
+
     try:
         signal = Signal(
             signal_id=signal_id,
@@ -293,7 +324,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
             direction="LONG",
             entry=SignalEntry(
                 price=current_price,
-                size_cash=current_price,   # 1주: qty = size_cash / price = 1
+                size_cash=size_cash,
             ),
             stop=SignalStop(price=stop_price),
         )
