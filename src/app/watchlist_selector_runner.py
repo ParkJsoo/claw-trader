@@ -99,12 +99,29 @@ def _get_dates(today: str) -> list[str]:
 # 선정 로직
 # ---------------------------------------------------------------------------
 
+_KR_MAX_PRICE = int(os.getenv("WATCHLIST_KR_MAX_PRICE", "150000"))  # KR 최대 매수 가능 가격 (원)
+
+
 def select_watchlist(r, market: str, universe: list[str], count: int) -> list[str]:
-    """유니버스에서 상위 N 종목 선정."""
+    """유니버스에서 상위 N 종목 선정. KR은 가격 필터 적용."""
     today = today_kst()
 
     scored = []
     for symbol in universe:
+        # KR: mark price 기준 가격 필터 (잔고로 매수 불가한 고가주 제외)
+        if market == "KR":
+            mark_raw = r.hgetall(f"mark:KR:{symbol}")
+            if mark_raw:
+                price_key = b"price" if b"price" in mark_raw else "price"
+                price_val = mark_raw.get(price_key)
+                if price_val:
+                    try:
+                        price = float(price_val.decode() if isinstance(price_val, bytes) else price_val)
+                        if price > _KR_MAX_PRICE:
+                            continue
+                    except (ValueError, TypeError):
+                        pass
+
         s = score_symbol(r, market, symbol, today)
         scored.append((symbol, s))
 
