@@ -92,3 +92,13 @@ Anchored VWAP 중심 구조
 ---
 
 ## ✅ Phase 14 — 안정화 & 고도화
+
+---
+
+## ✅ Phase 15 — 수익 개선 (2026-03-21)
+- Trailing stop (HWM 기반, 고점 대비 -1.5%)
+- Time limit 연장 (수익 중이면 최대 2배)
+- 비대칭 stop/take (1.5% / 3%, R:R 2:1)
+- Partial consensus (Claude EMIT + 뉴스 positive → 50% size)
+- Market regime filter (워치리스트 60%+ 하락 시 신호 억제)
+- max_concurrent 3, universe 12종목

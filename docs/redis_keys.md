@@ -49,6 +49,13 @@
 - ai:gen_index:{market}:{YYYYMMDD} — 생성기 발행 인덱스 ZSET (score=ts_ms, member=signal_id, TTL 7d)
 - ai:gen_stats:{market}:{YYYYMMDD} — 생성기 통계 HASH (generated/no_emit/skip_cold_start/skip_cooldown/skip_daily_cap/error_* 카운터, TTL 7d)
 
+## Position Exit Runner (PHASE 15)
+- `claw:trail_hwm:{market}:{symbol}` — Trailing stop 고점(HWM) STRING. BUY fill 시 avg_price로 초기화, 매 폴링마다 max(prev, mark)로 갱신, SELL fill 시 삭제. TTL=_POSITION_TTL(7d)
+- `claw:buy_pending:{market}:{symbol}` — BUY 주문 제출 후 잔고 반영 대기 플래그. TTL=120s. position_exit_runner의 SELL race condition 방지.
+
+## Consensus Signal Runner (PHASE 15)
+- `consensus:symbol_cooldown:{market}:{symbol}` — ~~Phase 11 symbol-level cooldown~~ **Phase 15에서 제거** (strategy engine 쿨다운으로 충분)
+
 ## Strategy Engine (PHASE 6)
 - strategy:dedupe:{market}:{signal_id} — 신호 중복 처리 방지 (SET NX, TTL 7d)
 - strategy:cooldown:{market}:{symbol} — 종목별 마지막 통과 ts_ms (SET EX cooldown_sec)
