@@ -53,6 +53,8 @@ _LOCK_TTL = max(120, int(_POLL_SEC * 3) + 30)  # poll 주기의 3배 + 여유
 _STOP_LOSS_PCT = Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.02"))
 _TAKE_PROFIT_PCT = Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.02"))
 _TIME_LIMIT_SEC = int(os.getenv("EXIT_TIME_LIMIT_SEC", "1800"))
+_TRAIL_STOP_PCT = Decimal(os.getenv("EXIT_TRAIL_STOP_PCT", "0.015"))
+_TIME_LIMIT_MAX_SEC = int(os.getenv("EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_SEC * 2)))
 
 # 설정값 유효성 검증
 if not (Decimal("0") < _STOP_LOSS_PCT < Decimal("1")):
@@ -223,6 +225,7 @@ def _sync_positions(r, client, market: str) -> dict:
                 order_id = f"buy_discovered_{symbol}_{int(time.time())}"
                 _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id,
                                  market=market)
+                r.set(f"claw:trail_hwm:{market}:{symbol}", str(avg_price), ex=_POSITION_TTL)
 
         # stop_pct/take_pct: 새 포지션이면 signal_pct에서 읽기, 기존이면 유지
         if symbol not in existing:
@@ -323,6 +326,7 @@ def _sync_positions(r, client, market: str) -> dict:
             pipe = r.pipeline()
             pipe.expire(f"position:{market}:{sym}", 60)
             pipe.srem(idx_key, sym)
+            pipe.delete(f"claw:trail_hwm:{market}:{sym}")
             pipe.execute()
             _log("position_removed", market=market, symbol=sym,
                  reason="not_in_holdings")
@@ -349,10 +353,11 @@ def _get_mark_price(r, market: str, symbol: str):
 # Exit 조건 판단
 # ---------------------------------------------------------------------------
 
-def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None):
+def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None, hwm_price: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
+    hwm_price: trailing stop용 고점(High Water Mark). 제공 시 HWM 기반 trail stop 적용.
     """
     if avg_price <= 0 or mark_price <= 0:
         return None
@@ -372,6 +377,12 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
         take_pct = _TAKE_PROFIT_PCT
 
     stop_price = avg_price * (1 - stop_pct)
+
+    # Trailing stop: HWM에서 trail_pct 이상 하락하면 청산 (floor = static stop)
+    if hwm_price is not None and hwm_price > avg_price:
+        trail_stop = hwm_price * (1 - _TRAIL_STOP_PCT)
+        stop_price = max(stop_price, trail_stop)  # 더 높은(엄격한) stop 적용
+
     take_price = avg_price * (1 + take_pct)
     # H2: opened_ts 호환 — >1e12이면 밀리초, 아니면 초
     now_ms = int(time.time() * 1000)
@@ -385,7 +396,11 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
     if mark_price >= take_price:
         return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
     if held_sec >= _TIME_LIMIT_SEC:
-        return f"time_limit(held={held_sec}s>={_TIME_LIMIT_SEC}s)"
+        # 수익 중이면 TIME_LIMIT_MAX_SEC까지 연장 (추세 포지션 보호)
+        if mark_price > avg_price and held_sec < _TIME_LIMIT_MAX_SEC:
+            pass  # 연장: 아직 exit 조건 아님
+        else:
+            return f"time_limit(held={held_sec}s>={_TIME_LIMIT_SEC}s)"
     return None
 
 
@@ -508,7 +523,17 @@ def _run_market(r, client, market: str) -> None:
                 dv = v.decode() if isinstance(v, bytes) else v
                 pos_hash[dk] = dv
 
-        reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash)
+        # Trailing stop용 HWM(고점) 갱신
+        hwm_key = f"claw:trail_hwm:{market}:{symbol}"
+        hwm_raw = r.get(hwm_key)
+        try:
+            prev_hwm = Decimal(hwm_raw.decode()) if hwm_raw else mark_price
+        except Exception:
+            prev_hwm = mark_price
+        hwm_price = max(prev_hwm, mark_price)
+        r.set(hwm_key, str(hwm_price), ex=_POSITION_TTL)
+
+        reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price)
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             # H2: opened_ts 호환
@@ -600,6 +625,8 @@ def main():
         f"stop_loss={float(_STOP_LOSS_PCT)*100:.1f}% "
         f"take_profit={float(_TAKE_PROFIT_PCT)*100:.1f}% "
         f"time_limit={_TIME_LIMIT_SEC}s "
+        f"trail_stop={float(_TRAIL_STOP_PCT)*100:.1f}% "
+        f"time_limit_max={_TIME_LIMIT_MAX_SEC}s "
         f"lock_ttl={_LOCK_TTL}s",
         flush=True,
     )

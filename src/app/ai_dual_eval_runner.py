@@ -58,7 +58,8 @@ def _compute_consensus(c_emit: bool, c_dir: str, q_emit: bool, q_dir: str) -> tu
     Rules:
     - 둘 다 emit=true AND direction 동일 → EMIT
     - 둘 다 emit=true BUT direction 다름 → HOLD
-    - 한쪽만 emit=true → HOLD
+    - Claude emit=true, Qwen emit=false → PARTIAL_CLAUDE (뉴스 조건부 허용)
+    - Qwen emit=true, Claude emit=false → HOLD (Claude 우선)
     - 둘 다 emit=false → SKIP
     """
     if c_emit and q_emit:
@@ -67,6 +68,8 @@ def _compute_consensus(c_emit: bool, c_dir: str, q_emit: bool, q_dir: str) -> tu
         return "HOLD", "HOLD"
     if not c_emit and not q_emit:
         return "SKIP", "HOLD"
+    if c_emit and not q_emit:
+        return "PARTIAL_CLAUDE", c_dir
     return "HOLD", "HOLD"
 
 

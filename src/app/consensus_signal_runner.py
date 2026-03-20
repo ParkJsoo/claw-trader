@@ -27,7 +27,7 @@ import signal as _signal
 import sys
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -194,6 +194,58 @@ def _record_reject(r, market: str, reason_code: str) -> None:
     r.expire(stats_key, _STATS_TTL)
 
 
+def _get_dates_for_news(today: str) -> list:
+    """오늘과 어제 날짜 반환 (뉴스 조회용)."""
+    try:
+        dt = datetime.strptime(today, "%Y%m%d")
+        yesterday = (dt - timedelta(days=1)).strftime("%Y%m%d")
+        return [today, yesterday]
+    except ValueError:
+        return [today]
+
+
+def _has_positive_news(r, market: str, symbol: str) -> bool:
+    """오늘/어제 뉴스 중 positive+high/medium 뉴스가 있으면 True."""
+    today = today_kst()
+    for date_str in _get_dates_for_news(today):
+        news_key = f"news:symbol:{market}:{symbol}:{date_str}"
+        items = r.lrange(news_key, 0, 9)
+        for raw in items:
+            try:
+                d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                sentiment = d.get("sentiment", "").lower()
+                impact = d.get("impact", "").lower()
+                if sentiment == "positive" and impact in ("high", "medium"):
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
+    """워치리스트 종목 중 ret_5m<0 비율이 60% 초과이면 하락 regime True 반환."""
+    if not watchlist:
+        return False
+    bearish = 0
+    total = 0
+    for symbol in watchlist:
+        raw = r.hget(f"ai:dual:last:claude:{market}:{symbol}", "features_json")
+        if not raw:
+            continue
+        try:
+            features = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            ret_5m = features.get("ret_5m")
+            if ret_5m is not None:
+                total += 1
+                if float(ret_5m) < 0:
+                    bearish += 1
+        except Exception:
+            continue
+    if total < 3:
+        return False
+    return (bearish / total) > 0.6
+
+
 # ---------------------------------------------------------------------------
 # 핵심 처리: 심볼 1개
 # ---------------------------------------------------------------------------
@@ -232,7 +284,10 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     # 3. dual consensus 확인 (emit)
     c_emit = claude.get("emit") == "1"
     q_emit = qwen.get("emit") == "1"
-    if not c_emit or not q_emit:
+    _partial_consensus = False  # True이면 50% size_cash 적용
+
+    if not c_emit:
+        # Claude가 HOLD → 무조건 reject
         _log(
             "runner.reject.consensus_failed",
             symbol=symbol,
@@ -242,13 +297,36 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_consensus_failed")
         return None
 
-    # 4. 방향 일치 확인
+    if not q_emit:
+        # Claude EMIT + Qwen HOLD → 뉴스 positive이면 partial consensus 허용
+        if _has_positive_news(r, market, symbol):
+            _partial_consensus = True
+            _log("runner.partial_consensus", symbol=symbol,
+                 reason="claude_emit+positive_news")
+            _record_reject(r, market, "partial_consensus_approved")
+        else:
+            _log(
+                "runner.reject.consensus_failed",
+                symbol=symbol,
+                claude_emit=claude.get("emit"),
+                qwen_emit=qwen.get("emit"),
+            )
+            _record_reject(r, market, "reject_consensus_failed")
+            return None
+
+    # 4. 방향 일치 확인 (partial consensus는 Claude 방향만 사용)
     c_dir = claude.get("direction", "")
     q_dir = qwen.get("direction", "")
-    if not c_dir or c_dir != q_dir:
-        _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
-        _record_reject(r, market, "reject_direction_mismatch")
-        return None
+    if not _partial_consensus:
+        if not c_dir or c_dir != q_dir:
+            _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
+            _record_reject(r, market, "reject_direction_mismatch")
+            return None
+    else:
+        if not c_dir:
+            _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
+            _record_reject(r, market, "reject_direction_mismatch")
+            return None
 
     # Phase 10: LONG 방향만 처리
     if c_dir != "LONG":
@@ -292,13 +370,6 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    # 6-b. Phase 11: symbol-level cooldown — prefilter 통과 후 설정 (phantom cooldown 방지)
-    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
-    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
-        _log("runner.reject.symbol_cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
-        _record_reject(r, market, "reject_symbol_cooldown")
-        return None
-
     # 7. stop/take pct 동적 계산 + stop price 계산 (market-aware 정규화)
     stop_pct, take_pct = _dynamic_pcts(range_5m)
     stop_raw = current_price * (1 - stop_pct)
@@ -314,6 +385,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
 
     # H1: 잔고 비율 기반 size_cash 계산
     size_cash = _calc_size_cash(market, current_price)
+    if _partial_consensus:
+        size_cash = max(size_cash / 2, current_price)  # partial: 50% (최소 1주)
 
     try:
         signal = Signal(
@@ -348,6 +421,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "source": "consensus_signal_runner",
         "status": "candidate",
         "consensus": "EMIT",
+        "partial_consensus": _partial_consensus,
         "claude_emit": 1,
         "qwen_emit": 1,
         "ret_5m": ret_5m,
@@ -440,12 +514,16 @@ def main():
             # KR 처리 (장중일 때만)
             if is_market_hours("KR"):
                 watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
-                for symbol in watchlist_kr:
-                    try:
-                        run_once("KR", symbol, r)
-                    except Exception as e:
-                        _log("runner.error.unexpected", market="KR",
-                             symbol=symbol, error=str(e))
+                if _is_bearish_regime(r, "KR", watchlist_kr):
+                    _log("runner.regime.bearish_skip", market="KR",
+                         watchlist_size=len(watchlist_kr))
+                else:
+                    for symbol in watchlist_kr:
+                        try:
+                            run_once("KR", symbol, r)
+                        except Exception as e:
+                            _log("runner.error.unexpected", market="KR",
+                                 symbol=symbol, error=str(e))
 
             # US 처리 (장중일 때만)
             if is_market_hours("US"):
