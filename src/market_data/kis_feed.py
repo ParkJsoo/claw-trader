@@ -94,10 +94,24 @@ class KisFeed:
         except Exception as e:
             raise RuntimeError(f"KIS price request failed: {type(e).__name__}") from None
 
-        raw = resp.json().get("output", {}).get("stck_prpr", "")
+        output = resp.json().get("output", {})
+        raw = output.get("stck_prpr", "")
         price_str = str(raw).replace(",", "").strip() if raw else ""
         if not price_str:
             return None
+
+        # acml_vol(누적거래량) Redis 저장 (volume surge 필터용)
+        try:
+            vol_raw = output.get("acml_vol", "")
+            vol_str = str(vol_raw).replace(",", "").strip() if vol_raw else ""
+            if vol_str and self._redis:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                today = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+                vol_key = f"vol:KR:{symbol}:{today}"
+                self._redis.set(vol_key, vol_str, ex=25 * 3600)  # 다음날 자정까지 유지
+        except Exception:
+            pass
 
         try:
             return Decimal(price_str)

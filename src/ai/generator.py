@@ -104,13 +104,12 @@ class AISignalGenerator:
 
         current_price = parsed[0][1]  # LPUSH 기준 인덱스 0이 최신
 
-        def price_near(target_ms: int) -> Optional[Decimal]:
+        def price_near(target_ms: int, tolerance_ms: int = 120_000) -> Optional[Decimal]:
             best_ts, best_p = None, None
             for ts, p in parsed:
                 if best_ts is None or abs(ts - target_ms) < abs(best_ts - target_ms):
                     best_ts, best_p = ts, p
-            # 2분 초과 시 유효 데이터 없음으로 처리 (잘못된 피처 방지)
-            if best_ts is None or abs(best_ts - target_ms) > 120_000:
+            if best_ts is None or abs(best_ts - target_ms) > tolerance_ms:
                 return None
             return best_p
 
@@ -121,6 +120,7 @@ class AISignalGenerator:
 
         p1m = price_near(now_ms - 60_000)
         p5m = price_near(now_ms - 300_000)
+        p15m = price_near(now_ms - 900_000, tolerance_ms=300_000)  # 15분, 5분 tolerance
 
         prices_5m = [p for ts, p in parsed if ts >= now_ms - 300_000]
         range_5m: Optional[float] = None
@@ -131,6 +131,7 @@ class AISignalGenerator:
             "current_price": str(current_price),
             "ret_1m": ret(p1m),
             "ret_5m": ret(p5m),
+            "ret_15m": ret(p15m),
             "range_5m": range_5m,
         }
 

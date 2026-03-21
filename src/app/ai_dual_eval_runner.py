@@ -220,7 +220,17 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     except (TypeError, ValueError):
         pass
 
-    # 2-c. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
+    # 2-c. ret_15m prefilter: 15분 추세가 음수이면 skip
+    try:
+        ret_15m_val = features.get("ret_15m")
+        if ret_15m_val is not None and float(ret_15m_val) < 0:
+            r.hincrby(stats_key, "skip_prefilter_ret15m", 1)
+            r.expire(stats_key, _DUAL_TTL)
+            return
+    except (TypeError, ValueError):
+        pass
+
+    # 2-d. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
     call_key = f"ai:dual_call_count:{market}:{today}"
     call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _DUAL_DAILY_CALL_CAP, 3 * 86400)
     if call_count == -1:
@@ -229,7 +239,7 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
         print(f"dual: call_cap_reached {market}:{symbol} cap={_DUAL_DAILY_CALL_CAP}", flush=True)
         return
 
-    # 2-c. 뉴스 컨텍스트 추가 (있으면 AI 프롬프트에 포함)
+    # 2-e. 뉴스 컨텍스트 추가 (있으면 AI 프롬프트에 포함)
     news_ctx = get_symbol_context(r, market, symbol, today, max_items=3)
     if not news_ctx:
         # 오늘 뉴스 없으면 어제 뉴스 확인
@@ -238,7 +248,7 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     if news_ctx:
         features["news_summary"] = news_ctx
 
-    # 2-d. 뉴스 컨텍스트 추가 완료 → 3. 두 provider 평가
+    # 2-f. 뉴스 컨텍스트 추가 완료 → 3. 두 provider 평가
     c_result = claude.evaluate(market, symbol, features)
     q_result = qwen.evaluate(market, symbol, features)
 

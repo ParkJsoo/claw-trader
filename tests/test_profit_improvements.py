@@ -194,7 +194,8 @@ class TestPartialConsensus:
         assert Decimal(result["entry"]["size_cash"]) == Decimal("50000")
 
     def test_full_consensus_not_affected(self):
-        """Claude+Qwen 모두 EMIT이면 기존처럼 full size_cash."""
+        """Claude+Qwen 모두 EMIT이면 full consensus — 뉴스/confidence 가중 적용.
+        뉴스 없음(0.8) × confidence 0.7(1.0배) = 0.8배 → 80000."""
         r = fakeredis.FakeRedis()
         _make_dual_eval_data(r, "KR", "005930", c_emit=True, q_emit=True)
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"), \
@@ -202,7 +203,8 @@ class TestPartialConsensus:
             result = run_once("KR", "005930", r)
         assert result is not None
         assert result.get("partial_consensus") is False
-        assert Decimal(result["entry"]["size_cash"]) == Decimal("100000")
+        # 뉴스 없음 → news_mult=0.8, conf=0.7 → conf_mult=1.0 → 100000 * 0.8 = 80000
+        assert Decimal(result["entry"]["size_cash"]) == Decimal("80000.00")
 
 
 # ---------------------------------------------------------------------------

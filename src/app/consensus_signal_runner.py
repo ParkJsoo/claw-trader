@@ -58,6 +58,11 @@ _MIN_RANGE_5M = 0.004
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
 _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 
+# Phase 17: 신호 품질 강화
+_MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
+_VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
+_VOLUME_LOOKBACK_DAYS = int(os.getenv("CONSENSUS_VOLUME_LOOKBACK_DAYS", "5"))
+
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
 
@@ -222,6 +227,65 @@ def _has_positive_news(r, market: str, symbol: str) -> bool:
     return False
 
 
+def _get_news_score(r, market: str, symbol: str) -> str:
+    """오늘/어제 뉴스 최고 임팩트 반환: 'high', 'medium', 'none'."""
+    today = today_kst()
+    for date_str in _get_dates_for_news(today):
+        news_key = f"news:symbol:{market}:{symbol}:{date_str}"
+        items = r.lrange(news_key, 0, 9)
+        for raw in items:
+            try:
+                d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                sentiment = d.get("sentiment", "").lower()
+                impact = d.get("impact", "").lower()
+                if sentiment == "positive" and impact == "high":
+                    return "high"
+            except Exception:
+                continue
+        for raw in items:
+            try:
+                d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                sentiment = d.get("sentiment", "").lower()
+                impact = d.get("impact", "").lower()
+                if sentiment == "positive" and impact == "medium":
+                    return "medium"
+            except Exception:
+                continue
+    return "none"
+
+
+def _has_volume_surge(r, market: str, symbol: str) -> bool:
+    """오늘 거래량이 최근 LOOKBACK일 평균 대비 SURGE_RATIO 이상이면 True.
+    데이터 부족 시 True 반환 (permissive default)."""
+    today = today_kst()
+    today_raw = r.get(f"vol:{market}:{symbol}:{today}")
+    if not today_raw:
+        return True  # 데이터 없으면 통과 (현재 장 초반 등)
+    try:
+        today_vol = int(today_raw.decode() if isinstance(today_raw, bytes) else today_raw)
+    except (ValueError, TypeError):
+        return True
+
+    from datetime import datetime, timedelta
+    vols = []
+    for i in range(1, _VOLUME_LOOKBACK_DAYS + 1):
+        try:
+            dt = datetime.strptime(today, "%Y%m%d")
+            past_date = (dt - timedelta(days=i)).strftime("%Y%m%d")
+            raw = r.get(f"vol:{market}:{symbol}:{past_date}")
+            if raw:
+                v = int(raw.decode() if isinstance(raw, bytes) else raw)
+                if v > 0:
+                    vols.append(v)
+        except Exception:
+            continue
+
+    if len(vols) < 3:
+        return True  # 과거 데이터 부족 → 통과
+    avg_vol = sum(vols) / len(vols)
+    return today_vol >= avg_vol * _VOLUME_SURGE_RATIO
+
+
 def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
     """워치리스트 종목 중 ret_5m<0 비율이 60% 초과이면 하락 regime True 반환."""
     if not watchlist:
@@ -357,6 +421,24 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
 
+    # 5-b. ret_15m prefilter: 15분 추세 확인
+    try:
+        ret_15m_raw = c_features.get("ret_15m")
+        if ret_15m_raw is not None:
+            ret_15m = float(ret_15m_raw)
+            if ret_15m < _MIN_RET_15M:
+                _log("runner.reject.prefilter_ret_15m", symbol=symbol, ret_15m=ret_15m)
+                _record_reject(r, market, "reject_prefilter_ret_15m")
+                return None
+    except (TypeError, ValueError):
+        pass  # 데이터 없으면 통과 (mark_hist 부족 시 등)
+
+    # 5-c. Volume surge 필터 (KR만 — US는 데이터 없음)
+    if market == "KR" and not _has_volume_surge(r, market, symbol):
+        _log("runner.reject.volume_no_surge", symbol=symbol)
+        _record_reject(r, market, "reject_volume_no_surge")
+        return None
+
     # 6. current_price 추출 및 검증
     try:
         price_raw = c_features.get("current_price")
@@ -383,10 +465,40 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     signal_id = str(uuid.uuid4())
     ts = datetime.now(_KST).isoformat()
 
-    # H1: 잔고 비율 기반 size_cash 계산
-    size_cash = _calc_size_cash(market, current_price)
+    # H1: 잔고 비율 기반 size_cash + 뉴스/confidence 가중
+    base_size = _calc_size_cash(market, current_price)
+
+    news_score = "partial"
+    c_conf = 0.0
     if _partial_consensus:
-        size_cash = max(size_cash / 2, current_price)  # partial: 50% (최소 1주)
+        # partial consensus: 50% 고정
+        size_cash = max(base_size / 2, current_price)
+    else:
+        # full consensus: 뉴스 스코어 기반 가중
+        news_score = _get_news_score(r, market, symbol)
+        if news_score == "high":
+            news_mult = Decimal("1.0")
+        elif news_score == "medium":
+            news_mult = Decimal("0.9")
+        else:
+            news_mult = Decimal("0.8")  # 뉴스 없으면 80%
+
+        # Claude confidence 가중 (confidence >= 0.8 → +20%, < 0.6 → -20%)
+        try:
+            c_conf = float(claude.get("confidence") or "0.7")
+        except (ValueError, TypeError):
+            c_conf = 0.7
+        if c_conf >= 0.8:
+            conf_mult = Decimal("1.2")
+        elif c_conf < 0.6:
+            conf_mult = Decimal("0.8")
+        else:
+            conf_mult = Decimal("1.0")
+
+        size_cash = max(base_size * news_mult * conf_mult, current_price)
+        _log("size_cash_weighted", symbol=symbol, news=news_score,
+             conf=f"{c_conf:.2f}", mult=str(news_mult * conf_mult),
+             size_cash=str(size_cash))
 
     try:
         signal = Signal(
@@ -428,6 +540,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "range_5m": range_5m,
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
+        "news_score": news_score if not _partial_consensus else "partial",
+        "claude_conf": str(c_conf) if not _partial_consensus else "0.0",
     }
 
     try:
