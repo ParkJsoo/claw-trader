@@ -22,9 +22,17 @@ _LUA_UPDATE_STREAK = """
 local streak = tonumber(redis.call('GET', KEYS[1]) or '0')
 local pnl_sign = tonumber(ARGV[1])
 if pnl_sign > 0 then
-    streak = (streak > 0) and (streak + 1) or 1
+    if streak > 0 then
+        streak = streak + 1
+    else
+        streak = 1
+    end
 elseif pnl_sign < 0 then
-    streak = (streak < 0) and (streak - 1) or -1
+    if streak < 0 then
+        streak = streak - 1
+    else
+        streak = -1
+    end
 end
 redis.call('SET', KEYS[1], tostring(streak))
 return streak

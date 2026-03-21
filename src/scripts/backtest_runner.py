@@ -12,6 +12,7 @@ load_dotenv()
 import os
 import sys
 import time
+from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -80,7 +81,6 @@ def main() -> None:
         flush=True,
     )
 
-    from datetime import datetime
     while True:
         now = datetime.now(_KST)
         sent_key = f"backtest:sent:KR:{today_kst()}"

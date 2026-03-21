@@ -53,6 +53,8 @@ def _ack_ok() -> None:
 
 
 def main() -> None:
+    # supervisord eventlistener 전용. 수동 실행 금지.
+    # supervisord가 PROCESS_STATE_FATAL 이벤트 발생 시 자동 호출.
     while True:
         sys.stdout.write("READY\n")
         sys.stdout.flush()

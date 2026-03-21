@@ -104,8 +104,8 @@ class PerformanceReporter:
         wins = [t for t in trades if t["_pnl"] > 0]
         losses = [t for t in trades if t["_pnl"] < 0]
 
-        gross_profit = sum(t["_pnl"] for t in wins)
-        gross_loss = sum(abs(t["_pnl"]) for t in losses)
+        gross_profit = sum((t["_pnl"] for t in wins), Decimal("0"))
+        gross_loss = sum((abs(t["_pnl"]) for t in losses), Decimal("0"))
         net_pnl = gross_profit - gross_loss
 
         win_rate = len(wins) / len(trades) if trades else 0.0

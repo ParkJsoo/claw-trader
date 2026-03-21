@@ -14,8 +14,12 @@ import signal as _signal
 import sys
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import redis
+
+_KST = ZoneInfo("Asia/Seoul")
 
 _HEDGE_SYMBOL = os.getenv("HEDGE_SYMBOL_KR", "114800")
 _HEDGE_TRIGGER_RET = float(os.getenv("HEDGE_TRIGGER_RET", "-0.01"))  # -1% 급락
@@ -82,7 +86,7 @@ def _push_hedge_signal(r, market: str, symbol: str, price: float, size_cash: flo
     stop_price = round(price * 0.98, 0)
     signal = {
         "signal_id": signal_id,
-        "ts": str(int(time.time() * 1000)),
+        "ts": datetime.now(_KST).isoformat(),
         "market": market,
         "symbol": symbol,
         "direction": "LONG",
@@ -102,42 +106,53 @@ def _push_hedge_signal(r, market: str, symbol: str, price: float, size_cash: flo
 def run_once(r, market: str = "KR") -> bool:
     """헤지 조건 체크. 발동 시 True 반환."""
     lock_key = f"claw:hedge:lock:{market}"
-    if r.exists(lock_key):
+
+    # lock 선획득 (atomic) — 이미 실행 중이거나 쿨다운 중이면 즉시 False
+    if not r.set(lock_key, "1", nx=True, ex=_HEDGE_LOCK_TTL):
         return False
-
-    if not _has_long_positions(r, market):
-        return False
-
-    avg_ret = _avg_market_ret(r, market)
-    if avg_ret is None or avg_ret >= _HEDGE_TRIGGER_RET:
-        return False
-
-    # 인버스 ETF 이미 보유 중이면 스킵
-    pos = r.hgetall(f"position:{market}:{_HEDGE_SYMBOL}")
-    if pos:
-        qty_raw = pos.get(b"qty") or pos.get("qty", b"0")
-        if float(qty_raw.decode() if isinstance(qty_raw, bytes) else qty_raw) > 0:
-            return False
-
-    price = _get_mark_price(r, market, _HEDGE_SYMBOL)
-    if not price or price <= 0:
-        print(f"hedge_runner: no mark price for {_HEDGE_SYMBOL}, skipping", flush=True)
-        return False
-
-    _push_hedge_signal(r, market, _HEDGE_SYMBOL, price, _HEDGE_SIZE_CASH)
-    r.set(lock_key, "1", ex=_HEDGE_LOCK_TTL)
 
     try:
-        from guards.notifier import send_telegram
-        send_telegram(
-            f"[CLAW] 헤지 발동\n"
-            f"market={market} avg_ret_5m={avg_ret:.2%}\n"
-            f"-> {_HEDGE_SYMBOL} BUY {_HEDGE_SIZE_CASH:,.0f}원"
-        )
-    except Exception:
-        pass
+        if not _has_long_positions(r, market):
+            r.delete(lock_key)
+            return False
 
-    return True
+        avg_ret = _avg_market_ret(r, market)
+        if avg_ret is None or avg_ret >= _HEDGE_TRIGGER_RET:
+            r.delete(lock_key)
+            return False
+
+        # 인버스 ETF 이미 보유 중이면 스킵
+        pos = r.hgetall(f"position:{market}:{_HEDGE_SYMBOL}")
+        if pos:
+            qty_raw = pos.get(b"qty") or pos.get("qty", b"0")
+            if float(qty_raw.decode() if isinstance(qty_raw, bytes) else qty_raw) > 0:
+                r.delete(lock_key)
+                return False
+
+        price = _get_mark_price(r, market, _HEDGE_SYMBOL)
+        if not price or price <= 0:
+            print(f"hedge_runner: no mark price for {_HEDGE_SYMBOL}, skipping", flush=True)
+            r.delete(lock_key)
+            return False
+
+        _push_hedge_signal(r, market, _HEDGE_SYMBOL, price, _HEDGE_SIZE_CASH)
+        # lock은 유지 (TTL 동안 재발동 방지)
+
+        try:
+            from guards.notifier import send_telegram
+            send_telegram(
+                f"[CLAW] 헤지 발동\n"
+                f"market={market} avg_ret_5m={avg_ret:.2%}\n"
+                f"-> {_HEDGE_SYMBOL} BUY {_HEDGE_SIZE_CASH:,.0f}원"
+            )
+        except Exception:
+            pass
+
+        return True
+    except Exception as e:
+        r.delete(lock_key)  # 예외 시 lock 해제
+        print(f"hedge_runner: run_once error {e}", flush=True)
+        return False
 
 
 _LOCK_KEY = "hedge_runner:lock:KR"
