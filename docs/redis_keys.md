@@ -56,6 +56,10 @@
 ## Consensus Signal Runner (PHASE 15)
 - `consensus:symbol_cooldown:{market}:{symbol}` — ~~Phase 11 symbol-level cooldown~~ **Phase 15에서 제거** (strategy engine 쿨다운으로 충분)
 
+## Backtest (Phase 18)
+- `backtest:result:{market}:{YYYYMMDD}` — 파라미터 스윕 결과 JSON LIST (상위 20개, TTL 90d)
+- `backtest:sent:{market}:{YYYYMMDD}` — 당일 백테스트 발송 완료 플래그 (TTL 1h)
+
 ## Strategy Engine (PHASE 6)
 - strategy:dedupe:{market}:{signal_id} — 신호 중복 처리 방지 (SET NX, TTL 7d)
 - strategy:cooldown:{market}:{symbol} — 종목별 마지막 통과 ts_ms (SET EX cooldown_sec)
