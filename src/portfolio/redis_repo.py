@@ -140,7 +140,7 @@ class RedisPositionRepository:
 
         result = []
         for b in symbols:
-            symbol = b.decode()
+            symbol = b.decode() if isinstance(b, bytes) else b
             pos = self.get_position(market, symbol)
             if pos:
                 result.append(pos)
@@ -267,14 +267,16 @@ class RedisPositionRepository:
             return []
         result = []
         for b in trade_ids:
-            tid = b.decode()
+            tid = b.decode() if isinstance(b, bytes) else b
             key = self._trade_key(market, tid)
             raw = self.r.hgetall(key)
             if not raw:
                 continue
             out = {"trade_id": tid}
             for k, v in raw.items():
-                out[k.decode()] = v.decode()
+                dk = k.decode() if isinstance(k, bytes) else k
+                dv = v.decode() if isinstance(v, bytes) else v
+                out[dk] = dv
             result.append(out)
         return result
 

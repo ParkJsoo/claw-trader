@@ -141,13 +141,18 @@ def main():
             continue
 
         try:
-            # SELL fill 처리 전 PnL 계산용 포지션 스냅샷
             fill_side = fill.side.value if hasattr(fill.side, "value") else str(fill.side)
-            pre_pos = None
-            if fill_side == "SELL":
-                pre_pos = repo.get_position(fill.market, fill.symbol)
 
-            engine.apply_fill(fill)
+            realized_delta = engine.apply_fill(fill)
+
+            # apply_fill이 None이면 duplicate fill 또는 sell_without_position → 스킵
+            if realized_delta is None and fill_side == "SELL":
+                print(
+                    f"[position_engine] skip duplicate/invalid fill: {fill.symbol} "
+                    f"{fill.side.value} {fill.qty}@{fill.price}"
+                )
+                continue
+
             processed += 1
             print(
                 f"[position_engine] applied fill: {fill.symbol} "
@@ -158,11 +163,8 @@ def main():
             r.sadd(f"trade_symbols:{fill.market}", fill.symbol)
             r.expire(f"trade_symbols:{fill.market}", 90 * 86400)  # 90일 TTL
 
-            # SELL 후 streak 업데이트
-            if fill_side == "SELL" and pre_pos is not None and pre_pos.qty > 0:
-                fee = getattr(fill, "fee", Decimal("0"))
-                sell_qty = min(fill.qty, pre_pos.qty)
-                realized_delta = (fill.price - pre_pos.avg_price) * sell_qty - fee
+            # SELL 후 streak 업데이트 (apply_fill 반환값 직접 사용)
+            if fill_side == "SELL" and realized_delta is not None:
                 _update_streak(r, fill.market, realized_delta)
         except Exception as e:
             if fill.retry >= MAX_RETRY:
