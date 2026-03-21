@@ -129,6 +129,11 @@ class Executor:
         side = OrderSide.BUY if signal.direction == "LONG" else OrderSide.SELL
         price = signal.entry.price
         qty = signal.entry.size_cash / price
+        # KR: 주식은 정수 수량만 허용
+        if self.market == "KR":
+            qty = Decimal(int(qty))
+            if qty <= 0:
+                raise ValueError(f"qty < 1: size_cash={signal.entry.size_cash} price={price}")
 
         client_order_id = f"CLAW-{self.market}-{signal.signal_id}-{uuid.uuid4().hex[:6]}"
 
@@ -155,14 +160,20 @@ class Executor:
             req = self.build_order_from_signal(signal)
         except Exception as e:
             self._record_reject(signal.signal_id, "build_order_failed", {"error": str(e)})
+            self.redis.delete(f"claw:idempo:{self.market}:{signal.signal_id}")
             return OrderStatus.ERROR
 
-        result = self.client.place_order(req)
+        try:
+            result = self.client.place_order(req)
+        except Exception as e:
+            self._record_reject(signal.signal_id, "place_order_exception", {"error": str(e)})
+            self.redis.delete(f"claw:idempo:{self.market}:{signal.signal_id}")
+            return OrderStatus.ERROR
 
         # C2: BUY 주문 제출 시 buy_pending 키 설정 (position_exit_runner race condition 방지)
         if req.side == OrderSide.BUY and result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
             pending_key = f"claw:buy_pending:{self.market}:{req.symbol}"
-            self.redis.set(pending_key, "1", ex=120)
+            self.redis.set(pending_key, "1", ex=300)
 
         order_key = f"order:{self.market}:{result.order_id}"
         self.redis.set(order_key, result.status.value, ex=7 * 86400)

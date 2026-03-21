@@ -64,7 +64,7 @@ _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 # Phase 17: 신호 품질 강화
 _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
 _VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
-_VOLUME_LOOKBACK_DAYS = int(os.getenv("CONSENSUS_VOLUME_LOOKBACK_DAYS", "5"))
+_VOLUME_LOOKBACK_DAYS = int(os.getenv("VOLUME_LOOKBACK_DAYS", "7"))  # 5 → 7 (주말 포함)
 
 # Phase 19: 하락장 대응
 _INVERSE_ETF_KR = set(os.getenv("INVERSE_ETF_KR", "114800,251340").split(","))
@@ -154,7 +154,9 @@ def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
         return size_cash
     except Exception as e:
         _log("size_cash_error", market=market, error=str(e), exc_type=type(e).__name__)
-        return current_price  # fallback: 1주
+        # 최소 size_cash 보장 (KR: 10만원, US: $100)
+        min_size = Decimal("100000") if market == "KR" else Decimal("100")
+        return max(current_price, min_size)
 
 
 def _log(event: str, **kwargs) -> None:
@@ -368,9 +370,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
         return None  # 이미 처리한 eval 결과
 
-    # 2-b. symbol-level cooldown: KIS API 호출 전에 체크하여 불필요한 API 호출 방지
+    # 2-b. symbol-level cooldown: consensus 판단 전 체크 (불필요한 처리 방지)
     cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
-    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
+    if r.exists(cooldown_key):
         _log("runner.reject.cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
         _record_reject(r, market, "reject_cooldown")
         return None
@@ -582,6 +584,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "news_score": news_score if not _partial_consensus else "partial",
         "claude_conf": str(c_conf) if not _partial_consensus else "0.0",
     }
+
+    # cooldown SET: consensus 성공 + prefilter 통과 후, signal push 직전에만 설정
+    r.set(cooldown_key, "1", ex=_SYMBOL_COOLDOWN_SEC)
 
     try:
         r.lpush("claw:signal:queue", json.dumps(payload))

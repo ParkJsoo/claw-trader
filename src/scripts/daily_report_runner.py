@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import signal as _signal
 import sys
 import time
 from datetime import datetime, timedelta
@@ -32,6 +33,9 @@ _DAILY_RESET_MIN = 55
 _DAILY_RESET_TTL = 3600  # 1시간 TTL (중복 방지)
 
 _AUTO_TUNE_LOOKBACK_DAYS = 5
+
+_LOCK_KEY = "daily_report:runner:lock"
+_LOCK_TTL = 120
 
 
 def _already_sent(r, market: str, date_str: str) -> bool:
@@ -72,6 +76,9 @@ def _reset_daily_cap(r, market: str) -> None:
     from utils.redis_helpers import secs_until_kst_midnight
     ttl = secs_until_kst_midnight()
     r.set(reset_key, "1", ex=max(ttl, 3600))
+
+    # pnl:{market} realized_pnl 일별 리셋 (킬스위치 오작동 방지)
+    r.hset(f"pnl:{market}", "realized_pnl", "0")
 
     print(f"daily_report: daily_cap_reset {market} (deleted={deleted})", flush=True)
     try:
@@ -127,7 +134,7 @@ def _auto_tune(r, market: str) -> None:
         changes["size_cash_pct"] = str(new_size)
     elif avg_win_rate > 0.60:
         # 승률 높음: stop 소폭 축소(리스크 감소)
-        new_stop = round(max(float(current_stop) * 0.95, 0.010), 4)
+        new_stop = round(max(float(current_stop) * 0.95, 0.015), 4)  # KR 시장 최소 1.5%
         changes["stop_pct"] = str(new_stop)
 
     _MAX_DD_THRESHOLD = {"KR": 50000, "US": 50}
@@ -157,6 +164,17 @@ def main() -> None:
         sys.exit(1)
 
     r = redis.from_url(redis_url)
+
+    # 프로세스 락 (중복 실행 방지)
+    if not r.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL):
+        print("daily_report: already running — exiting", flush=True)
+        sys.exit(0)
+
+    def _handle_sigterm(signum, frame):
+        r.delete(_LOCK_KEY)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     print(
         f"daily_report: started poll_sec={_POLL_SEC} "
         f"KR_report={_KR_REPORT_HOUR}:{_KR_REPORT_MIN:02d} KST "
@@ -166,6 +184,7 @@ def main() -> None:
 
     try:
         while True:
+            r.expire(_LOCK_KEY, _LOCK_TTL)
             now_kst = datetime.now(_KST)
             date_str = today_kst()
 

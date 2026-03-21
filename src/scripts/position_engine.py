@@ -6,6 +6,8 @@ Position Engine — Fill 큐 소비, 포지션 갱신.
 from __future__ import annotations
 
 import os
+import signal as _signal
+import sys
 import time
 from decimal import Decimal
 from pathlib import Path
@@ -35,6 +37,7 @@ elseif pnl_sign < 0 then
     end
 end
 redis.call('SET', KEYS[1], tostring(streak))
+redis.call('EXPIRE', KEYS[1], 604800)
 return streak
 """
 
@@ -42,6 +45,9 @@ MAX_RETRY = 5
 STATUS_LOG_INTERVAL_SEC = 30
 FILL_QUEUE_KEY = "claw:fill:queue"
 FILL_DLQ_KEY = "claw:fill:dlq"
+
+_LOCK_KEY = "position_engine:lock"
+_LOCK_TTL = 120
 
 _DEFAULT_SIZE_CASH_PCT = 0.20
 _STREAK_WIN_THRESHOLD = 3
@@ -95,6 +101,17 @@ def main():
     load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=True)
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     r = redis.from_url(redis_url)
+
+    # 프로세스 락 (중복 실행 방지)
+    if not r.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL):
+        print("position_engine: already running — exiting", flush=True)
+        sys.exit(0)
+
+    def _handle_sigterm(signum, frame):
+        r.delete(_LOCK_KEY)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     repo = RedisPositionRepository(r)
     engine = PositionEngine(repo)
 
@@ -106,6 +123,7 @@ def main():
 
     print("[position_engine] started, consuming claw:fill:queue")
     while True:
+        r.expire(_LOCK_KEY, _LOCK_TTL)
         fill = repo.pop_fill(timeout=5)
         now = time.time()
 
@@ -136,8 +154,9 @@ def main():
                 f"{fill.side.value} {fill.qty}@{fill.price}"
             )
 
-            # trade_symbols SET 갱신: 거래 이력 추적 (TTL 없음, 영구)
+            # trade_symbols SET 갱신: 거래 이력 추적
             r.sadd(f"trade_symbols:{fill.market}", fill.symbol)
+            r.expire(f"trade_symbols:{fill.market}", 90 * 86400)  # 90일 TTL
 
             # SELL 후 streak 업데이트
             if fill_side == "SELL" and pre_pos is not None and pre_pos.qty > 0:
