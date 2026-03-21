@@ -85,8 +85,11 @@ class RedisPositionRepository:
         if not raw:
             return None
 
+        _is_bytes = isinstance(next(iter(raw)), bytes)
+
         def d(k: str) -> str:
-            return raw.get(k.encode(), b"").decode()
+            v = raw.get(k.encode() if _is_bytes else k, b"" if _is_bytes else "")
+            return v.decode() if isinstance(v, bytes) else (v or "")
 
         return PositionState(
             symbol=symbol,
@@ -187,11 +190,13 @@ class RedisPositionRepository:
         key = self._pnl_key(market)
         raw = self.r.hgetall(key)
         if not raw:
-            currency = "KRW" if market == "KR" else "USD"
             return Decimal("0"), Decimal("0")
 
+        _is_bytes = isinstance(next(iter(raw)), bytes)
+
         def d(k: str) -> str:
-            return raw.get(k.encode(), b"").decode()
+            v = raw.get(k.encode() if _is_bytes else k, b"" if _is_bytes else "")
+            return v.decode() if isinstance(v, bytes) else (v or "")
 
         return (
             Decimal(d("realized_pnl") or "0"),

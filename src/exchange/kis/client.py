@@ -186,7 +186,7 @@ class KisClient(ExchangeClient):
             "PDNO": request.symbol,
             "ORD_DVSN": "00",
             "ORD_QTY": str(qty_int),
-            "ORD_UNPR": str(request.limit_price),
+            "ORD_UNPR": str(request.limit_price) if request.limit_price is not None else "0",
         }
 
         # KIS tr_id: TTTC0802U=매수, TTTC0801U=매도

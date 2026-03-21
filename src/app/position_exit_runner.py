@@ -364,21 +364,29 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
     if avg_price <= 0 or mark_price <= 0:
         return None
 
-    # 기본값: 모듈 상수
-    _eff_stop = stop_pct if stop_pct is not None else _STOP_LOSS_PCT
-    _eff_take = take_pct if take_pct is not None else _TAKE_PROFIT_PCT
-    _eff_trail = trail_pct if trail_pct is not None else _TRAIL_STOP_PCT
+    # 우선순위: cfg(get_config 오버라이드) > pos hash(per-signal 동적값) > 모듈 상수
+    # stop_pct가 None이면 pos hash → 모듈 상수 순으로 fallback (테스트/직접호출용)
+    if stop_pct is not None:
+        _eff_stop = stop_pct
+    elif pos:
+        try:
+            _eff_stop = Decimal(pos.get("stop_pct") or str(_STOP_LOSS_PCT))
+        except Exception:
+            _eff_stop = _STOP_LOSS_PCT
+    else:
+        _eff_stop = _STOP_LOSS_PCT
 
-    # position hash에서 동적 pct 읽기 (pos hash가 있으면 오버라이드)
-    if pos:
+    if take_pct is not None:
+        _eff_take = take_pct
+    elif pos:
         try:
-            _eff_stop = Decimal(pos.get("stop_pct") or str(_eff_stop))
+            _eff_take = Decimal(pos.get("take_pct") or str(_TAKE_PROFIT_PCT))
         except Exception:
-            pass
-        try:
-            _eff_take = Decimal(pos.get("take_pct") or str(_eff_take))
-        except Exception:
-            pass
+            _eff_take = _TAKE_PROFIT_PCT
+    else:
+        _eff_take = _TAKE_PROFIT_PCT
+
+    _eff_trail = trail_pct if trail_pct is not None else _TRAIL_STOP_PCT
 
     stop_price = avg_price * (1 - _eff_stop)
 
