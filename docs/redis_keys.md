@@ -1,68 +1,91 @@
-# Redis Key Design (v2)
+# Redis Key Design (v3)
 
 ## Control / Security
-- claw:ratelimit:{user_id}
-- claw:pin_attempts:{user_id}
-- claw:pause:global
+- `claw:ratelimit:{user_id}` — TG 봇 rate limit
+- `claw:pin_attempts:{user_id}` — PIN 인증 실패 카운터
+- `claw:pause:global` — 전역 일시정지 (자정 KST TTL 자동 만료)
+- `claw:pause:reason` — 마지막 pause 트리거 reason (SET NX, 첫 발동만)
+- `claw:pause:meta` — 마지막 pause 트리거 meta (SET NX)
+- `claw:killswitch:{market}` — 킬스위치 발동 상세 JSON (reason, meta, ts) — SET NX EX 86400
+
+## Runtime Config (Phase 18)
+- `claw:config:{market}` — 런타임 파라미터 Hash (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent). TG `/claw set`으로 변경, position_exit_runner 매 폴링마다 읽기.
 
 ## Orders
-- order:{market}:{order_id} — 주문 상태 (SUBMITTED, FILLED, CANCELED, REJECTED)
-- claw:order_meta:{market}:{order_id} — 주문 메타 (first_seen_ts, symbol, side, qty, limit_price, signal_id)
+- `order:{market}:{order_id}` — 주문 상태 (SUBMITTED, FILLED, CANCELED, REJECTED)
+- `claw:order_meta:{market}:{order_id}` — 주문 메타 (first_seen_ts, symbol, side, qty, limit_price, signal_id)
 
 ## Reject / Idempotency
-- claw:reject:{market}:{id}
-- claw:idempo:{market}:{signal_id}
+- `claw:reject:{market}:{id}` — 전략 거부 이유 Hash (reason, source, market, symbol, ts_ms)
+- `claw:idempo:{market}:{signal_id}` — 실행 멱등성 잠금 (SET NX)
 
-## Portfolio / Position Engine (PHASE 4)
-- position:{market}:{symbol} — 포지션 Hash (qty, avg_price, realized_pnl, updated_ts ms, currency)
-- position_index:{market} — Set of symbols with open positions
-- mark:{market}:{symbol} — 임시 마크가 (STRING, unrealized 계산용)
-- pnl:{market} — 시장별 PnL Hash (realized_pnl, unrealized_pnl, currency, updated_ts ms)
-- trade:{market}:{trade_id} — 거래 이력 Hash
-- trade_dedupe:{market}:{trade_id} — 멱등용 (SET NX)
-- trade_index:{market}:{symbol} — ZSET (score=ts_ms, member=trade_id)
-- claw:fill:queue — Fill 이벤트 큐 (LPUSH/RPOP)
-- claw:fill:dlq — 실패 Fill DLQ
+## Portfolio / Position Engine
+- `position:{market}:{symbol}` — 포지션 Hash (qty, avg_price, realized_pnl, updated_ts ms, currency, stop_pct, take_pct)
+- `position_index:{market}` — open 포지션 심볼 Set
+- `mark:{market}:{symbol}` — 현재가 STRING (MarketDataUpdater 갱신, unrealized 계산용, TTL 7d)
+- `pnl:{market}` — 시장별 PnL Hash (realized_pnl, unrealized_pnl, currency, updated_ts ms)
+- `trade:{market}:{trade_id}` — 거래 이력 Hash (order_id, symbol, side, qty, price, realized_pnl, ts, recorded_at_ms, exec_id, fee, signal_id, source)
+- `trade_dedupe:{market}:{trade_id}` — 멱등용 (SET NX, TTL 30d)
+- `trade_index:{market}:{symbol}` — ZSET (score=ts_ms, member=trade_id, TTL 30d)
+- `trade_symbols:{market}` — 거래 이력 추적 Set (TTL 90d)
+- `claw:fill:queue` — Fill 이벤트 큐 (LPUSH/RPOP)
+- `claw:fill:dlq` — 실패 Fill DLQ
 
-## Risk Engine (PHASE 5)
-- claw:pause:reason — 마지막 pause 트리거 reason 문자열 (SET NX, 첫 발동만 기록)
-- claw:pause:meta — 마지막 pause 트리거 meta (SET NX, 첫 발동만 기록, 레거시: hset 방식도 허용)
-- claw:killswitch:{market} — 킬스위치 발동 상세 JSON (reason, meta, ts) — SET NX EX 86400
+## Position Exit Runner (Phase 15)
+- `claw:trail_hwm:{market}:{symbol}` — Trailing stop 고점(HWM) STRING. BUY fill 시 avg_price로 초기화, 매 폴링마다 max(prev, mark)로 갱신, SELL fill 시 삭제. TTL 7d.
+- `claw:buy_pending:{market}:{symbol}` — BUY 주문 제출 후 잔고 반영 대기 플래그. TTL 120s. SELL race condition 방지.
+- `claw:exit_lock:{market}:{symbol}` — SELL 주문 중복 방지 (SET NX TTL 60s)
+- `claw:signal_pct:{market}:{symbol}` — per-signal 동적 stop/take_pct Hash (stop_pct, take_pct, range_5m, ts). TTL 24h. consensus_signal_runner가 저장, position_exit_runner가 참조.
 
-## Market Data (PHASE 7)
-- mark:{market}:{symbol} — 현재가 STRING (portfolio 기존 키 재사용, MarketDataUpdater가 갱신)
-- md:error:{market}:{YYYYMMDD} — 가격 갱신 에러 카운터 HASH (reason → count, TTL 7d, KST 기준)
-- md:last_update:{market} — 마지막 성공 갱신 ts_ms STRING (모니터링/AI Layer 헬스 게이트용)
+## Streak / Capital Adjustment (Phase 18)
+- `claw:streak:{market}` — 연속 수익/손실 카운터 STRING (양수=수익, 음수=손실, TTL 7d). Lua 원자적 업데이트.
 
-## AI Advisory (PHASE 8)
-- ai:advice:{market}:{signal_id} — AI 추천 HASH (ts_ms, recommend, confidence, reason, symbol, direction, strategy_reason) — TTL 30d
-- ai:advice_index:{market}:{YYYYMMDD} — ZSET (score=ts_ms, member=signal_id, TTL 30d)
-- ai:advice_stats:{market}:{YYYYMMDD} — AI 추천 통계 HASH (recommend별 카운터, TTL 30d)
+## Daily Cap / Reset (Phase 18)
+- `claw:daily_reset:{market}:{YYYYMMDD}` — 08:55 KST daily cap 리셋 완료 플래그 (TTL=자정까지)
 
-## Market Data History (PHASE 8 v2)
-- mark_hist:{market}:{symbol} — 최근 mark 가격 히스토리 LIST ("ts_ms:price", 최대 300개, TTL 2d)
+## Hedge Runner (Phase 19)
+- `claw:hedge_trigger:{market}` — 헤지 재발동 방지 플래그 (TTL 3600s = 1시간)
 
-## AI Signal Generator (PHASE 8 v2)
-- gen:cooldown:{market}:{symbol} — 생성기 심볼별 쿨다운 (SET NX TTL GEN_COOLDOWN_SEC, 기본 300s)
-- gen:daily_emit:{market}:{YYYYMMDD} — 생성기 일일 발행 카운터 (INCR, TTL 3d)
-- ai:gen:{market}:{signal_id} — 생성기 감사 로그 HASH (ts_ms, symbol, direction, size_cash, emit, emit_blocked, block_reason, features_json, raw_response, reason, model, provider) — TTL 7d
-- ai:gen_index:{market}:{YYYYMMDD} — 생성기 발행 인덱스 ZSET (score=ts_ms, member=signal_id, TTL 7d)
-- ai:gen_stats:{market}:{YYYYMMDD} — 생성기 통계 HASH (generated/no_emit/skip_cold_start/skip_cooldown/skip_daily_cap/error_* 카운터, TTL 7d)
+## Market Data
+- `md:error:{market}:{YYYYMMDD}` — 가격 갱신 에러 카운터 Hash (reason → count, TTL 7d)
+- `md:last_update:{market}` — 마지막 성공 갱신 ts_ms STRING
+- `mark_hist:{market}:{symbol}` — 최근 mark 가격 히스토리 LIST ("ts_ms:price", 최대 1000개, TTL 7d)
+- `vol:KR:{symbol}:{YYYYMMDD}` — 당일 누적 거래량 (acml_vol, TTL 25h)
 
-## Position Exit Runner (PHASE 15)
-- `claw:trail_hwm:{market}:{symbol}` — Trailing stop 고점(HWM) STRING. BUY fill 시 avg_price로 초기화, 매 폴링마다 max(prev, mark)로 갱신, SELL fill 시 삭제. TTL=_POSITION_TTL(7d)
-- `claw:buy_pending:{market}:{symbol}` — BUY 주문 제출 후 잔고 반영 대기 플래그. TTL=120s. position_exit_runner의 SELL race condition 방지.
+## AI Dual Eval (Phase 10+)
+- `ai:dual:last:claude:{market}:{symbol}` — Claude 최근 평가 Hash (ts_ms, result, confidence, reason)
+- `ai:dual:last:qwen:{market}:{symbol}` — Qwen 최근 평가 Hash (ts_ms, result, confidence, reason)
 
-## Consensus Signal Runner (PHASE 15)
-- `consensus:symbol_cooldown:{market}:{symbol}` — ~~Phase 11 symbol-level cooldown~~ **Phase 15에서 제거** (strategy engine 쿨다운으로 충분)
+## AI Signal Generator
+- `gen:cooldown:{market}:{symbol}` — 생성기 심볼별 쿨다운 (SET NX TTL GEN_COOLDOWN_SEC, 기본 300s)
+- `gen:daily_emit:{market}:{YYYYMMDD}` — 생성기 일일 발행 카운터 (INCR, TTL 3d)
+- `ai:gen:{market}:{signal_id}` — 생성기 감사 로그 Hash (TTL 7d)
+- `ai:gen_index:{market}:{YYYYMMDD}` — 발행 인덱스 ZSET (score=ts_ms, TTL 7d)
+- `ai:gen_stats:{market}:{YYYYMMDD}` — 생성기 통계 Hash (TTL 7d)
 
-## Backtest (Phase 18)
+## AI Advisory
+- `ai:advice:{market}:{signal_id}` — AI 추천 Hash (TTL 30d)
+- `ai:advice_index:{market}:{YYYYMMDD}` — ZSET (TTL 30d)
+- `ai:advice_stats:{market}:{YYYYMMDD}` — AI 추천 통계 Hash (TTL 30d)
+
+## Strategy Engine
+- `strategy:dedupe:{market}:{signal_id}` — 신호 중복 처리 방지 (SET NX, TTL 7d)
+- `strategy:cooldown:{market}:{symbol}` — 종목별 마지막 통과 ts_ms (SET EX cooldown_sec, 기본 300s)
+- `strategy:daily_count:{market}:{YYYYMMDD}` — 시장별 일일 처리 신호 수 (INCR, TTL 3d)
+- `strategy:pass_count:{market}:{YYYYMMDD}` — 일별 통과 신호 수 (INCR, TTL 7d)
+- `strategy:reject_count:{market}:{YYYYMMDD}` — 일별 거부 신호 수 by reason (Hash HINCRBY, TTL 7d)
+
+## Watchlist / Regime
+- `dynamic:watchlist:{market}` — 동적 워치리스트 Set (watchlist_selector_runner 갱신, 6시간 주기)
+- `ret5m:{market}:{symbol}` — 종목별 5분 수익률 (regime filter 계산용)
+
+## Performance / Reporting (Phase 16)
+- `perf:daily:{market}:{YYYYMMDD}` — 성과 통계 Hash (win_rate, profit_factor, avg_rr, max_drawdown, total_trades 등)
+- `perf:report_sent:{market}:{YYYYMMDD}` — 당일 TG 리포트 발송 완료 플래그 (TTL 20h)
+
+## Backtest (Phase 16+)
 - `backtest:result:{market}:{YYYYMMDD}` — 파라미터 스윕 결과 JSON LIST (상위 20개, TTL 90d)
 - `backtest:sent:{market}:{YYYYMMDD}` — 당일 백테스트 발송 완료 플래그 (TTL 1h)
 
-## Strategy Engine (PHASE 6)
-- strategy:dedupe:{market}:{signal_id} — 신호 중복 처리 방지 (SET NX, TTL 7d)
-- strategy:cooldown:{market}:{symbol} — 종목별 마지막 통과 ts_ms (SET EX cooldown_sec)
-- strategy:daily_count:{market}:{YYYYMMDD} — 시장별 일일 처리 신호 수 (INCR, TTL 3d)
-- strategy:pass_count:{market}:{YYYYMMDD} — 일별 통과 신호 수 (INCR, TTL 7d)
-- strategy:reject_count:{market}:{YYYYMMDD} — 일별 거부 신호 수 by reason (HASH HINCRBY, TTL 7d)
+## Execution Funnel (Phase 11)
+- `execution_funnel:{market}:{YYYYMMDD}` — Hash (candidate/strategy_reject/risk_reject/broker_reject/execution_error/executed 카운터, TTL 7d)

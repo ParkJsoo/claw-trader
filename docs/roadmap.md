@@ -6,7 +6,7 @@
 
 ---
 
-## 현재 상태 (Phase 19 + 백테스트 완료, 2026-03-21) — 228 tests passing
+## 현재 상태 (Phase 19 완료 + 7차 코드리뷰, 2026-03-21) — 228 tests passing
 
 | 영역 | 상태 |
 |------|------|
@@ -14,28 +14,35 @@
 | AI 신호 생성 (Claude + Qwen) | ✅ 운영 중 |
 | 동적 워치리스트 (12종목) | ✅ 운영 중 |
 | 뉴스 → AI 통합 | ✅ 운영 중 |
-| Trailing Stop + 비대칭 R:R (2:1) | ✅ Phase 15 완료 |
-| Partial Consensus + Regime Filter | ✅ Phase 15 완료 |
+| 신호 품질 필터 (ret_15m / volume surge / 뉴스+신뢰도 가중) | ✅ Phase 17 완료 |
+| Trailing Stop + 비대칭 R:R (stop 1.5%, take 3%) | ✅ Phase 15 완료 |
+| Time Limit 연장 (수익 중 최대 2×) | ✅ Phase 15 완료 |
+| Partial Consensus + Regime Filter (3방향) | ✅ Phase 15 완료 |
+| per-signal 동적 stop/take_pct | ✅ 버그 수정 완료 |
 | 포지션/PnL 자동 기록 | ✅ 운영 중 |
+| TOCTOU 방지 (포지션 1회 읽기) | ✅ 버그 수정 완료 |
 | 성과 통계 자동화 (TG 일일 리포트) | ✅ Phase 16 완료 |
 | 백테스트 프레임워크 | ✅ Phase 16+ 완료 |
-| 신호 품질 강화 (ret_15m, 거래량, 가중치) | ✅ Phase 17 완료 |
 | 완전 무인 자동화 (supervisord + 자동조정) | ✅ Phase 18 완료 |
 | 하락장 대응 (인버스 ETF + 헤지) | ✅ Phase 19 완료 |
+| 7차 코드리뷰 (이슈 0건) | ✅ 완료 |
 
 ---
 
-## ✅ Phase 0~19 + 백테스트 — 완료
+## ✅ Phase 0~19 + 코드리뷰 — 완료
 
-Phase 0~9: 인프라, 거래소 연결, 리스크 엔진, AI 레이어 구축
-Phase 10~11: Dual AI consensus, 신호 품질 필터
-Phase 12~13: 자동 매도, Fill Detection, PnL 기록
-Phase 14: 뉴스 통합, 동적 워치리스트
-Phase 15: Trailing stop, 비대칭 R:R, Partial consensus, Regime filter
-Phase 16: PerformanceReporter, TG 일일 리포트, 백테스트 프레임워크
-Phase 17: ret_15m 필터, 거래량 서지, 뉴스/신뢰도 가중 size_cash
-Phase 18: supervisord, daily cap 자동 리셋, TG 파라미터, 자본 자동 조정
-Phase 19: 인버스 ETF, Regime 3방향 전환, hedge_runner
+| Phase | 내용 |
+|-------|------|
+| 0~9 | 인프라, 거래소 연결, 리스크 엔진, AI 레이어 구축 |
+| 10~11 | Dual AI consensus, 신호 품질 필터, execution funnel |
+| 12~13 | 자동 매도, Fill Detection, PnL 기록 |
+| 14 | 뉴스 통합, 동적 워치리스트 |
+| 15 | Trailing stop, 비대칭 R:R, Partial consensus, Regime filter, per-signal stop/take_pct |
+| 16 | PerformanceReporter, TG 일일 리포트, 백테스트 프레임워크 |
+| 17 | ret_15m 필터, 거래량 서지, 뉴스/신뢰도 가중 size_cash |
+| 18 | supervisord, daily cap 자동 리셋, TG 파라미터, streak 자본 자동 조정 |
+| 19 | 인버스 ETF, Regime 3방향 전환, hedge_runner |
+| 코드리뷰 | 7차 리뷰 — TOCTOU, per-signal 버그, Fill 멱등성, limit_price None 처리 등 수정 |
 
 ---
 
@@ -58,21 +65,23 @@ Phase 19: 인버스 ETF, Regime 3방향 전환, hedge_runner
 ```bash
 # 기존 백그라운드 프로세스 종료 후
 supervisord -c config/supervisord.conf
-supervisorctl status   # 전체 프로세스 상태
+supervisorctl status        # 전체 프로세스 상태
 supervisorctl tail -f runner   # 로그 실시간 확인
 ```
 
-### 추가 환경변수 (config/phase10_kr_micro.env에 추가)
+### 핵심 config (config/phase10_kr_micro.env)
 ```bash
-# Phase 19 — 하락장 대응
+EXIT_STOP_LOSS_PCT=0.015
+EXIT_TAKE_PROFIT_PCT=0.03
+EXIT_TRAIL_STOP_PCT=0.015
+EXIT_TIME_LIMIT_MAX_SEC=7200
+RISK_KR_MAX_CONCURRENT=3
+UNIVERSE_SELECT_COUNT=12
 INVERSE_ETF_KR=114800,251340
 INVERSE_ETF_ENABLED=true
 HEDGE_SYMBOL_KR=114800
 HEDGE_TRIGGER_RET=-0.01
 HEDGE_SIZE_CASH=100000
-
-# Phase 18 — 자동화
-EXIT_TIME_LIMIT_MAX_SEC=7200
 ```
 
 ### 백테스트 수동 실행
@@ -85,7 +94,7 @@ PYTHONPATH=src venv/bin/python -m scripts.backtest_runner --now
 - `/claw pnl` — 포지션/PnL 조회
 - `/claw report` — 당일 성과 리포트
 - `/claw backtest` — 파라미터 스윕 즉시 실행
-- `/claw set stop_pct 0.015` — 런타임 파라미터 변경
+- `/claw set stop_pct 0.015` — 런타임 파라미터 변경 (KR/US 공통)
 - `/claw news` — 최근 뉴스 요약
 - `/claw help` — 도움말
 
