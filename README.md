@@ -7,42 +7,55 @@
 ## 특징
 
 - **AI 신호 생성** — Claude + Qwen(Ollama) 듀얼 합의 기반 모멘텀 신호
-- **동적 워치리스트** — Universe 종목 → 뉴스+모멘텀 스코어링 → 상위 N종목 자동 선정 (6시간 주기)
+- **동적 워치리스트** — Universe 종목 → 뉴스+모멘텀 스코어링 → 상위 12종목 자동 선정 (6시간 주기)
 - **뉴스 인텔리전스** — DART/Google News/Yahoo Finance RSS 수집 → AI 프롬프트 자동 주입
-- **자동 매도** — stop_loss / take_profit / time_limit 조건 충족 시 자동 SELL 주문
+- **신호 품질 필터** — ret_15m prefilter / volume surge(×1.5) / 뉴스+신뢰도 가중 size_cash
+- **Trailing Stop** — HWM 기반 trailing + 비대칭 R:R (stop 1.5%, take 3%)
+- **Time Limit 연장** — 수익 중이면 최대 2× 홀딩
+- **Partial Consensus** — Claude EMIT + positive 뉴스 + Qwen HOLD → 50% size로 통과
+- **Regime Filter** — 3방향(bearish/neutral/bullish), bearish 시 LONG 억제 + 인버스 ETF 허용
+- **인버스 ETF + 자동 헤지** — avg ret_5m < −1% 시 114800 자동 BUY push
+- **자동 파라미터 튜닝** — 5거래일 성과 기반 stop/size 자동 조정 (KST 15:40 후)
+- **streak 자본 조정** — 3연속 수익 → size +5%, 3연속 손실 → size −10%
 - **Fill Detection + PnL** — 잔고 diff 기반 체결 감지 → realized/unrealized PnL 자동 기록
+- **TG 일일 리포트** — win rate / profit factor / avg R:R / max drawdown 자동 발송
+- **백테스트 프레임워크** — stop/take/trail_pct 그리드 스윕, 매일 KST 16:10 자동 실행
 - **이중 시장** — KR (KIS API) / US (IBKR TWS API) 동시 운영
 - **현금 전용 리스크 모델** — 마진/레버리지/파생 거래 없음
-- **Telegram 제어판** — 원격 일시정지/재개, PIN 인증
+- **Telegram 제어판** — 원격 일시정지/재개/파라미터 변경
 
 ---
 
 ## 아키텍처
 
 ```
-Watchlist Selector (Universe → 뉴스+모멘텀 → dynamic:watchlist)
+Watchlist Selector (Universe → 뉴스+모멘텀 → dynamic:watchlist:KR, 12종목)
        ↓
 News Runner (DART / Google RSS / Yahoo Finance)
        ↓
-News Classifier → Redis (news:symbol / news:macro)
+News Classifier → Redis (news:{symbol} / news:macro)
        ↓
-AI Dual Eval Runner (Claude + Qwen) ← 뉴스 컨텍스트 주입
+AI Dual Eval Runner (Claude + Qwen) ← ret_15m prefilter / 뉴스 컨텍스트 주입
        ↓
-Consensus Signal Runner (합의 → Signal → queue)
+Consensus Signal Runner (합의 + 4필터 + Regime Filter → Signal → queue)
        ↓
 Strategy Engine (dedupe / cooldown / daily_cap)
        ↓
 Risk Engine (5-rule gatekeeper)
        ↓
-Executor (idempotency / audit log)
+Executor (idempotency / per-signal stop/take_pct / audit log)
        ↓
 KIS / IBKR Order API
        ↓
 Order Watcher (TTL 기반 미체결 취소)
        ↓
-Position Exit Runner (stop_loss / take_profit / time_limit)
+Position Exit Runner (trailing stop / time_limit 연장 / take_profit)
        ↓
-Position Engine (Fill Detection → Portfolio / PnL)
+Position Engine (Fill Detection → Portfolio / PnL / streak 조정)
+       ↓
+Hedge Runner (avg ret_5m < -1% + LONG 포지션 → 인버스 ETF 자동 헤지)
+       ↓
+Daily Report Runner (08:55 daily_cap 리셋 / 15:40 TG 리포트 + 자동 튜닝)
 ```
 
 ---
@@ -59,11 +72,14 @@ Position Engine (Fill Detection → Portfolio / PnL)
 | AI (보조) | Qwen 2.5 (Ollama) |
 | 뉴스 수집 | DART OpenAPI + Google News RSS + Yahoo Finance RSS |
 | 알림 | Telegram Bot API |
+| 프로세스 관리 | supervisord |
 | 테스트 | pytest + fakeredis |
 
 ---
 
 ## 실행 방법
+
+### 권장: supervisord (완전 무인 자동화)
 
 ```bash
 # 1. 환경변수 설정
@@ -82,11 +98,21 @@ docker run -d --name claw-redis -p 6379:6379 redis:7-alpine \
 # 4. Ollama 설치 및 Qwen 모델 다운로드
 ollama pull qwen2.5:7b && ollama serve
 
-# 5. 환경변수 로드 (반드시 set -a 사용)
+# 5. 환경변수 로드
 set -a && source .env && source config/phase10_kr_micro.env && set +a
 
-# 6. 프로세스 기동 (순서 중요, 프로젝트 루트에서 실행)
-PYTHONPATH=src venv/bin/python -m app.runner >> logs/runner.log 2>&1 &
+# 6. supervisord 기동 (12개 프로세스 자동 관리)
+supervisord -c config/supervisord.conf
+supervisorctl status   # 상태 확인
+supervisorctl tail -f runner   # 로그 실시간 확인
+```
+
+### 수동 기동 (개발/디버깅용)
+
+```bash
+set -a && source .env && source config/phase10_kr_micro.env && set +a
+
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m app.runner >> logs/runner.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.market_data_runner >> logs/market_data.log 2>&1 &
 PYTHONUNBUFFERED=1 WATCHER_TTL_CANCEL_SEC=60 PYTHONPATH=src venv/bin/python -m scripts.order_watcher >> logs/order_watcher.log 2>&1 &
 PYTHONPATH=src venv/bin/python -m app.ai_dual_eval_runner >> logs/ai_dual_eval.log 2>&1 &
@@ -96,8 +122,8 @@ PYTHONPATH=src venv/bin/python -m app.news_runner >> logs/news_runner.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runner >> logs/position_exit.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_engine >> logs/position_engine.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_runner >> logs/watchlist_selector.log 2>&1 &
-# ⚠️ signal_generator_runner / ai_eval_runner 은 Phase 9 레거시 — Phase 10+에서 기동 금지
-# (signal_generator_runner가 claw:signal:queue에 중복 push하여 consensus_signal_runner와 충돌)
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner >> logs/daily_report.log 2>&1 &
+PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m app.hedge_runner >> logs/hedge_runner.log 2>&1 &
 ```
 
 ---
@@ -115,6 +141,38 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_
 - `GEN_WATCHLIST_KR` / `GEN_WATCHLIST_US` — 기본 워치리스트 (동적 선정 없을 때 fallback)
 - `GEN_UNIVERSE_KR` / `GEN_UNIVERSE_US` — 동적 워치리스트 Universe 종목 풀
 
+`config/phase10_kr_micro.env` 추가 설정:
+
+```bash
+EXIT_STOP_LOSS_PCT=0.015
+EXIT_TAKE_PROFIT_PCT=0.03
+EXIT_TRAIL_STOP_PCT=0.015
+EXIT_TIME_LIMIT_MAX_SEC=7200
+RISK_KR_MAX_CONCURRENT=3
+UNIVERSE_SELECT_COUNT=12
+INVERSE_ETF_KR=114800,251340
+INVERSE_ETF_ENABLED=true
+HEDGE_SYMBOL_KR=114800
+HEDGE_TRIGGER_RET=-0.01
+HEDGE_SIZE_CASH=100000
+```
+
+---
+
+## Telegram 커맨드
+
+| 커맨드 | 설명 |
+|--------|------|
+| `/claw status` | 시스템 상태 |
+| `/claw pnl` | 포지션/PnL 조회 |
+| `/claw report` | 당일 성과 리포트 |
+| `/claw backtest` | 파라미터 스윕 즉시 실행 |
+| `/claw set stop_pct 0.015` | 런타임 파라미터 변경 |
+| `/claw news` | 최근 뉴스 요약 |
+| `/claw help` | 도움말 |
+
+허용 파라미터: `stop_pct` (0.005~0.05), `take_pct` (0.01~0.10), `trail_pct` (0.005~0.05), `size_cash_pct` (0.05~0.50), `max_concurrent` (1~5)
+
 ---
 
 ## 운영 안전장치
@@ -126,6 +184,8 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_
 - AI 호출 하드 캡 — 일일 cap 초과 시 자동 pause + TG 알림
 - 비정상 자동 감지 — MD_STALE / AI_ERROR_SPIKE → auto-pause + TG 알림
 - Exit 중복 방지 — `claw:exit_lock:{market}:{symbol}` SET NX TTL 60s
+- 헤지 중복 방지 — `claw:hedge_trigger:{market}` TTL 1h
+- supervisord crash-notifier — 프로세스 FATAL 시 TG 알림
 
 ---
 
@@ -136,13 +196,16 @@ pip install pytest fakeredis
 PYTHONPATH=src pytest tests/ -v
 ```
 
-주요 커버리지 (141개):
+228개 테스트, 주요 커버리지:
 - `RiskEngine` 5개 규칙
 - `StrategyEngine` 3개 규칙 + Lua 원자적 daily_cap
-- `consensus_signal_runner` 호가 정규화 / 합의 / cooldown / dedup
-- `position_exit_runner` Fill Detection / exit 조건 / 중복 방지
-- `watchlist_selector_runner` KR/US 동적 워치리스트 선정
+- `consensus_signal_runner` 합의 / Partial Consensus / Regime Filter / 품질 필터
+- `position_exit_runner` trailing stop / time_limit 연장 / per-signal stop/take_pct
+- `position_engine` TOCTOU 방지 / streak 조정 / Fill 멱등성
+- `watchlist_selector_runner` KR/US 동적 워치리스트 / 인버스 ETF 포함
+- `hedge_runner` 헤지 트리거 / 재발동 방지
 - AI 응답 파서 / 보안 필터
+- `backtester` 그리드 스윕 / trailing stop 재현
 
 ---
 
