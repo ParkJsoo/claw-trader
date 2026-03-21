@@ -553,6 +553,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
                 size_cash=size_cash,
             ),
             stop=SignalStop(price=stop_price),
+            stop_pct=stop_pct,
+            take_pct=take_pct,
         )
     except Exception as e:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=f"Signal validation: {e}")
@@ -595,12 +597,12 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         r.delete(cooldown_key)  # lpush 실패 시 cooldown 롤백
         return None
 
-    # stop_pct/take_pct를 exit runner가 읽을 수 있도록 저장 (TTL 1시간)
+    # stop_pct/take_pct를 exit runner가 읽을 수 있도록 저장 (TTL 24시간)
     r.hset(f"claw:signal_pct:{market}:{symbol}", mapping={
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
     })
-    r.expire(f"claw:signal_pct:{market}:{symbol}", 3600)
+    r.expire(f"claw:signal_pct:{market}:{symbol}", 86400)
 
     # 10. 감사 로그 / 통계
     _save_audit(r, market, signal, ret_5m, range_5m)

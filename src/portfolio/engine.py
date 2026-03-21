@@ -4,6 +4,7 @@ Position Engine — Fill 기반 포지션 전이, 평균가, Realized PnL 계산
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Optional
 
 from domain.models import FillEvent, OrderSide
 from portfolio.redis_repo import RedisPositionRepository
@@ -21,37 +22,37 @@ class PositionEngine:
     def _currency(self, market: str) -> str:
         return "KRW" if market == "KR" else "USD"
 
-    def apply_fill(self, fill: FillEvent) -> None:
+    def apply_fill(self, fill: FillEvent) -> Optional[Decimal]:
         """
         Fill 적용: 포지션 갱신, 거래 기록, PnL 갱신.
         멱등: trade_id 기반 중복 시 스킵.
+        Returns: SELL fill의 realized_delta (BUY 또는 중복 시 None).
         """
         trade_id = fill.exec_id or fill.trade_id()
         market = fill.market
         symbol = fill.symbol
         currency = self._currency(market)
 
-        # 멱등 기록 (이미 존재하면 스킵)
-        if fill.side == OrderSide.BUY:
-            inserted = self.repo.record_trade(trade_id, fill, Decimal("0"))
-        else:
-            pos = self.repo.get_position(market, symbol)
-            prev_qty = pos.qty if pos else Decimal("0")
-            prev_avg = pos.avg_price if pos else Decimal("0")
-            sell_qty = min(fill.qty, prev_qty)
-            if sell_qty <= 0:
-                self.repo.push_fill_dlq(fill, reason="sell_without_position")
-                return
-            fee = getattr(fill, "fee", Decimal("0"))
-            realized_delta = (fill.price - prev_avg) * sell_qty - fee
-            inserted = self.repo.record_trade(trade_id, fill, realized_delta)
-        if not inserted:
-            return  # duplicate fill skip
-
+        # 포지션 1회 읽기 (TOCTOU 방지: record_trade 전후 동일 스냅샷 사용)
         pos = self.repo.get_position(market, symbol)
         prev_qty = pos.qty if pos else Decimal("0")
         prev_avg = pos.avg_price if pos else Decimal("0")
         prev_realized = pos.realized_pnl if pos else Decimal("0")
+
+        realized_delta: Optional[Decimal] = None
+
+        if fill.side == OrderSide.BUY:
+            inserted = self.repo.record_trade(trade_id, fill, Decimal("0"))
+        else:
+            sell_qty = min(fill.qty, prev_qty)
+            if sell_qty <= 0:
+                self.repo.push_fill_dlq(fill, reason="sell_without_position")
+                return None
+            realized_delta = (fill.price - prev_avg) * sell_qty - fill.fee
+            inserted = self.repo.record_trade(trade_id, fill, realized_delta)
+
+        if not inserted:
+            return None  # duplicate fill skip
 
         if fill.side == OrderSide.BUY:
             self._apply_buy(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized)
@@ -60,6 +61,7 @@ class PositionEngine:
 
         self.repo.set_mark_price(fill.market, fill.symbol, fill.price)
         self.repo.recalc_unrealized(fill.market)
+        return realized_delta
 
     def _apply_buy(
         self,
@@ -103,8 +105,7 @@ class PositionEngine:
         if sell_qty <= 0:
             return
 
-        fee = getattr(fill, "fee", Decimal("0"))
-        realized_delta = (fill.price - prev_avg) * sell_qty - fee
+        realized_delta = (fill.price - prev_avg) * sell_qty - fill.fee
         new_realized = prev_realized + realized_delta
         new_qty = prev_qty - sell_qty
 

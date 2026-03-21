@@ -82,24 +82,35 @@ def _get_mark_price(r, market: str, symbol: str) -> float | None:
 
 def _push_hedge_signal(r, market: str, symbol: str, price: float, size_cash: float) -> None:
     """claw:signal:queue에 헤지 BUY 신호 push."""
+    from domain.models import Signal, SignalEntry, SignalStop
+    from decimal import Decimal as _D
     signal_id = f"HEDGE-{uuid.uuid4().hex[:8]}"
     stop_price = round(price * 0.98, 0)
-    signal = {
-        "signal_id": signal_id,
-        "ts": datetime.now(_KST).isoformat(),
-        "market": market,
-        "symbol": symbol,
-        "direction": "LONG",
-        "entry": {
-            "price": str(price),
-            "size_cash": str(size_cash),
-        },
-        "stop": {"price": str(stop_price)},
-        "stop_pct": "0.02",
-        "take_pct": "0.03",
+    # Pydantic 검증 후 push (스키마 불일치 조기 발견)
+    sig = Signal(
+        signal_id=signal_id,
+        ts=datetime.now(_KST).isoformat(),
+        market=market,
+        symbol=symbol,
+        direction="LONG",
+        entry=SignalEntry(price=_D(str(price)), size_cash=_D(str(size_cash))),
+        stop=SignalStop(price=_D(str(stop_price))),
+        stop_pct=_D("0.02"),
+        take_pct=_D("0.03"),
+    )
+    payload = {
+        "signal_id": sig.signal_id,
+        "ts": sig.ts,
+        "market": sig.market,
+        "symbol": sig.symbol,
+        "direction": sig.direction,
+        "entry": {"price": str(sig.entry.price), "size_cash": str(sig.entry.size_cash)},
+        "stop": {"price": str(sig.stop.price)},
+        "stop_pct": str(sig.stop_pct),
+        "take_pct": str(sig.take_pct),
         "source": "hedge",
     }
-    r.lpush("claw:signal:queue", json.dumps(signal))
+    r.lpush("claw:signal:queue", json.dumps(payload))
     print(f"hedge_runner: pushed hedge signal signal_id={signal_id} symbol={symbol} price={price} size={size_cash}", flush=True)
 
 
