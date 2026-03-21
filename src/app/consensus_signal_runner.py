@@ -41,6 +41,9 @@ from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_m
 _SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
 _SIZE_CASH_PCT_US = float(os.getenv("CONSENSUS_US_SIZE_CASH_PCT", "0.30"))
 
+# KisClient / IbkrClient 싱글톤 캐시 (프로세스 재시작 시 초기화)
+_client_cache: dict[str, object] = {}
+
 # ---------------------------------------------------------------------------
 # 상수
 # ---------------------------------------------------------------------------
@@ -117,16 +120,29 @@ def _normalize_price(market: str, price: Decimal) -> Decimal:
 # 로깅 헬퍼
 # ---------------------------------------------------------------------------
 
+def _get_client(market: str):
+    """KisClient/IbkrClient 싱글톤 캐시."""
+    if market not in _client_cache:
+        try:
+            if market == "KR":
+                from exchange.kis.client import KisClient
+                _client_cache[market] = KisClient()
+            else:
+                from exchange.ibkr.client import IbkrClient
+                _client_cache[market] = IbkrClient()
+        except Exception as e:
+            _log("client_init_failed", market=market, error=str(e))
+            return None
+    return _client_cache.get(market)
+
+
 def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
     """H1: 잔고 비율 기반 size_cash 계산. 실패 시 1주(current_price) fallback."""
     pct = _SIZE_CASH_PCT_KR if market == "KR" else _SIZE_CASH_PCT_US
     try:
-        if market == "KR":
-            from exchange.kis.client import KisClient
-            client = KisClient()
-        else:
-            from exchange.ibkr.client import IbkrClient
-            client = IbkrClient()
+        client = _get_client(market)
+        if client is None:
+            return current_price  # fallback: 1주
         snapshot = client.get_account_snapshot()
         available = snapshot.available_cash
         if available <= 0:
@@ -559,6 +575,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "news_score": news_score if not _partial_consensus else "partial",
         "claude_conf": str(c_conf) if not _partial_consensus else "0.0",
     }
+
+    # symbol-level cooldown: 같은 종목 N초 내 재emit 방지
+    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
+    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
+        _log("runner.reject.cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
+        _record_reject(r, market, "reject_cooldown")
+        return None
 
     try:
         r.lpush("claw:signal:queue", json.dumps(payload))
