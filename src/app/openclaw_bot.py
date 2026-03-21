@@ -48,6 +48,7 @@ _HELP_TEXT = (
     "/claw ai-status   - AI eval pipeline status\n"
     "/claw news        - news intelligence status\n"
     "/claw pnl         - PnL + open positions\n"
+    "/claw report      - 오늘 KR 성과 리포트 즉시 발송\n"
     "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
     "/claw pause off   - 일시정지 해제\n"
     "/claw help        - this help"
@@ -444,6 +445,15 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         _send_message(chat_id, handle_news(r))
     elif text == "/claw pnl":
         _send_message(chat_id, handle_pnl(r))
+    elif text == "/claw report":
+        from app.performance_reporter import PerformanceReporter
+        from utils.redis_helpers import today_kst
+        reporter = PerformanceReporter(r)
+        date_str = today_kst()
+        stats = reporter.compute_and_save("KR", date_str)
+        msg = reporter.format_report("KR", stats)
+        _send_message(chat_id, msg)
+        _send_message(chat_id, "리포트 발송 완료.")
     elif text.startswith("/claw pause on"):
         pin = text[len("/claw pause on"):].strip()
         _send_message(chat_id, handle_pause_on(r, pin))

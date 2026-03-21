@@ -86,8 +86,8 @@ class MarketDataUpdater:
                     hist_key = f"mark_hist:{market}:{symbol}"
                     pipe = self.redis.pipeline()
                     pipe.lpush(hist_key, f"{ts_now}:{price}")
-                    pipe.ltrim(hist_key, 0, 299)
-                    pipe.expire(hist_key, 2 * 86400)
+                    pipe.ltrim(hist_key, 0, 999)
+                    pipe.expire(hist_key, 7 * 86400)
                     pipe.execute()
                 else:
                     # Delayed Frozen 모드(market_data_type=4)는 price_none 카운트 제외 — 노이즈 방지
