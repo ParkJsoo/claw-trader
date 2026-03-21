@@ -219,9 +219,9 @@ class Backtester:
     def run_sweep(
         self,
         symbols: list[str],
-        stop_pcts: list[Decimal] = None,
-        take_pcts: list[Decimal] = None,
-        trail_pcts: list[Decimal] = None,
+        stop_pcts: Optional[list[Decimal]] = None,
+        take_pcts: Optional[list[Decimal]] = None,
+        trail_pcts: Optional[list[Decimal]] = None,
     ) -> tuple[list[SimResult], list[SweepSummary]]:
         """모든 심볼 × 파라미터 조합 시뮬레이션.
 
@@ -321,4 +321,5 @@ class Backtester:
                 f" -> WR={s.win_rate*100:.0f}% PF={s.profit_factor}"
             )
 
+        lines.append("\n⚠️ mark_hist 첫 데이터 진입 가정. 실제 진입 가격과 차이 있을 수 있음.")
         return "\n".join(lines)

@@ -52,21 +52,32 @@ def _send_report(r, market: str) -> None:
     print(f"daily_report: sent {market} {date_str}", flush=True)
 
 
-def _reset_daily_cap(r, date_str: str) -> None:
-    """strategy:daily_count KR/US 리셋 (장 시작 전 08:55)."""
-    reset_key = f"claw:daily_reset:{date_str}"
+def _reset_daily_cap(r, market: str) -> None:
+    """strategy:daily_count {market} 리셋 (장 시작 전 08:55).
+
+    오늘 + 어제 날짜 키를 모두 삭제하여 전날 잔여 카운트도 정리.
+    """
+    today = today_kst()
+    yesterday = (datetime.strptime(today, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+
+    reset_key = f"claw:daily_reset:{market}:{today}"
     if r.exists(reset_key):
-        return  # 이미 리셋함
+        return
 
-    r.delete(f"strategy:daily_count:KR:{date_str}")
-    r.delete(f"strategy:daily_count:US:{date_str}")
-    r.set(reset_key, "1", ex=_DAILY_RESET_TTL)
+    deleted = 0
+    for date_str in [today, yesterday]:
+        key = f"strategy:daily_count:{market}:{date_str}"
+        deleted += r.delete(key)
 
+    from utils.redis_helpers import secs_until_kst_midnight
+    ttl = secs_until_kst_midnight()
+    r.set(reset_key, "1", ex=max(ttl, 3600))
+
+    print(f"daily_report: daily_cap_reset {market} (deleted={deleted})", flush=True)
     try:
-        send_telegram("[CLAW] 🔄 Daily cap 리셋 완료 (KR/US)")
+        send_telegram(f"[CLAW] 🔄 Daily cap 리셋 완료 ({market})\n{today} + {yesterday} 키 삭제")
     except Exception:
         pass
-    print(f"daily_report: daily_cap_reset {date_str}", flush=True)
 
 
 def _auto_tune(r, market: str) -> None:
@@ -100,44 +111,36 @@ def _auto_tune(r, market: str) -> None:
     avg_win_rate = sum(win_rates) / len(win_rates)
     avg_max_dd = sum(max_drawdowns) / len(max_drawdowns) if max_drawdowns else 0.0
 
-    changes: list[str] = []
     config_key = f"claw:config:{market}"
 
     current_stop = get_config(r, market, "stop_pct", 0.015)
     current_take = get_config(r, market, "take_pct", 0.030)
     current_size = get_config(r, market, "size_cash_pct", 0.20)
 
-    new_stop = current_stop
-    new_take = current_take
-    new_size = current_size
+    changes: dict[str, str] = {}
 
     if avg_win_rate < 0.40:
-        # 승률 낮음: stop 축소(손실 줄이기), take 확대(수익 늘리기)
-        new_stop = round(max(current_stop * 0.90, 0.005), 4)
-        new_take = round(min(current_take * 1.10, 0.10), 4)
+        # 승률 낮음: stop 확대(더 많은 가격 변동 허용) + size 축소
+        new_stop = round(min(float(current_stop) * 1.10, 0.05), 4)
+        new_size = round(max(float(current_size) - 0.05, 0.10), 4)
+        changes["stop_pct"] = str(new_stop)
+        changes["size_cash_pct"] = str(new_size)
     elif avg_win_rate > 0.60:
-        # 승률 높음: stop 확대(홀딩 여유), take 축소(빠른 수익 실현)
-        new_stop = round(min(current_stop * 1.10, 0.05), 4)
-        new_take = round(max(current_take * 0.90, 0.01), 4)
+        # 승률 높음: stop 소폭 축소(리스크 감소)
+        new_stop = round(max(float(current_stop) * 0.95, 0.010), 4)
+        changes["stop_pct"] = str(new_stop)
 
     _MAX_DD_THRESHOLD = {"KR": 50000, "US": 50}
     threshold = _MAX_DD_THRESHOLD.get(market, 50000)
     if avg_max_dd > threshold:
-        # 최대 낙폭 큼: 포지션 크기 하향
-        new_size = round(max(current_size - 0.05, 0.10), 4)
-
-    if new_stop != current_stop:
-        r.hset(config_key, "stop_pct", str(new_stop))
-        changes.append(f"stop_pct: {current_stop} → {new_stop}")
-    if new_take != current_take:
-        r.hset(config_key, "take_pct", str(new_take))
-        changes.append(f"take_pct: {current_take} → {new_take}")
-    if new_size != current_size:
-        r.hset(config_key, "size_cash_pct", str(new_size))
-        changes.append(f"size_cash_pct: {current_size} → {new_size}")
+        # 최대 낙폭 큼: 포지션 크기 하향 (win_rate 분기와 별개로 적용)
+        new_size = round(max(float(current_size) - 0.05, 0.10), 4)
+        changes["size_cash_pct"] = str(new_size)
 
     if changes:
-        msg = f"[CLAW] 🔧 자동 튜닝 ({market})\n" + "\n".join(changes)
+        for param_key, param_val in changes.items():
+            r.hset(config_key, param_key, param_val)
+        msg = f"[CLAW] 🔧 자동 튜닝 ({market})\n" + "\n".join(f"{k}: → {v}" for k, v in changes.items())
         try:
             send_telegram(msg)
         except Exception:
@@ -170,7 +173,8 @@ def main() -> None:
             if (now_kst.hour == _DAILY_RESET_HOUR and
                     _DAILY_RESET_MIN <= now_kst.minute <= 59):
                 try:
-                    _reset_daily_cap(r, date_str)
+                    _reset_daily_cap(r, "KR")
+                    _reset_daily_cap(r, "US")
                 except Exception as e:
                     print(f"daily_report: daily_cap_reset error {e}", flush=True)
 

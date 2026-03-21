@@ -368,6 +368,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
         return None  # 이미 처리한 eval 결과
 
+    # 2-b. symbol-level cooldown: KIS API 호출 전에 체크하여 불필요한 API 호출 방지
+    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
+    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
+        _log("runner.reject.cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
+        _record_reject(r, market, "reject_cooldown")
+        return None
+
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
@@ -576,17 +583,11 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "claude_conf": str(c_conf) if not _partial_consensus else "0.0",
     }
 
-    # symbol-level cooldown: 같은 종목 N초 내 재emit 방지
-    cooldown_key = f"consensus:symbol_cooldown:{market}:{symbol}"
-    if not r.set(cooldown_key, "1", nx=True, ex=_SYMBOL_COOLDOWN_SEC):
-        _log("runner.reject.cooldown", symbol=symbol, cooldown_sec=_SYMBOL_COOLDOWN_SEC)
-        _record_reject(r, market, "reject_cooldown")
-        return None
-
     try:
         r.lpush("claw:signal:queue", json.dumps(payload))
     except Exception as e:
         _log("runner.error.publish_failed", symbol=symbol, signal_id=signal_id, error=str(e))
+        r.delete(cooldown_key)  # lpush 실패 시 cooldown 롤백
         return None
 
     # stop_pct/take_pct를 exit runner가 읽을 수 있도록 저장 (TTL 1시간)
