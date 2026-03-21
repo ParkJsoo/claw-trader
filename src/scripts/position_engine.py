@@ -18,6 +18,18 @@ from portfolio.engine import PositionEngine
 from portfolio.redis_repo import RedisPositionRepository
 from utils.redis_helpers import get_config
 
+_LUA_UPDATE_STREAK = """
+local streak = tonumber(redis.call('GET', KEYS[1]) or '0')
+local pnl_sign = tonumber(ARGV[1])
+if pnl_sign > 0 then
+    streak = (streak > 0) and (streak + 1) or 1
+elseif pnl_sign < 0 then
+    streak = (streak < 0) and (streak - 1) or -1
+end
+redis.call('SET', KEYS[1], tostring(streak))
+return streak
+"""
+
 MAX_RETRY = 5
 STATUS_LOG_INTERVAL_SEC = 30
 FILL_QUEUE_KEY = "claw:fill:queue"
@@ -31,17 +43,12 @@ _STREAK_LOSS_THRESHOLD = -3
 def _update_streak(r, market: str, pnl: Decimal) -> None:
     """SELL fill 후 연속 수익/손실 streak 추적 및 size_cash_pct 자동 조정."""
     streak_key = f"claw:streak:{market}"
-    raw = r.get(streak_key)
-    streak = int(raw.decode() if isinstance(raw, bytes) else raw) if raw else 0
 
-    if pnl > 0:
-        streak = streak + 1 if streak > 0 else 1
-    elif pnl < 0:
-        streak = streak - 1 if streak < 0 else -1
-    else:
+    if pnl == 0:
         return  # pnl == 0: streak 변경 없음
 
-    r.set(streak_key, str(streak))
+    pnl_sign = 1 if float(pnl) > 0 else (-1 if float(pnl) < 0 else 0)
+    streak = int(r.eval(_LUA_UPDATE_STREAK, 1, streak_key, pnl_sign))
 
     config_key = f"claw:config:{market}"
     current_pct = get_config(r, market, "size_cash_pct", _DEFAULT_SIZE_CASH_PCT)

@@ -154,7 +154,7 @@ class TestRunOnce:
             result = run_once(r, "KR")
         assert result is True
         # 신호가 큐에 들어갔는지 확인
-        assert r.llen("signal:KR") == 1
+        assert r.llen("claw:signal:queue") == 1
         # 락이 설정됐는지 확인
         assert r.exists("claw:hedge:lock:KR")
 

@@ -205,10 +205,10 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
 
     # 2-b. ret_5m / range_5m prefilter (consensus_signal_runner 기준과 동일)
     # AI call 후 어차피 reject될 신호를 사전 차단 → call 절감
+    stats_key = f"ai:dual_stats:consensus:{market}:{today}"
     try:
         ret_5m_val = features.get("ret_5m")
         range_5m_val = features.get("range_5m")
-        stats_key = f"ai:dual_stats:consensus:{market}:{today}"
         if ret_5m_val is not None and float(ret_5m_val) <= _DUAL_MIN_RET_5M:
             r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
             r.expire(stats_key, _DUAL_TTL)

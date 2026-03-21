@@ -137,7 +137,7 @@ def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
             return current_price
         return size_cash
     except Exception as e:
-        _log("size_cash_fallback", market=market, reason=str(e))
+        _log("size_cash_error", market=market, error=str(e), exc_type=type(e).__name__)
         return current_price  # fallback: 1주
 
 
@@ -270,7 +270,6 @@ def _has_volume_surge(r, market: str, symbol: str) -> bool:
     except (ValueError, TypeError):
         return True
 
-    from datetime import datetime, timedelta
     vols = []
     for i in range(1, _VOLUME_LOOKBACK_DAYS + 1):
         try:
@@ -552,7 +551,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "consensus": "EMIT",
         "partial_consensus": _partial_consensus,
         "claude_emit": 1,
-        "qwen_emit": 1,
+        "qwen_emit": 0 if _partial_consensus else (1 if q_emit else 0),
         "ret_5m": ret_5m,
         "range_5m": range_5m,
         "stop_pct": str(stop_pct),

@@ -207,7 +207,7 @@ def _sync_positions(r, client, market: str) -> dict:
             except Exception:
                 opened_ts = int(time.time())
         else:
-            opened_ts = int(time.time() * 1000)
+            opened_ts = int(time.time())
 
         # BUY fill detection: 새로 나타난 종목 (Redis에 없었던 것)
         # 이미 Redis에 qty>0 포지션이 있으면 중복 fill 방지

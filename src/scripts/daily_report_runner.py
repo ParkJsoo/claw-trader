@@ -120,7 +120,9 @@ def _auto_tune(r, market: str) -> None:
         new_stop = round(min(current_stop * 1.10, 0.05), 4)
         new_take = round(max(current_take * 0.90, 0.01), 4)
 
-    if avg_max_dd > 0.03:
+    _MAX_DD_THRESHOLD = {"KR": 50000, "US": 50}
+    threshold = _MAX_DD_THRESHOLD.get(market, 50000)
+    if avg_max_dd > threshold:
         # 최대 낙폭 큼: 포지션 크기 하향
         new_size = round(max(current_size - 0.05, 0.10), 4)
 

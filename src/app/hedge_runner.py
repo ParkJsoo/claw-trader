@@ -9,14 +9,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import json
-import logging
 import os
+import signal as _signal
+import sys
 import time
 import uuid
 
 import redis
-
-logger = logging.getLogger(__name__)
 
 _HEDGE_SYMBOL = os.getenv("HEDGE_SYMBOL_KR", "114800")
 _HEDGE_TRIGGER_RET = float(os.getenv("HEDGE_TRIGGER_RET", "-0.01"))  # -1% 급락
@@ -78,10 +77,12 @@ def _get_mark_price(r, market: str, symbol: str) -> float | None:
 
 
 def _push_hedge_signal(r, market: str, symbol: str, price: float, size_cash: float) -> None:
-    """signal:{market} 큐에 헤지 BUY 신호 push."""
+    """claw:signal:queue에 헤지 BUY 신호 push."""
     signal_id = f"HEDGE-{uuid.uuid4().hex[:8]}"
+    stop_price = round(price * 0.98, 0)
     signal = {
         "signal_id": signal_id,
+        "ts": str(int(time.time() * 1000)),
         "market": market,
         "symbol": symbol,
         "direction": "LONG",
@@ -89,12 +90,13 @@ def _push_hedge_signal(r, market: str, symbol: str, price: float, size_cash: flo
             "price": str(price),
             "size_cash": str(size_cash),
         },
+        "stop": {"price": str(stop_price)},
         "stop_pct": "0.02",
         "take_pct": "0.03",
         "source": "hedge",
     }
-    r.lpush(f"signal:{market}", json.dumps(signal))
-    logger.info(f"hedge_runner: pushed hedge signal signal_id={signal_id} symbol={symbol} price={price} size={size_cash}")
+    r.lpush("claw:signal:queue", json.dumps(signal))
+    print(f"hedge_runner: pushed hedge signal signal_id={signal_id} symbol={symbol} price={price} size={size_cash}", flush=True)
 
 
 def run_once(r, market: str = "KR") -> bool:
@@ -119,7 +121,7 @@ def run_once(r, market: str = "KR") -> bool:
 
     price = _get_mark_price(r, market, _HEDGE_SYMBOL)
     if not price or price <= 0:
-        logger.warning(f"hedge_runner: no mark price for {_HEDGE_SYMBOL}, skipping")
+        print(f"hedge_runner: no mark price for {_HEDGE_SYMBOL}, skipping", flush=True)
         return False
 
     _push_hedge_signal(r, market, _HEDGE_SYMBOL, price, _HEDGE_SIZE_CASH)
@@ -138,6 +140,10 @@ def run_once(r, market: str = "KR") -> bool:
     return True
 
 
+_LOCK_KEY = "hedge_runner:lock:KR"
+_LOCK_TTL = 120
+
+
 def main() -> None:
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
@@ -145,15 +151,28 @@ def main() -> None:
         return
 
     r = redis.from_url(redis_url)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    if not r.set(_LOCK_KEY, "1", nx=True, ex=_LOCK_TTL):
+        print("hedge_runner: already running — exiting", flush=True)
+        return
+
+    def _handle_sigterm(signum, frame):
+        r.delete(_LOCK_KEY)
+        sys.exit(0)
+    _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
     print(f"hedge_runner: started poll={_POLL_SEC}s trigger={_HEDGE_TRIGGER_RET:.1%} hedge_symbol={_HEDGE_SYMBOL}", flush=True)
 
-    while True:
-        try:
-            run_once(r, "KR")
-        except Exception as e:
-            logger.error(f"hedge_runner: error {e}", exc_info=True)
-        time.sleep(_POLL_SEC)
+    try:
+        while True:
+            r.expire(_LOCK_KEY, _LOCK_TTL)
+            try:
+                run_once(r, "KR")
+            except Exception as e:
+                print(f"hedge_runner: error {e}", flush=True)
+            time.sleep(_POLL_SEC)
+    finally:
+        r.delete(_LOCK_KEY)
 
 
 if __name__ == "__main__":

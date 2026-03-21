@@ -82,19 +82,16 @@ def score_symbol(r, market: str, symbol: str, today: str) -> float:
             except Exception:
                 continue
 
-    # 2. 모멘텀 점수 (mark 데이터에서 최신 가격 변동)
-    mark_key = f"mark:{market}:{symbol}"
-    try:
-        mark_data = r.hgetall(mark_key)
-        if mark_data:
-            # ret_5m 이 있으면 모멘텀 보너스
-            ret_5m_raw = mark_data.get(b"ret_5m") or mark_data.get("ret_5m")
-            if ret_5m_raw:
-                ret_5m = float(ret_5m_raw.decode() if isinstance(ret_5m_raw, bytes) else ret_5m_raw)
-                if ret_5m > 0:
-                    score += 1.0  # 양의 모멘텀 보너스
-    except Exception:
-        pass
+    # 2. 모멘텀 점수 (dual eval features_json에서 ret_5m 읽기)
+    raw = r.hget(f"ai:dual:last:claude:{market}:{symbol}", "features_json")
+    if raw:
+        try:
+            features = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+            ret_5m = float(features.get("ret_5m", 0))
+            if ret_5m > 0:
+                score += 1.0
+        except Exception:
+            pass
 
     return score
 

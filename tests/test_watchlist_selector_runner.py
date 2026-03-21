@@ -50,8 +50,11 @@ class TestScoreSymbol:
         assert score_symbol(r, "KR", "005930", "20260318") == 2.0
 
     def test_momentum_bonus(self):
+        import json as _json
         r = fakeredis.FakeRedis()
-        r.hset("mark:KR:005930", mapping={"ret_5m": "0.003"})
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "features_json": _json.dumps({"ret_5m": "0.003"})
+        })
 
         assert score_symbol(r, "KR", "005930", "20260318") == 1.0
 
