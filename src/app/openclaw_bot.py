@@ -49,10 +49,19 @@ _HELP_TEXT = (
     "/claw news        - news intelligence status\n"
     "/claw pnl         - PnL + open positions\n"
     "/claw report      - 오늘 KR 성과 리포트 즉시 발송\n"
+    "/claw set <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
     "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
     "/claw pause off   - 일시정지 해제\n"
     "/claw help        - this help"
 )
+
+_ALLOWED_PARAMS: dict[str, tuple[float, float]] = {
+    "stop_pct":       (0.005, 0.05),
+    "take_pct":       (0.01,  0.10),
+    "trail_pct":      (0.005, 0.05),
+    "size_cash_pct":  (0.05,  0.50),
+    "max_concurrent": (1,     5),
+}
 
 _TG_PAUSE_PIN = os.getenv("TG_PAUSE_PIN", "")
 _DUAL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "500"))
@@ -364,6 +373,29 @@ def handle_news(r) -> str:
     return "\n".join(lines)
 
 
+def handle_set(r, param: str, value_str: str) -> str:
+    """/claw set <param> <value> — Redis config 파라미터 변경."""
+    if param not in _ALLOWED_PARAMS:
+        allowed_desc = ", ".join(
+            f"{p} ({lo}~{hi})" for p, (lo, hi) in _ALLOWED_PARAMS.items()
+        )
+        return f"❌ 허용 파라미터: {allowed_desc}"
+
+    lo, hi = _ALLOWED_PARAMS[param]
+    try:
+        value = float(value_str)
+    except ValueError:
+        return f"❌ 값이 숫자가 아닙니다: {value_str!r}"
+
+    if not (lo <= value <= hi):
+        return f"❌ {param} 범위 초과: {lo}~{hi}"
+
+    for market in ("KR", "US"):
+        r.hset(f"claw:config:{market}", param, str(value))
+
+    return f"✅ {param} = {value} (반영까지 최대 60초 소요)"
+
+
 def handle_pause_on(r, pin: str) -> str:
     """/claw pause on [PIN] — 전역 일시정지."""
     if _TG_PAUSE_PIN and pin != _TG_PAUSE_PIN:
@@ -454,6 +486,12 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         msg = reporter.format_report("KR", stats)
         _send_message(chat_id, msg)
         _send_message(chat_id, "리포트 발송 완료.")
+    elif text.startswith("/claw set "):
+        parts = text[len("/claw set "):].strip().split()
+        if len(parts) != 2:
+            _send_message(chat_id, "사용법: /claw set <param> <value>")
+        else:
+            _send_message(chat_id, handle_set(r, parts[0], parts[1]))
     elif text.startswith("/claw pause on"):
         pin = text[len("/claw pause on"):].strip()
         _send_message(chat_id, handle_pause_on(r, pin))
