@@ -21,8 +21,8 @@ def _record_funnel(r, market: str, event: str) -> None:
     try:
         r.hincrby(key, event, 1)
         r.expire(key, 7 * 86400)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"funnel_error: {event} {e}", flush=True)
 
 from domain.models import Signal, OrderStatus
 from executor.core import Executor
