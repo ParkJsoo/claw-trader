@@ -63,6 +63,10 @@ _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세:
 _VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
 _VOLUME_LOOKBACK_DAYS = int(os.getenv("CONSENSUS_VOLUME_LOOKBACK_DAYS", "5"))
 
+# Phase 19: 하락장 대응
+_INVERSE_ETF_KR = set(os.getenv("INVERSE_ETF_KR", "114800,251340").split(","))
+_BULLISH_THRESHOLD = float(os.getenv("REGIME_BULLISH_THRESHOLD", "0.30"))  # bearish 비율 < 30% → bullish
+
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
 
@@ -286,10 +290,13 @@ def _has_volume_surge(r, market: str, symbol: str) -> bool:
     return today_vol >= avg_vol * _VOLUME_SURGE_RATIO
 
 
-def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
-    """워치리스트 종목 중 ret_5m<0 비율이 60% 초과이면 하락 regime True 반환."""
+def _get_regime(r, market: str, watchlist: list) -> str:
+    """워치리스트 ret_5m 기반 regime 판별.
+
+    Returns: "bearish" | "bullish" | "neutral"
+    """
     if not watchlist:
-        return False
+        return "neutral"
     bearish = 0
     total = 0
     for symbol in watchlist:
@@ -306,8 +313,18 @@ def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
         except Exception:
             continue
     if total < 3:
-        return False
-    return (bearish / total) > 0.6
+        return "neutral"
+    ratio = bearish / total
+    if ratio > 0.6:
+        return "bearish"
+    if ratio < _BULLISH_THRESHOLD:
+        return "bullish"
+    return "neutral"
+
+
+def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
+    """backward compat wrapper."""
+    return _get_regime(r, market, watchlist) == "bearish"
 
 
 # ---------------------------------------------------------------------------
@@ -628,16 +645,20 @@ def main():
             # KR 처리 (장중일 때만)
             if is_market_hours("KR"):
                 watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
-                if _is_bearish_regime(r, "KR", watchlist_kr):
-                    _log("runner.regime.bearish_skip", market="KR",
-                         watchlist_size=len(watchlist_kr))
-                else:
-                    for symbol in watchlist_kr:
-                        try:
-                            run_once("KR", symbol, r)
-                        except Exception as e:
-                            _log("runner.error.unexpected", market="KR",
-                                 symbol=symbol, error=str(e))
+                regime = _get_regime(r, "KR", watchlist_kr)
+                _log("runner.regime", market="KR", regime=regime,
+                     watchlist_size=len(watchlist_kr))
+                for symbol in watchlist_kr:
+                    is_inverse = symbol in _INVERSE_ETF_KR
+                    if regime == "bearish" and not is_inverse:
+                        continue  # 하락장에서 일반 LONG 억제
+                    if regime != "bearish" and is_inverse:
+                        continue  # 상승/횡보장에서 인버스 ETF 억제
+                    try:
+                        run_once("KR", symbol, r)
+                    except Exception as e:
+                        _log("runner.error.unexpected", market="KR",
+                             symbol=symbol, error=str(e))
 
             # US 처리 (장중일 때만)
             if is_market_hours("US"):
