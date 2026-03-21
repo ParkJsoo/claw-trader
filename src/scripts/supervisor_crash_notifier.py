@@ -54,6 +54,8 @@ def _ack_ok() -> None:
 
 def main() -> None:
     while True:
+        sys.stdout.write("READY\n")
+        sys.stdout.flush()
         result = _read_event()
         if result is None:
             break

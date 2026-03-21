@@ -199,6 +199,6 @@ class PerformanceReporter:
             f"Max Drawdown: {max_dd} {currency}",
             f"━━━━━━━━━━━━━━━━━",
             f"Best:  {best_sym} ({'+' if Decimal(best_pnl or '0') >= 0 else ''}{best_pnl} {currency})",
-            f"Worst: {worst_sym} ({best_pnl if worst_sym == best_sym else worst_pnl} {currency})",
+            f"Worst: {worst_sym} ({worst_pnl} {currency})",
         ]
         return "\n".join(lines)
