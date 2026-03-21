@@ -49,6 +49,7 @@ _HELP_TEXT = (
     "/claw news        - news intelligence status\n"
     "/claw pnl         - PnL + open positions\n"
     "/claw report      - 오늘 KR 성과 리포트 즉시 발송\n"
+    "/claw backtest    - KR 파라미터 스윕 백테스트 즉시 실행\n"
     "/claw set <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
     "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
     "/claw pause off   - 일시정지 해제\n"
@@ -464,6 +465,32 @@ def handle_pnl(r) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Backtest handler
+# ---------------------------------------------------------------------------
+
+def handle_backtest(r, market: str = "KR") -> str:
+    """/claw backtest — 파라미터 스윕 백테스트 즉시 실행."""
+    from app.backtester import Backtester, ParamSet
+    from utils.redis_helpers import load_watchlist
+    from decimal import Decimal
+    import os
+
+    env_key = "GEN_WATCHLIST_KR" if market == "KR" else "GEN_WATCHLIST_US"
+    watchlist = load_watchlist(r, market, env_key)
+    if not watchlist:
+        return "워치리스트 없음"
+
+    bt = Backtester(r, market)
+    _, summaries = bt.run_sweep(watchlist)
+    current_params = ParamSet(
+        Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.015")),
+        Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.030")),
+        Decimal(os.getenv("EXIT_TRAIL_STOP_PCT", "0.015")),
+    )
+    return bt.format_report(summaries, current_params, len(watchlist))
+
+
+# ---------------------------------------------------------------------------
 # Command dispatcher
 # ---------------------------------------------------------------------------
 
@@ -486,6 +513,10 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         msg = reporter.format_report("KR", stats)
         _send_message(chat_id, msg)
         _send_message(chat_id, "리포트 발송 완료.")
+    elif text == "/claw backtest":
+        _send_message(chat_id, "백테스트 실행 중...")
+        msg = handle_backtest(r, "KR")
+        _send_message(chat_id, msg)
     elif text.startswith("/claw set "):
         parts = text[len("/claw set "):].strip().split()
         if len(parts) != 2:
