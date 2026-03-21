@@ -40,7 +40,7 @@ import redis
 from exchange.kis.client import KisClient
 from exchange.ibkr.client import IbkrClient
 from domain.models import PlaceOrderRequest, OrderSide, OrderType, OrderStatus
-from utils.redis_helpers import is_market_hours, today_kst
+from utils.redis_helpers import is_market_hours, today_kst, get_config
 from guards.notifier import send_telegram
 
 _KST = ZoneInfo("Asia/Seoul")
@@ -353,37 +353,41 @@ def _get_mark_price(r, market: str, symbol: str):
 # Exit 조건 판단
 # ---------------------------------------------------------------------------
 
-def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None, hwm_price: Decimal = None):
+def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None, hwm_price: Decimal = None,
+                stop_pct: Decimal = None, take_pct: Decimal = None, trail_pct: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
     hwm_price: trailing stop용 고점(High Water Mark). 제공 시 HWM 기반 trail stop 적용.
+    stop_pct/take_pct/trail_pct: get_config()로 읽은 시장 전역 오버라이드 (pos hash보다 우선순위 낮음).
     """
     if avg_price <= 0 or mark_price <= 0:
         return None
 
-    # position hash에서 동적 pct 읽기 (없으면 전역 기본값 fallback)
+    # 기본값: 모듈 상수
+    _eff_stop = stop_pct if stop_pct is not None else _STOP_LOSS_PCT
+    _eff_take = take_pct if take_pct is not None else _TAKE_PROFIT_PCT
+    _eff_trail = trail_pct if trail_pct is not None else _TRAIL_STOP_PCT
+
+    # position hash에서 동적 pct 읽기 (pos hash가 있으면 오버라이드)
     if pos:
         try:
-            stop_pct = Decimal(pos.get("stop_pct") or str(_STOP_LOSS_PCT))
+            _eff_stop = Decimal(pos.get("stop_pct") or str(_eff_stop))
         except Exception:
-            stop_pct = _STOP_LOSS_PCT
+            pass
         try:
-            take_pct = Decimal(pos.get("take_pct") or str(_TAKE_PROFIT_PCT))
+            _eff_take = Decimal(pos.get("take_pct") or str(_eff_take))
         except Exception:
-            take_pct = _TAKE_PROFIT_PCT
-    else:
-        stop_pct = _STOP_LOSS_PCT
-        take_pct = _TAKE_PROFIT_PCT
+            pass
 
-    stop_price = avg_price * (1 - stop_pct)
+    stop_price = avg_price * (1 - _eff_stop)
 
     # Trailing stop: HWM에서 trail_pct 이상 하락하면 청산 (floor = static stop)
     if hwm_price is not None and hwm_price > avg_price:
-        trail_stop = hwm_price * (1 - _TRAIL_STOP_PCT)
+        trail_stop = hwm_price * (1 - _eff_trail)
         stop_price = max(stop_price, trail_stop)  # 더 높은(엄격한) stop 적용
 
-    take_price = avg_price * (1 + take_pct)
+    take_price = avg_price * (1 + _eff_take)
     # H2: opened_ts 호환 — >1e12이면 밀리초, 아니면 초
     now_ms = int(time.time() * 1000)
     if opened_ts > 1_000_000_000_000:
@@ -493,6 +497,11 @@ def _run_market(r, client, market: str) -> None:
         _log("skip_exit_ibkr_fallback", market=market, fallback_count=_ibkr_fallback_count)
         return
 
+    # Redis config 오버라이드 읽기 (매 폴링마다 갱신)
+    cfg_stop = Decimal(str(get_config(r, market, "stop_pct", float(_STOP_LOSS_PCT))))
+    cfg_take = Decimal(str(get_config(r, market, "take_pct", float(_TAKE_PROFIT_PCT))))
+    cfg_trail = Decimal(str(get_config(r, market, "trail_pct", float(_TRAIL_STOP_PCT))))
+
     # 가격 quantize 단위: KR=정수, US=소수점 2자리
     q_unit = Decimal("1") if market == "KR" else Decimal("0.01")
 
@@ -533,7 +542,8 @@ def _run_market(r, client, market: str) -> None:
         hwm_price = max(prev_hwm, mark_price)
         r.set(hwm_key, str(hwm_price), ex=_POSITION_TTL)
 
-        reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price)
+        reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price,
+                             stop_pct=cfg_stop, take_pct=cfg_take, trail_pct=cfg_trail)
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             # H2: opened_ts 호환

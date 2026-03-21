@@ -63,6 +63,14 @@ def load_watchlist(r, market: str, env_key: str) -> list[str]:
     return parse_watchlist(env_key)
 
 
+def get_config(r, market: str, key: str, default: float) -> float:
+    """Redis claw:config:{market} hash에서 파라미터 읽기. 없으면 default 반환."""
+    val = r.hget(f"claw:config:{market}", key)
+    if val:
+        return float(val.decode() if isinstance(val, bytes) else val)
+    return default
+
+
 def is_paused(r) -> bool:
     """claw:pause:global 상태 확인 (true/1/yes 모두 처리)."""
     try:
