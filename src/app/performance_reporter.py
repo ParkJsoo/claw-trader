@@ -47,10 +47,13 @@ class PerformanceReporter:
         day_start_ms = int(dt.timestamp() * 1000)
         day_end_ms = int((dt + timedelta(days=1)).timestamp() * 1000)
 
-        # 모든 종목의 trade_index 스캔
+        # trade_symbols SET에서 심볼 목록 조회 (scan_iter 대신 O(N) smembers 사용)
+        symbols_raw = self.r.smembers(f"trade_symbols:{market}")
+        symbols = [self._decode(s) for s in symbols_raw]
+
         trades = []
-        for key_raw in self.r.scan_iter(f"trade_index:{market}:*"):
-            key = self._decode(key_raw)
+        for symbol in symbols:
+            key = f"trade_index:{market}:{symbol}"
             trade_ids = self.r.zrangebyscore(key, day_start_ms, day_end_ms)
             for tid_raw in trade_ids:
                 tid = self._decode(tid_raw)

@@ -128,6 +128,9 @@ def main():
                 f"{fill.side.value} {fill.qty}@{fill.price}"
             )
 
+            # trade_symbols SET 갱신: 거래 이력 추적 (TTL 없음, 영구)
+            r.sadd(f"trade_symbols:{fill.market}", fill.symbol)
+
             # SELL 후 streak 업데이트
             if fill_side == "SELL" and pre_pos is not None and pre_pos.qty > 0:
                 fee = getattr(fill, "fee", Decimal("0"))

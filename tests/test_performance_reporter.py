@@ -28,6 +28,7 @@ def _add_trade(r, market, symbol, side, pnl, ts_ms=None):
         "source": "test",
     })
     r.zadd(f"trade_index:{market}:{symbol}", {trade_id: ts_ms})
+    r.sadd(f"trade_symbols:{market}", symbol)  # position_engine과 동일하게 SET 관리
     return trade_id
 
 

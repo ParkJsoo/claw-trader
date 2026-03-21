@@ -50,7 +50,7 @@ _HELP_TEXT = (
     "/claw pnl         - PnL + open positions\n"
     "/claw report      - 오늘 KR 성과 리포트 즉시 발송\n"
     "/claw backtest    - KR 파라미터 스윕 백테스트 즉시 실행\n"
-    "/claw set <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
+    "/claw set [KR|US|ALL] <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
     "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
     "/claw pause off   - 일시정지 해제\n"
     "/claw help        - this help"
@@ -374,8 +374,23 @@ def handle_news(r) -> str:
     return "\n".join(lines)
 
 
-def handle_set(r, param: str, value_str: str) -> str:
-    """/claw set <param> <value> — Redis config 파라미터 변경."""
+def handle_set(r, args: str) -> str:
+    """/claw set [KR|US|ALL] <param> <value> — Redis config 파라미터 변경.
+
+    사용법:
+      /claw set stop_pct 0.015        → KR에만 적용 (market 생략 시 KR 기본)
+      /claw set KR stop_pct 0.015     → KR에만 적용
+      /claw set US stop_pct 0.015     → US에만 적용
+      /claw set ALL stop_pct 0.015    → KR+US 모두 적용
+    """
+    parts = args.split()
+    if len(parts) == 3 and parts[0].upper() in ("KR", "US", "ALL"):
+        market_arg, param, value_str = parts[0].upper(), parts[1], parts[2]
+    elif len(parts) == 2:
+        market_arg, param, value_str = "KR", parts[0], parts[1]
+    else:
+        return "사용법: /claw set [KR|US|ALL] <param> <value>"
+
     if param not in _ALLOWED_PARAMS:
         allowed_desc = ", ".join(
             f"{p} ({lo}~{hi})" for p, (lo, hi) in _ALLOWED_PARAMS.items()
@@ -391,10 +406,12 @@ def handle_set(r, param: str, value_str: str) -> str:
     if not (lo <= value <= hi):
         return f"❌ {param} 범위 초과: {lo}~{hi}"
 
-    for market in ("KR", "US"):
+    markets = ["KR", "US"] if market_arg == "ALL" else [market_arg]
+    for market in markets:
         r.hset(f"claw:config:{market}", param, str(value))
 
-    return f"✅ {param} = {value} (반영까지 최대 60초 소요)"
+    applied = "+".join(markets)
+    return f"✅ {applied} {param} = {value} (반영까지 최대 60초 소요)"
 
 
 def handle_pause_on(r, pin: str) -> str:
@@ -518,11 +535,8 @@ def dispatch(r, chat_id: str | int, text: str) -> None:
         msg = handle_backtest(r, "KR")
         _send_message(chat_id, msg)
     elif text.startswith("/claw set "):
-        parts = text[len("/claw set "):].strip().split()
-        if len(parts) != 2:
-            _send_message(chat_id, "사용법: /claw set <param> <value>")
-        else:
-            _send_message(chat_id, handle_set(r, parts[0], parts[1]))
+        args = text[len("/claw set "):].strip()
+        _send_message(chat_id, handle_set(r, args))
     elif text.startswith("/claw pause on"):
         pin = text[len("/claw pause on"):].strip()
         _send_message(chat_id, handle_pause_on(r, pin))
