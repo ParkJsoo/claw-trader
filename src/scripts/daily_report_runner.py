@@ -78,7 +78,10 @@ def _reset_daily_cap(r, market: str) -> None:
     r.set(reset_key, "1", ex=max(ttl, 3600))
 
     # pnl:{market} realized_pnl 일별 리셋 (킬스위치 오작동 방지)
-    r.hset(f"pnl:{market}", "realized_pnl", "0")
+    # US 시장은 장중일 수 있으므로 KR만 무조건 리셋, US는 장 외 시간만 리셋
+    from utils.redis_helpers import is_market_hours
+    if market != "US" or not is_market_hours("US"):
+        r.hset(f"pnl:{market}", "realized_pnl", "0")
 
     print(f"daily_report: daily_cap_reset {market} (deleted={deleted})", flush=True)
     try:
@@ -190,7 +193,7 @@ def main() -> None:
 
             # 08:55~08:59 KST — daily cap 리셋
             if (now_kst.hour == _DAILY_RESET_HOUR and
-                    _DAILY_RESET_MIN <= now_kst.minute <= 59):
+                    _DAILY_RESET_MIN <= now_kst.minute < _DAILY_RESET_MIN + 5):
                 try:
                     _reset_daily_cap(r, "KR")
                     _reset_daily_cap(r, "US")
@@ -212,8 +215,9 @@ def main() -> None:
                         print(f"daily_report: auto_tune error KR {e}", flush=True)
 
             time.sleep(_POLL_SEC)
-    except KeyboardInterrupt:
-        print("daily_report: stopped", flush=True)
+    finally:
+        r.delete(_LOCK_KEY)
+        print("daily_report: stopped, lock released", flush=True)
 
 
 if __name__ == "__main__":

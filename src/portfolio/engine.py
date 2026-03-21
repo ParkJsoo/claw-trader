@@ -57,7 +57,8 @@ class PositionEngine:
         if fill.side == OrderSide.BUY:
             self._apply_buy(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized)
         else:
-            self._apply_sell(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized)
+            # realized_delta는 위에서 1회 계산한 값을 전달 (이중 계산 방지)
+            self._apply_sell(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized, realized_delta)
 
         self.repo.set_mark_price(fill.market, fill.symbol, fill.price)
         self.repo.recalc_unrealized(fill.market)
@@ -99,13 +100,13 @@ class PositionEngine:
         prev_qty: Decimal,
         prev_avg: Decimal,
         prev_realized: Decimal,
+        realized_delta: Decimal,
     ) -> None:
         # Cash-only: 매도 수량을 보유 수량으로 제한
         sell_qty = min(fill.qty, prev_qty)
         if sell_qty <= 0:
             return
 
-        realized_delta = (fill.price - prev_avg) * sell_qty - fill.fee
         new_realized = prev_realized + realized_delta
         new_qty = prev_qty - sell_qty
 

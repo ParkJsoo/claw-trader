@@ -34,7 +34,7 @@ from guards.data_guard import DataGuard
 from ai.advisor import AIAdvisor
 
 _RUNNER_LOCK_KEY = "app:runner:lock"
-_RUNNER_LOCK_TTL = 30
+_RUNNER_LOCK_TTL = 120
 
 
 def main():
@@ -56,7 +56,12 @@ def main():
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
 
     kis = KisClient()
-    ibkr = IbkrClient() if os.getenv("IBKR_ACCOUNT_ID") else None
+    ibkr = None
+    if os.getenv("IBKR_ACCOUNT_ID"):
+        try:
+            ibkr = IbkrClient()
+        except Exception as e:
+            print(f"runner: IBKR init failed ({e}) — US market disabled", flush=True)
 
     # Phase 10 config — env var override (재기동 시 반영)
     from strategy.engine import MarketStrategyConfig
@@ -166,10 +171,12 @@ def main():
                 else:
                     print("unknown market:", signal.market)
                     continue
-                if st == OrderStatus.ERROR:
+                if st == OrderStatus.RISK_REJECTED:
                     _record_funnel(r, signal.market, "risk_reject")
                 elif st == OrderStatus.REJECTED:
                     _record_funnel(r, signal.market, "broker_reject")
+                elif st == OrderStatus.ERROR:
+                    _record_funnel(r, signal.market, "execution_error")
                 else:
                     _record_funnel(r, signal.market, "executed")
                 print("executed:", signal.signal_id, signal.market, st.value)

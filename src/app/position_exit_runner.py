@@ -278,10 +278,11 @@ def _sync_positions(r, client, market: str) -> dict:
             cached_qty = Decimal("0")
             cached_avg_price = Decimal("0")
             if raw_pos:
-                def _d(k, raw=raw_pos):
-                    key = k.encode() if isinstance(next(iter(raw)), bytes) else k
-                    v = raw.get(key, b"" if isinstance(next(iter(raw)), bytes) else "")
-                    return v.decode() if isinstance(v, bytes) else v
+                _pos_bytes = isinstance(next(iter(raw_pos)), bytes)
+                def _d(k, _raw=raw_pos, _b=_pos_bytes):
+                    key = k.encode() if _b else k
+                    v = _raw.get(key, b"" if _b else "")
+                    return v.decode() if isinstance(v, bytes) else (v or "")
                 try:
                     cached_qty = Decimal(_d("qty") or "0")
                     cached_avg_price = Decimal(_d("avg_price") or "0")
