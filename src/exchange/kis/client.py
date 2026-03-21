@@ -369,8 +369,8 @@ class KisClient(ExchangeClient):
                 json=payload,
             )
         except Exception as e:
-            # 404: 주문 없음 (이미 체결/취소) → True 반환
-            if "404" in str(e):
+            # status=404: 주문 없음 (이미 체결/취소) → True 반환
+            if "status=404" in str(e):
                 return True
             raise
 

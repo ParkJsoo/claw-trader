@@ -169,7 +169,7 @@ class RedisPositionRepository:
             "ts": fill_ts_ms,
             "recorded_at_ms": recorded_at_ms,
             "exec_id": fill.exec_id or "",
-            "fee": str(getattr(fill, "fee", Decimal("0"))),
+            "fee": str(fill.fee),
             "signal_id": fill.signal_id or "",
             "source": getattr(fill, "source", None) or "",
         }
