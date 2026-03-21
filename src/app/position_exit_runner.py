@@ -507,9 +507,21 @@ def _run_market(r, client, market: str) -> None:
         return
 
     # Redis config 오버라이드 읽기 (매 폴링마다 갱신)
-    cfg_stop = Decimal(str(get_config(r, market, "stop_pct", float(_STOP_LOSS_PCT))))
-    cfg_take = Decimal(str(get_config(r, market, "take_pct", float(_TAKE_PROFIT_PCT))))
-    cfg_trail = Decimal(str(get_config(r, market, "trail_pct", float(_TRAIL_STOP_PCT))))
+    # TG /claw set으로 명시적 override가 있을 때만 cfg 값 사용 (없으면 None → per-signal 동적값 사용)
+    _config_key = f"claw:config:{market}"
+
+    def _cfg_or_none(field: str) -> "Decimal | None":
+        raw = r.hget(_config_key, field)
+        if raw is None:
+            return None
+        try:
+            return Decimal(raw.decode() if isinstance(raw, bytes) else raw)
+        except Exception:
+            return None
+
+    cfg_stop = _cfg_or_none("stop_pct")
+    cfg_take = _cfg_or_none("take_pct")
+    cfg_trail = _cfg_or_none("trail_pct")
 
     # 가격 quantize 단위: KR=정수, US=소수점 2자리
     q_unit = Decimal("1") if market == "KR" else Decimal("0.01")
