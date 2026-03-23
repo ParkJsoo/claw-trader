@@ -164,6 +164,10 @@ def write_watchlist(r, market: str, symbols: list[str]) -> None:
 _DYNAMIC_VOLUME_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_VOLUME_TOP_N", "30"))
 _DYNAMIC_FLUCT_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_FLUCT_TOP_N", "30"))
 _DYNAMIC_FALLBACK_N = int(os.getenv("WATCHLIST_DYNAMIC_FALLBACK_N", "20"))
+_DYNAMIC_PRICE_MIN = int(os.getenv("WATCHLIST_DYNAMIC_PRICE_MIN", "5000"))   # 초저가 소형주 제외
+_DYNAMIC_PRICE_MAX = int(os.getenv("WATCHLIST_DYNAMIC_PRICE_MAX", "100000"))
+_DYNAMIC_MIN_VOL = int(os.getenv("WATCHLIST_DYNAMIC_MIN_VOL", "500000"))     # 거래량 최소 50만
+_DYNAMIC_MIN_RATE = float(os.getenv("WATCHLIST_DYNAMIC_MIN_RATE", "1.0"))    # 등락률 최소 1%
 
 
 def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None:
@@ -185,8 +189,8 @@ def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None
             return None
 
     try:
-        vol_items = kis.get_volume_rank(price_min=1000, price_max=50000, min_vol=100000)
-        flu_items = kis.get_fluctuation_rank(price_min=1000, price_max=50000, min_rate=1.0)
+        vol_items = kis.get_volume_rank(price_min=_DYNAMIC_PRICE_MIN, price_max=_DYNAMIC_PRICE_MAX, min_vol=_DYNAMIC_MIN_VOL)
+        flu_items = kis.get_fluctuation_rank(price_min=_DYNAMIC_PRICE_MIN, price_max=_DYNAMIC_PRICE_MAX, min_rate=_DYNAMIC_MIN_RATE)
     except Exception as e:
         print(f"watchlist_selector: KIS rank API error ({e}) — skipping dynamic", flush=True)
         return None
