@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional, Tuple
 
+# 취소된 종목 재진입 방지 cooldown (기본 1시간)
+_CANCEL_COOLDOWN_SEC: int = int(os.getenv("CANCEL_COOLDOWN_SEC", "3600"))
+
 import redis
 
 from domain.models import FillEvent, OrderSide
@@ -280,6 +283,14 @@ class OrderWatcher:
                     ok = self._cancel_order(market, order_id)
                     if ok:
                         self._set_order_status(market, order_id, "CANCELED")
+                        # 취소된 종목은 일정 시간 재진입 금지
+                        mk = self._meta_key(market, order_id)
+                        meta = self.r.hgetall(mk)
+                        if meta:
+                            sym = meta.get(b"symbol", b"").decode()
+                            if sym:
+                                ck = f"consensus:symbol_cooldown:{market}:{sym}"
+                                self.r.set(ck, "1", ex=_CANCEL_COOLDOWN_SEC)
                     else:
                         self._record_reject(
                             market=market,

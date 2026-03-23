@@ -103,7 +103,9 @@ def _get_updates(offset: int) -> list[dict]:
         {"offset": offset, "timeout": 25, "limit": 10},
         timeout=30,
     )
-    if result and result.get("ok"):
+    if result is None:
+        raise RuntimeError("getUpdates network error")
+    if result.get("ok"):
         return result.get("result", [])
     return []
 

@@ -13,6 +13,9 @@ from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
 
+# 재시작 시 큐에 남은 오래된 신호 skip (기본 5분)
+_SIGNAL_MAX_AGE_SEC = int(os.getenv("SIGNAL_MAX_AGE_SEC", "300"))
+
 
 def _record_funnel(r, market: str, event: str) -> None:
     """Execution funnel 일별 집계 (Phase 11: candidate→strategy→risk→executed)."""
@@ -125,6 +128,15 @@ def main():
             except Exception as e:
                 print("invalid signal:", e, raw)
                 continue
+
+            # 오래된 신호 skip: 재시작 시 큐에 쌓인 신호 재처리 방지
+            try:
+                sig_age = (datetime.now(_KST) - datetime.fromisoformat(signal.ts)).total_seconds()
+                if sig_age > _SIGNAL_MAX_AGE_SEC:
+                    print(f"stale_signal: {signal.signal_id} symbol={signal.symbol} age={sig_age:.0f}s — skip", flush=True)
+                    continue
+            except Exception:
+                pass
 
             try:
                 # Phase 8: DataGuard — stale market data 감지 (v1: warn only)
