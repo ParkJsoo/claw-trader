@@ -278,14 +278,17 @@ class OrderWatcher:
                         self._set_order_status(market, order_id, real)
                         continue
 
-                # 2) TTL 초과면 자동 취소
+                # 2) TTL 초과면 자동 취소 (SELL 주문은 손절/익절이므로 취소 제외)
                 if age >= self.cfg.ttl_cancel_sec:
+                    mk = self._meta_key(market, order_id)
+                    meta = self.r.hgetall(mk)
+                    side = meta.get(b"side", b"").decode() if meta else ""
+                    if side == "SELL":
+                        continue  # 매도 주문은 TTL 취소 안 함
                     ok = self._cancel_order(market, order_id)
                     if ok:
                         self._set_order_status(market, order_id, "CANCELED")
                         # 취소된 종목은 일정 시간 재진입 금지
-                        mk = self._meta_key(market, order_id)
-                        meta = self.r.hgetall(mk)
                         if meta:
                             sym = meta.get(b"symbol", b"").decode()
                             if sym:
