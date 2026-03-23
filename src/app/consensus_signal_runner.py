@@ -54,8 +54,8 @@ _LOCK_TTL = 120  # seconds
 
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
-# Phase 10 prefilter 기준값 (Phase 11: ret_5m threshold 강화 0.0 → 0.001)
-_MIN_RET_5M = float(os.getenv("CONSENSUS_MIN_RET_5M", "0.001"))
+# mean reversion prefilter: 5분 낙폭 최소 기준
+_MIN_DROP_5M = float(os.getenv("MR_MIN_DROP_5M", "0.005"))   # 0.5% 낙폭 최소
 _MIN_RANGE_5M = 0.004
 
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
@@ -455,7 +455,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    if ret_5m <= _MIN_RET_5M:
+    # mean reversion: 5분 낙폭이 충분해야 함
+    if ret_5m >= -_MIN_DROP_5M:
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
         return None
@@ -465,19 +466,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
 
-    # 5-b. ret_15m prefilter: 15분 추세 확인
-    try:
-        ret_15m_raw = c_features.get("ret_15m")
-        if ret_15m_raw is not None:
-            ret_15m = float(ret_15m_raw)
-            if ret_15m < _MIN_RET_15M:
-                _log("runner.reject.prefilter_ret_15m", symbol=symbol, ret_15m=ret_15m)
-                _record_reject(r, market, "reject_prefilter_ret_15m")
-                return None
-    except (TypeError, ValueError):
-        pass  # 데이터 없으면 통과 (mark_hist 부족 시 등)
-
-    # 5-c. Volume surge 필터 (KR만 — US는 데이터 없음)
+    # 5-b. Volume surge 필터 (KR만 — US는 데이터 없음)
     if market == "KR" and not _has_volume_surge(r, market, symbol):
         _log("runner.reject.volume_no_surge", symbol=symbol)
         _record_reject(r, market, "reject_volume_no_surge")
@@ -659,8 +648,8 @@ def main():
         sys.exit(1)
 
     print(
-        f"consensus: started poll_sec={_POLL_SEC} "
-        f"prefilter=ret_5m>{_MIN_RET_5M} range_5m>{_MIN_RANGE_5M} "
+        f"consensus: started poll_sec={_POLL_SEC} strategy=mean_reversion "
+        f"prefilter=ret_5m<-{_MIN_DROP_5M} range_5m>{_MIN_RANGE_5M} "
         f"stop_pct=dynamic(range_5m*1.2,min=0.015) take_pct=dynamic(range_5m*2.0,min=0.020) "
         f"watchlist_kr={watchlist_kr} "
         f"watchlist_us={watchlist_us}",
