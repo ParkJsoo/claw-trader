@@ -6,30 +6,31 @@
 
 ---
 
-## 현재 상태 (Phase 19 완료 + 7차 코드리뷰, 2026-03-21) — 228 tests passing
+## 현재 상태 (2026-03-23) — mean reversion 전략 전환
 
 | 영역 | 상태 |
 |------|------|
 | KR 자동매매 파이프라인 | ✅ 완전 자동 |
-| AI 신호 생성 (Claude + Qwen) | ✅ 운영 중 |
-| 동적 워치리스트 (12종목) | ✅ 운영 중 |
+| **전략: mean reversion (낙폭+거래량 진입)** | ✅ 2026-03-23 전환 |
+| **Claude bad news filter (Qwen 제거)** | ✅ 2026-03-23 완료 |
+| 동적 워치리스트 (price≥5000, vol≥500K) | ✅ 필터 강화 |
 | 뉴스 → AI 통합 | ✅ 운영 중 |
-| 신호 품질 필터 (ret_15m / volume surge / 뉴스+신뢰도 가중) | ✅ Phase 17 완료 |
+| KIS 호가단위 오류(APBK0506) 수정 | ✅ 2026-03-23 완료 |
+| SELL 주문 TTL 취소 방지 | ✅ 2026-03-23 완료 |
+| SELL CANCELED 재시도 로직 | ✅ 2026-03-23 완료 |
 | Trailing Stop + 비대칭 R:R (stop 1.5%, take 3%) | ✅ Phase 15 완료 |
 | Time Limit 연장 (수익 중 최대 2×) | ✅ Phase 15 완료 |
-| Partial Consensus + Regime Filter (3방향) | ✅ Phase 15 완료 |
+| Regime Filter (3방향) | ✅ Phase 19 완료 |
 | per-signal 동적 stop/take_pct | ✅ 버그 수정 완료 |
 | 포지션/PnL 자동 기록 | ✅ 운영 중 |
-| TOCTOU 방지 (포지션 1회 읽기) | ✅ 버그 수정 완료 |
 | 성과 통계 자동화 (TG 일일 리포트) | ✅ Phase 16 완료 |
 | 백테스트 프레임워크 | ✅ Phase 16+ 완료 |
 | 완전 무인 자동화 (supervisord + 자동조정) | ✅ Phase 18 완료 |
 | 하락장 대응 (인버스 ETF + 헤지) | ✅ Phase 19 완료 |
-| 7차 코드리뷰 (이슈 0건) | ✅ 완료 |
 
 ---
 
-## ✅ Phase 0~19 + 코드리뷰 — 완료
+## ✅ Phase 0~19 + 전략 전환 — 완료
 
 | Phase | 내용 |
 |-------|------|
@@ -43,6 +44,7 @@
 | 18 | supervisord, daily cap 자동 리셋, TG 파라미터, streak 자본 자동 조정 |
 | 19 | 인버스 ETF, Regime 3방향 전환, hedge_runner |
 | 코드리뷰 | 7차 리뷰 — TOCTOU, per-signal 버그, Fill 멱등성, limit_price None 처리 등 수정 |
+| **전략전환** | **2026-03-23 — momentum → mean reversion, Qwen 제거, 버그 다수 수정** |
 
 ---
 
