@@ -65,6 +65,7 @@ _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
 _VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
 _VOLUME_LOOKBACK_DAYS = int(os.getenv("VOLUME_LOOKBACK_DAYS", "7"))  # 5 → 7 (주말 포함)
+_CLAUDE_ONLY = os.getenv("EXECUTION_MODE", "dual").lower() == "claude_only"  # Qwen 무시
 
 # Phase 19: 하락장 대응
 _INVERSE_ETF_KR = set(os.getenv("INVERSE_ETF_KR", "114800,251340").split(","))
@@ -359,13 +360,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     claude = _hgetall_str(r, f"ai:dual:last:claude:{market}:{symbol}")
     qwen   = _hgetall_str(r, f"ai:dual:last:qwen:{market}:{symbol}")
 
-    if not claude or not qwen:
-        return None  # 아직 평가 결과 없음 — 무시 (cold start)
+    if not claude:
+        return None  # Claude 결과 없음 — cold start
+    if not _CLAUDE_ONLY and not qwen:
+        return None  # dual 모드인데 Qwen 결과 없음
 
     # 2. dedup: 이미 이 ts_ms로 처리한 결과면 스킵 (중복 push 방지)
     # dual eval runner가 새 결과를 쓰기 전까지 동일 hash 반복 읽힘
     c_ts_ms = claude.get("ts_ms", "")
-    q_ts_ms = qwen.get("ts_ms", "")
+    q_ts_ms = qwen.get("ts_ms", "") if qwen else ""
     seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}:{q_ts_ms}"
     if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
         return None  # 이미 처리한 eval 결과
@@ -402,7 +405,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_consensus_failed")
         return None
 
-    if not q_emit:
+    if not _CLAUDE_ONLY and not q_emit:
         # Claude EMIT + Qwen HOLD → 뉴스 positive이면 partial consensus 허용
         if _has_positive_news(r, market, symbol):
             _partial_consensus = True
@@ -414,15 +417,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
                 "runner.reject.consensus_failed",
                 symbol=symbol,
                 claude_emit=claude.get("emit"),
-                qwen_emit=qwen.get("emit"),
+                qwen_emit=qwen.get("emit") if qwen else "N/A",
             )
             _record_reject(r, market, "reject_consensus_failed")
             return None
 
-    # 4. 방향 일치 확인 (partial consensus는 Claude 방향만 사용)
+    # 4. 방향 일치 확인 (claude_only/partial consensus는 Claude 방향만 사용)
     c_dir = claude.get("direction", "")
-    q_dir = qwen.get("direction", "")
-    if not _partial_consensus:
+    q_dir = qwen.get("direction", "") if qwen else ""
+    if not _partial_consensus and not _CLAUDE_ONLY:
         if not c_dir or c_dir != q_dir:
             _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
             _record_reject(r, market, "reject_direction_mismatch")
