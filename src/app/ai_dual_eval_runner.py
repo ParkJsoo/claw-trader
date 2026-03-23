@@ -14,7 +14,6 @@ import redis
 
 from ai.generator import AISignalGenerator
 from ai.providers.claude_provider import ClaudeProvider
-from ai.providers.qwen_provider import QwenProvider
 from news.redis_writer import get_symbol_context
 from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours
 
@@ -46,32 +45,6 @@ if v > tonumber(ARGV[1]) then
 end
 return v
 """
-
-# ---------------------------------------------------------------------------
-# 합의 정책
-# ---------------------------------------------------------------------------
-
-def _compute_consensus(c_emit: bool, c_dir: str, q_emit: bool, q_dir: str) -> tuple[str, str]:
-    """
-    Returns (consensus, direction)
-
-    Rules:
-    - 둘 다 emit=true AND direction 동일 → EMIT
-    - 둘 다 emit=true BUT direction 다름 → HOLD
-    - Claude emit=true, Qwen emit=false → PARTIAL_CLAUDE (뉴스 조건부 허용)
-    - Qwen emit=true, Claude emit=false → HOLD (Claude 우선)
-    - 둘 다 emit=false → SKIP
-    """
-    if c_emit and q_emit:
-        if c_dir == q_dir:
-            return "EMIT", c_dir
-        return "HOLD", "HOLD"
-    if not c_emit and not q_emit:
-        return "SKIP", "HOLD"
-    if c_emit and not q_emit:
-        return "PARTIAL_CLAUDE", c_dir
-    return "HOLD", "HOLD"
-
 
 # ---------------------------------------------------------------------------
 # Redis 저장
@@ -116,67 +89,11 @@ def _save_provider(r, provider: str, market: str, symbol: str, today: str,
     r.expire(stats_key, _DUAL_TTL)
 
 
-def _save_consensus(r, market: str, symbol: str, today: str,
-                    consensus: str, direction: str,
-                    c_result, q_result, features: dict) -> None:
-    ts_ms = int(time.time() * 1000)
-    payload = {
-        "ts_ms": str(ts_ms),
-        "market": market,
-        "symbol": symbol,
-        "consensus": consensus,
-        "direction": direction,
-        "claude_emit": "1" if c_result.emit else "0",
-        "claude_dir": c_result.direction,
-        "claude_conf": str(c_result.confidence),
-        "qwen_emit": "1" if q_result.emit else "0",
-        "qwen_dir": q_result.direction,
-        "qwen_conf": str(q_result.confidence),
-        "features_json": json.dumps(
-            {k: str(v) if v is not None else None for k, v in features.items()}
-        ),
-    }
-
-    last_key = f"ai:dual:last:consensus:{market}:{symbol}"
-    r.hset(last_key, mapping=payload)
-    r.expire(last_key, _DUAL_TTL)
-
-    log_key = f"ai:dual_log:consensus:{market}:{today}"
-    r.lpush(log_key, json.dumps(payload))
-    r.ltrim(log_key, 0, _DUAL_LOG_MAX - 1)
-    r.expire(log_key, 30 * 86400)
-
-    # consensus 통계
-    stats_key = f"ai:dual_stats:consensus:{market}:{today}"
-    r.hincrby(stats_key, consensus.lower(), 1)
-    r.expire(stats_key, _DUAL_TTL)
-
-    # 비교 통계
-    cmp_key = f"ai:dual_compare:{market}:{today}"
-    if c_result.emit and q_result.emit:
-        if c_result.direction == q_result.direction:
-            r.hincrby(cmp_key, "both_emit_same_dir", 1)
-            r.hincrby(cmp_key, "match_count", 1)
-        else:
-            r.hincrby(cmp_key, "both_emit_diff_dir", 1)
-            r.hincrby(cmp_key, "mismatch_count", 1)
-    elif not c_result.emit and not q_result.emit:
-        r.hincrby(cmp_key, "both_no_emit", 1)
-        r.hincrby(cmp_key, "match_count", 1)
-    elif c_result.emit:
-        r.hincrby(cmp_key, "claude_only_emit", 1)
-        r.hincrby(cmp_key, "mismatch_count", 1)
-    else:
-        r.hincrby(cmp_key, "qwen_only_emit", 1)
-        r.hincrby(cmp_key, "mismatch_count", 1)
-    r.expire(cmp_key, _DUAL_TTL)
-
-
 # ---------------------------------------------------------------------------
 # 심볼 평가
 # ---------------------------------------------------------------------------
 
-def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvider,
+def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
                  r, market: str, symbol: str, today: str) -> None:
     # 1. 히스토리 조회 + feature 계산 (AISignalGenerator 재사용)
     entries = gen._get_hist(market, symbol)
@@ -210,7 +127,7 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     except (TypeError, ValueError):
         pass
 
-    # 2-b. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
+    # 2-b. 라운드 캡 체크
     call_key = f"ai:dual_call_count:{market}:{today}"
     call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _DUAL_DAILY_CALL_CAP, 3 * 86400)
     if call_count == -1:
@@ -228,29 +145,15 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     if news_ctx:
         features["news_summary"] = news_ctx
 
-    # 2-f. 뉴스 컨텍스트 추가 완료 → 3. 두 provider 평가
+    # 3. Claude 평가 (bad news filter)
     c_result = claude.evaluate(market, symbol, features)
-    q_result = qwen.evaluate(market, symbol, features)
-
-    # 4. 개별 결과 저장
     _save_provider(r, "claude", market, symbol, today, c_result, features)
-    _save_provider(r, "qwen", market, symbol, today, q_result, features)
 
-    # 5. 합의 계산 + 저장
-    consensus, cons_dir = _compute_consensus(
-        c_result.emit, c_result.direction,
-        q_result.emit, q_result.direction,
-    )
-    _save_consensus(r, market, symbol, today, consensus, cons_dir,
-                    c_result, q_result, features)
-
-    c_err = f" c_err={c_result.error}" if c_result.error else ""
-    q_err = f" q_err={q_result.error}" if q_result.error else ""
+    c_err = f" err={c_result.error}" if c_result.error else ""
     print(
-        f"dual: {market}:{symbol} "
+        f"eval: {market}:{symbol} "
         f"claude={c_result.direction}({c_result.confidence:.2f}) "
-        f"qwen={q_result.direction}({q_result.confidence:.2f}) "
-        f"consensus={consensus}/{cons_dir}{c_err}{q_err}",
+        f"emit={c_result.emit} reason={c_result.reason[:60]}{c_err}",
         flush=True,
     )
 
@@ -289,12 +192,11 @@ def main():
 
     gen = AISignalGenerator(r)      # feature 계산 유틸로만 사용
     claude = ClaudeProvider()
-    qwen = QwenProvider()
 
     print(
-        f"dual: started poll_sec={_DUAL_POLL_SEC} "
+        f"eval: started poll_sec={_DUAL_POLL_SEC} "
         f"call_cap={_DUAL_DAILY_CALL_CAP}/market/day "
-        f"claude={claude.model} qwen={qwen.model} "
+        f"model={claude.model} strategy=mean_reversion drop_threshold={_MR_DROP_5M} "
         f"kr={watchlist_kr} us={watchlist_us}",
         flush=True,
     )
@@ -314,14 +216,8 @@ def main():
                 for market in ("KR", "US"):
                     call_val = r.get(f"ai:dual_call_count:{market}:{today}")
                     call_count = int(call_val) if call_val else 0
-                    cmp = r.hgetall(f"ai:dual_compare:{market}:{today}") or {}
-                    cmp_str = " ".join(
-                        f"{(k.decode() if isinstance(k, bytes) else k)}={int(v)}"
-                        for k, v in sorted(cmp.items())
-                    )
                     print(
-                        f"[DUAL STATUS] {market} calls={call_count}/{_DUAL_DAILY_CALL_CAP} "
-                        f"compare=[{cmp_str or 'none'}]",
+                        f"[EVAL STATUS] {market} calls={call_count}/{_DUAL_DAILY_CALL_CAP}",
                         flush=True,
                     )
 
@@ -340,7 +236,7 @@ def main():
                     r.expire(_DUAL_LOCK_KEY, _DUAL_LOCK_TTL)
                     time.sleep(random.uniform(0, _DUAL_JITTER_MAX_SEC))
                     try:
-                        _eval_symbol(gen, claude, qwen, r, market, symbol, today)
+                        _eval_symbol(gen, claude, r, market, symbol, today)
                     except Exception as e:
                         print(f"dual: unexpected_error {market}:{symbol} {e}", flush=True)
 
