@@ -19,6 +19,24 @@ _REDIS_TOKEN_KEY = "kis:access_token"
 _REDIS_TOKEN_TTL = 23 * 3600  # 23시간 (KIS 토큰 유효기간 24시간)
 
 
+def _kr_tick_size(price: int) -> int:
+    """KIS 국내주식 호가단위 반환."""
+    if price < 2000:    return 1
+    if price < 5000:    return 5
+    if price < 20000:   return 10
+    if price < 50000:   return 50
+    if price < 200000:  return 100
+    if price < 500000:  return 500
+    return 1000
+
+
+def _round_to_tick(price: Decimal) -> Decimal:
+    """KR 지정가 주문 가격을 호가단위에 맞게 내림 처리."""
+    p = int(price)
+    tick = _kr_tick_size(p)
+    return Decimal(p - (p % tick))
+
+
 class KisClient(ExchangeClient):
     def __init__(self):
         self.app_key = os.getenv("KIS_APP_KEY")
@@ -180,13 +198,18 @@ class KisClient(ExchangeClient):
 
         url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cash"
 
+        # KR 지정가 주문: 호가단위에 맞게 내림 처리 (KisClient는 KR 전용)
+        ord_unpr = "0"
+        if request.limit_price is not None:
+            ord_unpr = str(int(_round_to_tick(request.limit_price)))
+
         payload = {
             "CANO": self.account_no.replace("-", "")[:8],
             "ACNT_PRDT_CD": self.product_code,
             "PDNO": request.symbol,
             "ORD_DVSN": "00",
             "ORD_QTY": str(qty_int),
-            "ORD_UNPR": str(request.limit_price) if request.limit_price is not None else "0",
+            "ORD_UNPR": ord_unpr,
         }
 
         # KIS tr_id: TTTC0802U=매수, TTTC0801U=매도
@@ -200,6 +223,7 @@ class KisClient(ExchangeClient):
         data = resp.json()
 
         if data.get("rt_cd") != "0":
+            print(f"KIS order rejected: msg_cd={data.get('msg_cd')} msg1={data.get('msg1')} symbol={request.symbol} side={request.side} qty={qty_int} price={payload['ORD_UNPR']}", flush=True)
             return PlaceOrderResult(
                 order_id=f"REJECTED:{data.get('msg_cd','UNKNOWN')}",
                 status=OrderStatus.REJECTED,
