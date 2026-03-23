@@ -356,20 +356,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     Returns:
         signal dict (push 성공 시) or None (reject / 오류 시)
     """
-    # 1. dual eval 결과 읽기
+    # 1. eval 결과 읽기 (Claude only)
     claude = _hgetall_str(r, f"ai:dual:last:claude:{market}:{symbol}")
-    qwen   = _hgetall_str(r, f"ai:dual:last:qwen:{market}:{symbol}")
 
     if not claude:
         return None  # Claude 결과 없음 — cold start
-    if not _CLAUDE_ONLY and not qwen:
-        return None  # dual 모드인데 Qwen 결과 없음
 
     # 2. dedup: 이미 이 ts_ms로 처리한 결과면 스킵 (중복 push 방지)
-    # dual eval runner가 새 결과를 쓰기 전까지 동일 hash 반복 읽힘
     c_ts_ms = claude.get("ts_ms", "")
-    q_ts_ms = qwen.get("ts_ms", "") if qwen else ""
-    seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}:{q_ts_ms}"
+    seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}"
     if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
         return None  # 이미 처리한 eval 결과
 
@@ -383,58 +378,24 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
-        q_features = json.loads(qwen.get("features_json") or "{}")
     except (json.JSONDecodeError, Exception) as e:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=f"features_json parse error: {e}")
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    # 3. dual consensus 확인 (emit)
+    # 4. Claude emit 확인 (bad news filter: emit=False → bad news detected)
     c_emit = claude.get("emit") == "1"
-    q_emit = qwen.get("emit") == "1"
-    _partial_consensus = False  # True이면 50% size_cash 적용
-
     if not c_emit:
-        # Claude가 HOLD → 무조건 reject
-        _log(
-            "runner.reject.consensus_failed",
-            symbol=symbol,
-            claude_emit=claude.get("emit"),
-            qwen_emit=qwen.get("emit"),
-        )
-        _record_reject(r, market, "reject_consensus_failed")
+        _log("runner.reject.bad_news", symbol=symbol, reason=claude.get("reason", "")[:60])
+        _record_reject(r, market, "reject_bad_news")
         return None
 
-    if not _CLAUDE_ONLY and not q_emit:
-        # Claude EMIT + Qwen HOLD → 뉴스 positive이면 partial consensus 허용
-        if _has_positive_news(r, market, symbol):
-            _partial_consensus = True
-            _log("runner.partial_consensus", symbol=symbol,
-                 reason="claude_emit+positive_news")
-            _record_reject(r, market, "partial_consensus_approved")
-        else:
-            _log(
-                "runner.reject.consensus_failed",
-                symbol=symbol,
-                claude_emit=claude.get("emit"),
-                qwen_emit=qwen.get("emit") if qwen else "N/A",
-            )
-            _record_reject(r, market, "reject_consensus_failed")
-            return None
-
-    # 4. 방향 일치 확인 (claude_only/partial consensus는 Claude 방향만 사용)
+    # 방향 확인
     c_dir = claude.get("direction", "")
-    q_dir = qwen.get("direction", "") if qwen else ""
-    if not _partial_consensus and not _CLAUDE_ONLY:
-        if not c_dir or c_dir != q_dir:
-            _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
-            _record_reject(r, market, "reject_direction_mismatch")
-            return None
-    else:
-        if not c_dir:
-            _log("runner.reject.direction_mismatch", symbol=symbol, claude_dir=c_dir, qwen_dir=q_dir)
-            _record_reject(r, market, "reject_direction_mismatch")
-            return None
+    if not c_dir:
+        _log("runner.reject.direction_missing", symbol=symbol)
+        _record_reject(r, market, "reject_direction_missing")
+        return None
 
     # Phase 10: LONG 방향만 처리
     if c_dir != "LONG":
@@ -498,40 +459,23 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     signal_id = str(uuid.uuid4())
     ts = datetime.now(_KST).isoformat()
 
-    # H1: 잔고 비율 기반 size_cash + 뉴스/confidence 가중
+    # H1: 잔고 비율 기반 size_cash + confidence 가중
     base_size = _calc_size_cash(market, current_price)
 
-    news_score = "partial"
-    c_conf = 0.0
-    if _partial_consensus:
-        # partial consensus: 50% 고정
-        size_cash = max(base_size / 2, current_price)
+    try:
+        c_conf = float(claude.get("confidence") or "0.7")
+    except (ValueError, TypeError):
+        c_conf = 0.7
+    if c_conf >= 0.8:
+        conf_mult = Decimal("1.2")
+    elif c_conf < 0.6:
+        conf_mult = Decimal("0.8")
     else:
-        # full consensus: 뉴스 스코어 기반 가중
-        news_score = _get_news_score(r, market, symbol)
-        if news_score == "high":
-            news_mult = Decimal("1.0")
-        elif news_score == "medium":
-            news_mult = Decimal("0.9")
-        else:
-            news_mult = Decimal("0.8")  # 뉴스 없으면 80%
+        conf_mult = Decimal("1.0")
 
-        # Claude confidence 가중 (confidence >= 0.8 → +20%, < 0.6 → -20%)
-        try:
-            c_conf = float(claude.get("confidence") or "0.7")
-        except (ValueError, TypeError):
-            c_conf = 0.7
-        if c_conf >= 0.8:
-            conf_mult = Decimal("1.2")
-        elif c_conf < 0.6:
-            conf_mult = Decimal("0.8")
-        else:
-            conf_mult = Decimal("1.0")
-
-        size_cash = max(base_size * news_mult * conf_mult, current_price)
-        _log("size_cash_weighted", symbol=symbol, news=news_score,
-             conf=f"{c_conf:.2f}", mult=str(news_mult * conf_mult),
-             size_cash=str(size_cash))
+    size_cash = max(base_size * conf_mult, current_price)
+    _log("size_cash_weighted", symbol=symbol, conf=f"{c_conf:.2f}",
+         mult=str(conf_mult), size_cash=str(size_cash))
 
     try:
         signal = Signal(
@@ -567,16 +511,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "stop": {"price": str(signal.stop.price)},
         "source": "consensus_signal_runner",
         "status": "candidate",
-        "consensus": "EMIT",
-        "partial_consensus": _partial_consensus,
+        "strategy": "mean_reversion",
         "claude_emit": 1,
-        "qwen_emit": 0 if _partial_consensus else (1 if q_emit else 0),
+        "claude_conf": str(c_conf),
         "ret_5m": ret_5m,
         "range_5m": range_5m,
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
-        "news_score": news_score if not _partial_consensus else "partial",
-        "claude_conf": str(c_conf) if not _partial_consensus else "0.0",
     }
 
     # cooldown SET: consensus 성공 + prefilter 통과 후, signal push 직전에만 설정
