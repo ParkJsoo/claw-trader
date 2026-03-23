@@ -534,9 +534,20 @@ def _run_market(r, client, market: str) -> None:
         if qty <= 0:
             continue
 
-        # 이미 매도 주문 진행 중이면 skip
-        if r.exists(f"claw:exit_lock:{market}:{symbol}"):
-            continue
+        # 이미 매도 주문 진행 중이면 skip — 단, SELL 주문이 CANCELED이면 lock 해제 후 재시도
+        lock_key = f"claw:exit_lock:{market}:{symbol}"
+        if r.exists(lock_key):
+            exit_order_raw = r.get(f"claw:exit_order:{market}:{symbol}")
+            if exit_order_raw:
+                oid = exit_order_raw.decode() if isinstance(exit_order_raw, bytes) else exit_order_raw
+                order_status = r.get(f"order:{market}:{oid}")
+                if order_status and order_status.decode() == "CANCELED":
+                    r.delete(lock_key)
+                    _log("sell_retry_after_cancel", market=market, symbol=symbol, order_id=oid)
+                else:
+                    continue
+            else:
+                continue
 
         mark_price = _get_mark_price(r, market, symbol)
         if mark_price is None or mark_price <= 0:
