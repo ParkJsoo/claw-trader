@@ -28,8 +28,8 @@ _DUAL_POLL_SEC = float(os.getenv("DUAL_POLL_SEC", "180"))
 _DUAL_DAILY_CALL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "500"))    # 시장별 일일 캡
 _DUAL_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 
-# prefilter: consensus_signal_runner와 동일 기준 (AI call 전 차단으로 call 절감)
-_DUAL_MIN_RET_5M = float(os.getenv("CONSENSUS_MIN_RET_5M", "0.001"))
+# prefilter: mean reversion — 5분 낙폭 최소 기준 (AI call 전 차단으로 call 절감)
+_MR_DROP_5M = float(os.getenv("MR_MIN_DROP_5M", "0.005"))   # 5분 낙폭 최소 0.5%
 _DUAL_MIN_RANGE_5M = 0.004
 _DUAL_LOG_MAX = 500           # 시장별 일일 로그 최대 보관 수
 _DUAL_JITTER_MAX_SEC = 3.0    # 심볼 간 호출 분산 최대 지터(초)
@@ -192,27 +192,17 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
         r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
         return
 
-    # 2. Phase 11 prefilter: AI 호출 전 기본 조건 확인 (call 절감)
-    ret_1m = features.get("ret_1m")
-    try:
-        if ret_1m is not None and float(ret_1m) < -0.005:
-            # 1분 수익률 -0.5% 이하면 하락 중 → AI 호출 건너뜀
-            r.hincrby(f"ai:dual_stats:consensus:{market}:{today}", "skip_prefilter_ret1m", 1)
-            r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
-            return
-    except (TypeError, ValueError):
-        pass
-
-    # 2-b. ret_5m / range_5m prefilter (consensus_signal_runner 기준과 동일)
-    # AI call 후 어차피 reject될 신호를 사전 차단 → call 절감
+    # 2. mean reversion prefilter: 낙폭 + 변동성 확인 (AI call 절감)
     stats_key = f"ai:dual_stats:consensus:{market}:{today}"
     try:
         ret_5m_val = features.get("ret_5m")
         range_5m_val = features.get("range_5m")
-        if ret_5m_val is not None and float(ret_5m_val) <= _DUAL_MIN_RET_5M:
+        # 5분 낙폭이 충분하지 않으면 skip (mean reversion 셋업 아님)
+        if ret_5m_val is not None and float(ret_5m_val) > -_MR_DROP_5M:
             r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
             r.expire(stats_key, _DUAL_TTL)
             return
+        # 변동성 없으면 skip
         if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
             r.hincrby(stats_key, "skip_prefilter_range5m", 1)
             r.expire(stats_key, _DUAL_TTL)
@@ -220,17 +210,7 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider, qwen: QwenProvi
     except (TypeError, ValueError):
         pass
 
-    # 2-c. ret_15m prefilter: 15분 추세가 음수이면 skip
-    try:
-        ret_15m_val = features.get("ret_15m")
-        if ret_15m_val is not None and float(ret_15m_val) < 0:
-            r.hincrby(stats_key, "skip_prefilter_ret15m", 1)
-            r.expire(stats_key, _DUAL_TTL)
-            return
-    except (TypeError, ValueError):
-        pass
-
-    # 2-d. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
+    # 2-b. 라운드 캡 체크 (하나의 increment = Claude + Qwen 한 세트)
     call_key = f"ai:dual_call_count:{market}:{today}"
     call_count = r.eval(_LUA_CAP_INCR, 1, call_key, _DUAL_DAILY_CALL_CAP, 3 * 86400)
     if call_count == -1:

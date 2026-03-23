@@ -61,7 +61,7 @@ class DecisionProvider:
 
 
 def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str:
-    """Claude/Qwen 공통 프롬프트 (동일 입력, 동일 출력 포맷)."""
+    """Claude/Qwen 공통 프롬프트 — mean reversion bad-news filter."""
 
     def fmt(v: Optional[float]) -> str:
         return f"{v:.4f}" if v is not None else "N/A"
@@ -69,16 +69,17 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
     if market == "KR":
         market_ctx = (
             "Market: KR (KOSPI/KOSDAQ, Korean Won, session 09:00-15:30 KST)\n"
-            "Emit a LONG signal only when BOTH conditions are clearly satisfied: "
-            "1. ret_5m > 0  2. range_5m > 0.004. "
-            "If ret_5m <= 0, do NOT emit LONG. "
-            "If volatility exists but directional momentum is unclear, return HOLD. "
-            "Prefer HOLD over weak or ambiguous setups."
+            "This stock has dropped recently. Your job is to detect BAD NEWS only.\n"
+            "Emit LONG if the drop appears technical/temporary (profit-taking, sector rotation, "
+            "no fundamental problem). "
+            "Return HOLD if there is negative news that could extend the drop "
+            "(earnings miss, scandal, regulatory action, credit risk, delisting risk, etc.)."
         )
     else:
         market_ctx = (
             "Market: US (NYSE/NASDAQ, USD, session 09:30-16:00 ET)\n"
-            "Signal on clear 1-5min momentum with range_5m > 0.003."
+            "This stock has dropped recently. Emit LONG if no bad fundamental news. "
+            "Return HOLD if negative catalyst detected."
         )
 
     # 뉴스 컨텍스트 (있으면 추가)
@@ -86,7 +87,7 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
 
     lines = [
         "You are a cash-only equity trading signal evaluator.",
-        "Decide whether to emit a trading signal based on recent price momentum.",
+        "Strategy: mean reversion — buy temporary dips, avoid fundamental deterioration.",
         "",
         market_ctx,
         f"Symbol: {symbol}",
@@ -106,11 +107,11 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
     lines.extend([
         "",
         "Constraints: cash-only, no short selling.",
-        "direction must be LONG (enter), EXIT (close position), or HOLD (do nothing).",
+        "emit=true → LONG (drop is temporary, safe to enter for recovery)",
+        "emit=false → HOLD (bad news detected, avoid entry)",
         "confidence must be between 0.0 and 1.0.",
-        "Consider news sentiment when making your decision, but prioritize price momentum.",
         "",
         "Respond with JSON only (no markdown, no extra text):",
-        '{"emit": true|false, "direction": "LONG|EXIT|HOLD", "confidence": 0.0-1.0, "reason": "<100 chars"}',
+        '{"emit": true|false, "direction": "LONG|HOLD", "confidence": 0.0-1.0, "reason": "<100 chars"}',
     ])
     return "\n".join(lines)
