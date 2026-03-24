@@ -10,6 +10,8 @@ import requests
 _REDIS_TOKEN_KEY = "kis:access_token"
 _REDIS_TOKEN_TTL = 23 * 3600  # 23시간
 
+_TOKEN_EXPIRED = object()  # sentinel: 401/403 토큰 만료 신호
+
 
 class KisFeed:
     """KIS REST 기반 현재가 폴링 피드."""
@@ -59,7 +61,10 @@ class KisFeed:
             resp.raise_for_status()
         except Exception as e:
             raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
-        self.access_token = resp.json()["access_token"]
+        data = resp.json()
+        if "access_token" not in data:
+            raise RuntimeError(f"KIS token refresh: unexpected response rt_cd={data.get('rt_cd')}")
+        self.access_token = data["access_token"]
         # Redis에 캐시 저장
         if self._redis:
             try:
@@ -84,10 +89,10 @@ class KisFeed:
             },
             timeout=5,
         )
-        # 401/403: 토큰 만료 신호 — 로그 후 None 반환, 호출자가 재발급 처리
+        # 401/403: 토큰 만료 신호 — sentinel 반환, 호출자가 재발급 처리
         if resp.status_code in (401, 403):
             print(f"kis_token_expired: {symbol} status={resp.status_code}")
-            return None
+            return _TOKEN_EXPIRED  # type: ignore[return-value]
 
         try:
             resp.raise_for_status()
@@ -130,25 +135,27 @@ class KisFeed:
 
     def get_price(self, symbol: str) -> Optional[Decimal]:
         """
-        현재가 조회. 401/403 또는 HTTPError 시 토큰 재발급 후 1회 재시도.
-        실패 시 None 반환.
+        현재가 조회. 401/403(토큰 만료) 또는 HTTPError 시 토큰 재발급 후 1회 재시도.
+        데이터 없음(거래정지 등)은 토큰 재발급 없이 None 반환.
         """
-        try:
-            self._ensure_token()
-            price = self._fetch_price(symbol)
-            if price is not None:
-                return price
-            # 401/403으로 None 반환 → 토큰 재발급 후 재시도
+        def _retry() -> Optional[Decimal]:
             self._clear_token()
             self._ensure_token()
-            return self._fetch_price(symbol)
+            result = self._fetch_price(symbol)
+            return None if result is _TOKEN_EXPIRED else result  # type: ignore[comparison-overlap]
+
+        try:
+            self._ensure_token()
+            result = self._fetch_price(symbol)
+            if result is _TOKEN_EXPIRED:
+                # 401/403 토큰 만료 → 재발급 후 재시도
+                return _retry()
+            return result  # type: ignore[return-value]
 
         except Exception:
             # HTTPError 등 → 토큰 재발급 후 1회 재시도
             try:
-                self._clear_token()
-                self._ensure_token()
-                return self._fetch_price(symbol)
+                return _retry()
             except Exception as e:
                 print(f"kis_price_error: {symbol} {e}")
                 return None

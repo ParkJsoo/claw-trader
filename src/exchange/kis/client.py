@@ -174,9 +174,12 @@ class KisClient(ExchangeClient):
         output2_list = data.get("output2") or [{}]
         output2 = output2_list[0] if output2_list else {}
 
-        equity = Decimal(output2.get("tot_evlu_amt", "0"))
-        cash = Decimal(output2.get("dnca_tot_amt", "0"))
-        available = Decimal(output2.get("ord_psbl_cash") or output2.get("prvs_rcdl_excc_amt") or output2.get("dnca_tot_amt", "0"))
+        def _dec(val: str) -> Decimal:
+            return Decimal(str(val).replace(",", "") or "0")
+
+        equity = _dec(output2.get("tot_evlu_amt", "0"))
+        cash = _dec(output2.get("dnca_tot_amt", "0"))
+        available = _dec(output2.get("ord_psbl_cash") or output2.get("prvs_rcdl_excc_amt") or output2.get("dnca_tot_amt", "0"))
 
         return AccountSnapshot(
             equity=equity,
