@@ -119,9 +119,18 @@ class KisFeed:
             print(f"kis_price_parse_error: {symbol} raw={price_str!r}")
             return None
 
+    def _clear_token(self) -> None:
+        """in-memory + Redis 토큰 캐시 삭제."""
+        self.access_token = None
+        if self._redis:
+            try:
+                self._redis.delete(_REDIS_TOKEN_KEY)
+            except Exception:
+                pass
+
     def get_price(self, symbol: str) -> Optional[Decimal]:
         """
-        현재가 조회. 401/403 시 토큰 재발급 후 1회 재시도.
+        현재가 조회. 401/403 또는 HTTPError 시 토큰 재발급 후 1회 재시도.
         실패 시 None 반환.
         """
         try:
@@ -129,17 +138,17 @@ class KisFeed:
             price = self._fetch_price(symbol)
             if price is not None:
                 return price
-
-            # 401/403으로 None 반환됐을 가능성 → 토큰 재발급 후 재시도
-            self.access_token = None
-            if self._redis:
-                try:
-                    self._redis.delete(_REDIS_TOKEN_KEY)
-                except Exception:
-                    pass
+            # 401/403으로 None 반환 → 토큰 재발급 후 재시도
+            self._clear_token()
             self._ensure_token()
             return self._fetch_price(symbol)
 
-        except Exception as e:
-            print(f"kis_price_error: {symbol} {e}")
-            return None
+        except Exception:
+            # HTTPError 등 → 토큰 재발급 후 1회 재시도
+            try:
+                self._clear_token()
+                self._ensure_token()
+                return self._fetch_price(symbol)
+            except Exception as e:
+                print(f"kis_price_error: {symbol} {e}")
+                return None
