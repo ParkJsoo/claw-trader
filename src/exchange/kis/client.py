@@ -207,7 +207,7 @@ class KisClient(ExchangeClient):
             "CANO": self.account_no.replace("-", "")[:8],
             "ACNT_PRDT_CD": self.product_code,
             "PDNO": request.symbol,
-            "ORD_DVSN": "00",
+            "ORD_DVSN": "00" if request.limit_price is not None else "01",
             "ORD_QTY": str(qty_int),
             "ORD_UNPR": ord_unpr,
         }
