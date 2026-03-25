@@ -67,8 +67,6 @@ _VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  #
 _VOLUME_LOOKBACK_DAYS = int(os.getenv("VOLUME_LOOKBACK_DAYS", "7"))  # 5 → 7 (주말 포함)
 _CLAUDE_ONLY = os.getenv("EXECUTION_MODE", "dual").lower() == "claude_only"  # Qwen 무시
 
-# Phase 19: 하락장 대응
-_INVERSE_ETF_KR = set(os.getenv("INVERSE_ETF_KR", "114800,251340").split(","))
 _BULLISH_THRESHOLD = float(os.getenv("REGIME_BULLISH_THRESHOLD", "0.30"))  # bearish 비율 < 30% → bullish
 
 _AUDIT_TTL = 7 * 86400   # 7일
@@ -612,11 +610,8 @@ def main():
                 _log("runner.regime", market="KR", regime=regime,
                      watchlist_size=len(watchlist_kr))
                 for symbol in watchlist_kr:
-                    is_inverse = symbol in _INVERSE_ETF_KR
-                    if regime == "bearish" and not is_inverse:
-                        continue  # 하락장에서 일반 LONG 억제
-                    if regime != "bearish" and is_inverse:
-                        continue  # 상승/횡보장에서 인버스 ETF 억제
+                    if regime == "bearish":
+                        continue  # 하락장에서 LONG 억제
                     try:
                         run_once("KR", symbol, r)
                     except Exception as e:
