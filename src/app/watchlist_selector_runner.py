@@ -54,19 +54,8 @@ _SCORE_MAP = {
 # 점수 계산
 # ---------------------------------------------------------------------------
 
-def _add_inverse_etf(market: str, selected: list[str]) -> list[str]:
-    """KR이고 INVERSE_ETF_ENABLED이면 인버스 ETF 항상 포함."""
-    if market != "KR" or not _INVERSE_ETF_ENABLED:
-        return selected
-    extra = [s for s in _INVERSE_ETF_KR if s not in selected]
-    return selected + extra
-
-
 def score_symbol(r, market: str, symbol: str, today: str) -> float:
     """뉴스 sentiment + 모멘텀으로 심볼 점수 계산."""
-    # Phase 19: 인버스 ETF는 regime filter가 허용 여부를 결정하므로 중립 점수
-    if market == "KR" and symbol in _INVERSE_ETF_KR:
-        return 0.0
     score = 0.0
 
     # 1. 뉴스 점수 (오늘 + 어제)
@@ -110,10 +99,6 @@ def _get_dates(today: str) -> list[str]:
 # 선정 로직
 # ---------------------------------------------------------------------------
 
-# Phase 19: 인버스 ETF
-_INVERSE_ETF_KR = set(os.getenv("INVERSE_ETF_KR", "114800,251340").split(","))
-_INVERSE_ETF_ENABLED = os.getenv("INVERSE_ETF_ENABLED", "true").lower() not in ("false", "0", "no")
-
 _KR_MAX_PRICE = int(os.getenv("WATCHLIST_KR_MAX_PRICE", "150000"))  # KR 최대 매수 가능 가격 (원)
 
 
@@ -124,8 +109,7 @@ def select_watchlist(r, market: str, universe: list[str], count: int) -> list[st
     scored = []
     for symbol in universe:
         # KR: mark price 기준 가격 필터 (잔고로 매수 불가한 고가주 및 mark 없는 종목 제외)
-        # Phase 19: 인버스 ETF는 가격 필터 제외
-        if market == "KR" and symbol not in _INVERSE_ETF_KR:
+        if market == "KR":
             price_raw = r.get(f"mark:KR:{symbol}")
             if not price_raw:
                 continue  # mark 데이터 없으면 제외 (AI 신호 불가)
@@ -311,7 +295,6 @@ def main() -> None:
                         flush=True,
                     )
                 if selected:
-                    selected = _add_inverse_etf("KR", selected)
                     write_watchlist(r, "KR", selected)
 
             if universe_us:
