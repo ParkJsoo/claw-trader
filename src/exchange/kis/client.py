@@ -87,7 +87,20 @@ class KisClient(ExchangeClient):
                 },
                 timeout=10,
             )
+            if resp.status_code == 403:
+                # 다른 프로세스가 이미 발급 — Redis에서 재조회
+                if self._redis:
+                    try:
+                        cached = self._redis.get(_REDIS_TOKEN_KEY)
+                        if cached:
+                            self.access_token = cached.decode() if isinstance(cached, bytes) else cached
+                            return
+                    except Exception:
+                        pass
+                raise RuntimeError("KIS token refresh failed: 403 Forbidden (rate limited)")
             resp.raise_for_status()
+        except RuntimeError:
+            raise
         except Exception as e:
             raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
 
