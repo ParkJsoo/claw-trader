@@ -6,15 +6,13 @@
 
 ## 특징
 
-- **AI 신호 생성** — Claude + Qwen(Ollama) 듀얼 합의 기반 모멘텀 신호
+- **AI 신호 생성** — Claude 기반 mean reversion 신호 (bad news filter)
 - **동적 워치리스트** — Universe 종목 → 뉴스+모멘텀 스코어링 → 상위 12종목 자동 선정 (6시간 주기)
 - **뉴스 인텔리전스** — DART/Google News/Yahoo Finance RSS 수집 → AI 프롬프트 자동 주입
-- **신호 품질 필터** — ret_15m prefilter / volume surge(×1.5) / 뉴스+신뢰도 가중 size_cash
+- **신호 품질 필터** — ret_5m prefilter / range_5m / volume surge(×1.5) / 뉴스+신뢰도 가중 size_cash
 - **Trailing Stop** — HWM 기반 trailing + 비대칭 R:R (stop 1.5%, take 3%)
 - **Time Limit 연장** — 수익 중이면 최대 2× 홀딩
-- **Partial Consensus** — Claude EMIT + positive 뉴스 + Qwen HOLD → 50% size로 통과
-- **Regime Filter** — 3방향(bearish/neutral/bullish), bearish 시 LONG 억제 + 인버스 ETF 허용
-- **인버스 ETF + 자동 헤지** — avg ret_5m < −1% 시 114800 자동 BUY push
+- **Regime Filter** — 3방향(bearish/neutral/bullish), bearish 시 모든 LONG 억제
 - **자동 파라미터 튜닝** — 5거래일 성과 기반 stop/size 자동 조정 (KST 15:40 후)
 - **streak 자본 조정** — 3연속 수익 → size +5%, 3연속 손실 → size −10%
 - **Fill Detection + PnL** — 잔고 diff 기반 체결 감지 → realized/unrealized PnL 자동 기록
@@ -35,7 +33,7 @@ News Runner (DART / Google RSS / Yahoo Finance)
        ↓
 News Classifier → Redis (news:{symbol} / news:macro)
        ↓
-AI Dual Eval Runner (Claude + Qwen) ← ret_15m prefilter / 뉴스 컨텍스트 주입
+AI Dual Eval Runner (Claude) ← ret_5m prefilter / 뉴스 컨텍스트 주입
        ↓
 Consensus Signal Runner (합의 + 4필터 + Regime Filter → Signal → queue)
        ↓
@@ -53,8 +51,6 @@ Position Exit Runner (trailing stop / time_limit 연장 / take_profit)
        ↓
 Position Engine (Fill Detection → Portfolio / PnL / streak 조정)
        ↓
-Hedge Runner (avg ret_5m < -1% + LONG 포지션 → 인버스 ETF 자동 헤지)
-       ↓
 Daily Report Runner (08:55 daily_cap 리셋 / 15:40 TG 리포트 + 자동 튜닝)
 ```
 
@@ -69,7 +65,6 @@ Daily Report Runner (08:55 daily_cap 리셋 / 15:40 TG 리포트 + 자동 튜닝
 | KR 거래소 | KIS OpenAPI |
 | US 거래소 | IBKR TWS API (ib_insync) |
 | AI (주) | Anthropic Claude |
-| AI (보조) | Qwen 2.5 (Ollama) |
 | 뉴스 수집 | DART OpenAPI + Google News RSS + Yahoo Finance RSS |
 | 알림 | Telegram Bot API |
 | 프로세스 관리 | supervisord |
@@ -91,17 +86,17 @@ python -m venv venv
 source venv/bin/activate
 pip install -r src/requirements.txt
 
-# 3. Redis 실행 (Docker)
-docker run -d --name claw-redis -p 6379:6379 redis:7-alpine \
-  redis-server --requirepass <password>
+# 3. Redis 실행 (Docker, persistence 포함)
+docker run -d --name claw-redis --restart always \
+  -p 127.0.0.1:6379:6379 \
+  -v claw-redis-data:/data \
+  -v $(pwd)/config/redis.conf:/usr/local/etc/redis/redis.conf \
+  redis:7-alpine redis-server /usr/local/etc/redis/redis.conf
 
-# 4. Ollama 설치 및 Qwen 모델 다운로드
-ollama pull qwen2.5:7b && ollama serve
-
-# 5. 환경변수 로드
+# 4. 환경변수 로드
 set -a && source .env && source config/phase10_kr_micro.env && set +a
 
-# 6. supervisord 기동 (12개 프로세스 자동 관리)
+# 5. supervisord 기동 (13개 프로세스 자동 관리)
 supervisord -c config/supervisord.conf
 supervisorctl status   # 상태 확인
 supervisorctl tail -f runner   # 로그 실시간 확인
@@ -123,7 +118,6 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_exit_runne
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.position_engine >> logs/position_engine.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.watchlist_selector_runner >> logs/watchlist_selector.log 2>&1 &
 PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner >> logs/daily_report.log 2>&1 &
-PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m app.hedge_runner >> logs/hedge_runner.log 2>&1 &
 ```
 
 ---
@@ -150,11 +144,6 @@ EXIT_TRAIL_STOP_PCT=0.015
 EXIT_TIME_LIMIT_MAX_SEC=7200
 RISK_KR_MAX_CONCURRENT=3
 UNIVERSE_SELECT_COUNT=12
-INVERSE_ETF_KR=114800,251340
-INVERSE_ETF_ENABLED=true
-HEDGE_SYMBOL_KR=114800
-HEDGE_TRIGGER_RET=-0.01
-HEDGE_SIZE_CASH=100000
 ```
 
 ---
