@@ -379,13 +379,17 @@ class KisClient(ExchangeClient):
     def cancel_order(self, order_id: str) -> bool:
         self._ensure_token()
 
-        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cancel"
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-rvsecncl"
 
         payload = {
             "CANO": self.account_no.replace("-", "")[:8],
             "ACNT_PRDT_CD": self.product_code,
-            "ODNO": order_id,
+            "KRX_FWDG_ORD_ORGNO": "",
+            "ORGN_ODNO": order_id,
             "ORD_DVSN": "00",
+            "RVSE_CNCL_DVSN_CD": "02",
+            "ORD_QTY": "0",
+            "ORD_UNPR": "0",
             "QTY_ALL_ORD_YN": "Y",
         }
 
@@ -396,9 +400,9 @@ class KisClient(ExchangeClient):
                 json=payload,
             )
         except Exception as e:
-            # status=404: 주문 없음 (이미 체결/취소) → True 반환
+            # status=404: 주문 없음 (이미 체결/취소) → False 반환
             if "status=404" in str(e):
-                return True
+                return False
             raise
 
         data = resp.json()
