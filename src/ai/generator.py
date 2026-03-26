@@ -149,6 +149,16 @@ class AISignalGenerator:
                 "If volatility exists but directional momentum is unclear, return HOLD. "
                 "Prefer HOLD over weak or ambiguous setups."
             )
+        elif market == "COIN":
+            market_ctx = (
+                "Market: COIN (Upbit KRW crypto market, 24/7)\n"
+                "Typical size_cash range: 50000-500000 (KRW). "
+                "Mean reversion strategy: emit LONG only when ret_5m shows a clear dip (< -0.005) "
+                "with sufficient volatility (range_5m > 0.004) and NO negative news/FUD. "
+                "Crypto-specific risks: exchange hacks, regulatory bans, rug pulls, whale dumps. "
+                "If any such risk is present in news, do NOT emit. "
+                "Prefer HOLD on ambiguous setups."
+            )
         else:
             market_ctx = (
                 "Market: US (NYSE/NASDAQ, USD, session 09:30-16:00 ET)\n"
@@ -339,7 +349,7 @@ class AISignalGenerator:
 
         # 시장별 stop_price 라운딩 (KR=원 단위, US=센트 단위) + <= 0 방어
         current_price = Decimal(features["current_price"])
-        stop_quantize = Decimal("1") if market == "KR" else Decimal("0.01")
+        stop_quantize = Decimal("1") if market in ("KR", "COIN") else Decimal("0.01")
         stop_price = (current_price * (1 - _GEN_STOP_PCT)).quantize(stop_quantize)
         stop_adjusted = False
         if stop_price <= 0:
