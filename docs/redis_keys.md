@@ -76,7 +76,7 @@
 - `strategy:reject_count:{market}:{YYYYMMDD}` — 일별 거부 신호 수 by reason (Hash HINCRBY, TTL 7d)
 
 ## Watchlist / Regime
-- `dynamic:watchlist:{market}` — 동적 워치리스트 Set (watchlist_selector_runner 갱신, 6시간 주기)
+- `dynamic:watchlist:{market}` — 동적 워치리스트 Set (watchlist_selector_runner 갱신, 장중 1h/장외 6h 주기)
 - `ret5m:{market}:{symbol}` — 종목별 5분 수익률 (regime filter 계산용)
 
 ## Performance / Reporting (Phase 16)

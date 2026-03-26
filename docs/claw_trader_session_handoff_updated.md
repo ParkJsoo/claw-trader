@@ -30,7 +30,7 @@
 ### 현재 자동화 수준
 ```
 뉴스 수집 → AI 판단 시 자동 참조 ✅
-워치리스트 → 6시간마다 뉴스+모멘텀 기반 자동 교체 ✅
+워치리스트 → 장중 1h/장외 6h마다 뉴스+모멘텀 기반 자동 교체 ✅
 매수 신호 → AI(Claude+Qwen) 자동 생성 ✅
 매수 실행 → 자동 ✅
 자동 매도 (손절 -2% / 익절 +2% / 30분) → 자동 ✅
@@ -46,7 +46,7 @@ PnL 기록 → 자동 ✅
 ### 동적 워치리스트 (`src/app/watchlist_selector_runner.py`)
 - `GEN_UNIVERSE_KR` 30종목 → 뉴스 sentiment/impact 스코어링 + 모멘텀
 - 상위 8종목(`UNIVERSE_SELECT_COUNT`) 선택 → `dynamic:watchlist:KR` Redis SET (TTL 8h)
-- 6시간마다 갱신 (`interval_sec=21600`)
+- 장중(09:00-15:30) 1시간 / 장외 6시간마다 갱신 (`WATCHLIST_SELECT_INTERVAL_MARKET_SEC=3600`, `WATCHLIST_SELECT_INTERVAL_SEC=21600`)
 - ai_dual_eval_runner / consensus_signal_runner / market_data_runner 모두 동적 워치리스트 사용
 
 ### 뉴스 → AI 프롬프트 통합
@@ -70,7 +70,7 @@ dynamic:watchlist:KR          # 현재 활성 워치리스트 SET (TTL 8h)
 
 ### news_runner 동적 워치리스트 반영 (Issue 5)
 - `_get_watchlists()`: `parse_watchlist()` → `load_watchlist()` (Redis dynamic 우선)
-- 매 폴링 시 watchlist 갱신 (watchlist_selector 6시간 변경 자동 반영)
+- 매 폴링 시 watchlist 갱신 (watchlist_selector 장중 1h/장외 6h 변경 자동 반영)
 
 ### TG 봇 PnL 커맨드 (Issue 6)
 - `/claw pnl`: realized/unrealized PnL + 오픈 포지션 목록 (qty, avg_price, unrealized)
@@ -483,7 +483,7 @@ CONSENSUS_MIN_RET_5M=0.001          # Phase 11: 0.0→0.001
 7. AI call count 초기화 여부 확인
 
 ### 관찰 지표 (Phase 14+)
-- `dynamic:watchlist:KR` / `dynamic:watchlist:US` — 6시간마다 갱신 확인
+- `dynamic:watchlist:KR` / `dynamic:watchlist:US` — 장중 1h/장외 6h마다 갱신 확인
 - `position_engine` 로그 — FillEvent 처리 확인
 - `pnl:KR` Redis 키 — realized PnL 누적 확인
 - stop_loss / take_profit / time_limit 발동 비율
