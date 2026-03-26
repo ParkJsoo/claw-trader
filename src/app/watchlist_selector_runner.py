@@ -15,7 +15,7 @@ import os
 import signal as _signal
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, time as dtime, timedelta
 from zoneinfo import ZoneInfo
 
 import redis
@@ -32,9 +32,13 @@ _KST = ZoneInfo("Asia/Seoul")
 _LOCK_KEY = "watchlist:selector:lock"
 _LOCK_TTL = 600
 
-_SELECT_INTERVAL_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_SEC", "21600"))  # 6시간
+_SELECT_INTERVAL_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_SEC", "21600"))  # 장외 6시간
+_SELECT_INTERVAL_MARKET_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_MARKET_SEC", "3600"))  # 장중 1시간
 _SELECT_COUNT = int(os.getenv("UNIVERSE_SELECT_COUNT", "8"))
 _WL_TTL = 8 * 3600  # 8시간
+
+# 계좌 거래 불가 종목 블랙리스트 (파생ETF — APBK1497)
+_SYMBOL_BLACKLIST: set[str] = {"114800", "251340"}
 
 # 뉴스 sentiment/impact 점수 매핑
 _SCORE_MAP = {
@@ -182,8 +186,9 @@ def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None
     vol_symbols = [item["symbol"] for item in vol_items[:_DYNAMIC_VOLUME_TOP_N]]
     flu_symbols = [item["symbol"] for item in flu_items[:_DYNAMIC_FLUCT_TOP_N]]
 
-    vol_set = set(vol_symbols)
-    flu_set = set(flu_symbols)
+    vol_set = set(vol_symbols) - _SYMBOL_BLACKLIST
+    flu_set = set(flu_symbols) - _SYMBOL_BLACKLIST
+    vol_symbols = [s for s in vol_symbols if s not in _SYMBOL_BLACKLIST]
     intersection = [s for s in vol_symbols if s in flu_set]  # vol 순서 유지
 
     if intersection:
@@ -306,8 +311,11 @@ def main() -> None:
                     flush=True,
                 )
 
-            # 다음 선정까지 대기 (30초 단위로 lock 갱신)
-            remaining = _SELECT_INTERVAL_SEC
+            # 다음 선정까지 대기 (장중 1h, 장외 6h)
+            now = datetime.now(tz=_KST).time()
+            interval = _SELECT_INTERVAL_MARKET_SEC if dtime(9, 0) <= now <= dtime(15, 30) else _SELECT_INTERVAL_SEC
+            print(f"watchlist_selector: next_select_sec={interval:.0f}", flush=True)
+            remaining = interval
             while remaining > 0:
                 sleep_chunk = min(30.0, remaining)
                 time.sleep(sleep_chunk)
