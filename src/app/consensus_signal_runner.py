@@ -580,9 +580,10 @@ def main():
 
     watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
     watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+    watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
 
-    if not watchlist_kr and not watchlist_us:
-        print("consensus: both KR/US watchlists empty — exiting", flush=True)
+    if not watchlist_kr and not watchlist_us and not watchlist_coin:
+        print("consensus: all watchlists empty — exiting", flush=True)
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
@@ -591,7 +592,8 @@ def main():
         f"prefilter=ret_5m<-{_MIN_DROP_5M} range_5m>{_MIN_RANGE_5M} "
         f"stop_pct=dynamic(range_5m*1.2,min=0.015) take_pct=dynamic(range_5m*2.0,min=0.020) "
         f"watchlist_kr={watchlist_kr} "
-        f"watchlist_us={watchlist_us}",
+        f"watchlist_us={watchlist_us} "
+        f"watchlist_coin={watchlist_coin}",
         flush=True,
     )
 
@@ -626,6 +628,21 @@ def main():
                         run_once("US", symbol, r)
                     except Exception as e:
                         _log("runner.error.unexpected", market="US",
+                             symbol=symbol, error=str(e))
+
+            # COIN 처리 (24/7)
+            watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
+            if watchlist_coin:
+                regime = _get_regime(r, "COIN", watchlist_coin)
+                _log("runner.regime", market="COIN", regime=regime,
+                     watchlist_size=len(watchlist_coin))
+                for symbol in watchlist_coin:
+                    if regime == "bearish":
+                        continue
+                    try:
+                        run_once("COIN", symbol, r)
+                    except Exception as e:
+                        _log("runner.error.unexpected", market="COIN",
                              symbol=symbol, error=str(e))
 
             time.sleep(_POLL_SEC)
