@@ -130,10 +130,8 @@ def _auto_tune(r, market: str) -> None:
     changes: dict[str, str] = {}
 
     if avg_win_rate < 0.40:
-        # 승률 낮음: stop 확대(더 많은 가격 변동 허용) + size 축소
-        new_stop = round(min(float(current_stop) * 1.10, 0.05), 4)
+        # 승률 낮음: size 축소만 (stop은 전략 설계값 — 승률로 조정하지 않음)
         new_size = round(max(float(current_size) - 0.05, 0.10), 4)
-        changes["stop_pct"] = str(new_stop)
         changes["size_cash_pct"] = str(new_size)
     elif avg_win_rate > 0.60:
         # 승률 높음: stop 소폭 축소(리스크 감소)
