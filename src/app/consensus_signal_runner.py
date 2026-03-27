@@ -40,6 +40,7 @@ from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_m
 # H1: 잔고 비율 기반 size_cash 계산
 _SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
 _SIZE_CASH_PCT_US = float(os.getenv("CONSENSUS_US_SIZE_CASH_PCT", "0.30"))
+_SIZE_CASH_PCT_COIN = float(os.getenv("CONSENSUS_COIN_SIZE_CASH_PCT", "0.30"))
 
 # KisClient / IbkrClient 싱글톤 캐시 (프로세스 재시작 시 초기화)
 _client_cache: dict[str, object] = {}
@@ -137,7 +138,12 @@ def _get_client(market: str):
 
 def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
     """H1: 잔고 비율 기반 size_cash 계산. 실패 시 1주(current_price) fallback."""
-    pct = _SIZE_CASH_PCT_KR if market == "KR" else _SIZE_CASH_PCT_US
+    if market == "KR":
+        pct = _SIZE_CASH_PCT_KR
+    elif market == "COIN":
+        pct = _SIZE_CASH_PCT_COIN
+    else:
+        pct = _SIZE_CASH_PCT_US
     try:
         client = _get_client(market)
         if client is None:
