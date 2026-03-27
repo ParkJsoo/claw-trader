@@ -28,12 +28,15 @@ class MarketRiskConfig:
 class RiskConfig:
     kr: MarketRiskConfig = field(default_factory=lambda: MarketRiskConfig(daily_loss_limit=Decimal("-500000")))
     us: MarketRiskConfig = field(default_factory=lambda: MarketRiskConfig(daily_loss_limit=Decimal("-500")))
+    coin: MarketRiskConfig = field(default_factory=lambda: MarketRiskConfig(daily_loss_limit=Decimal("-50000")))
 
     def for_market(self, market: str) -> MarketRiskConfig:
         if market == "KR":
             return self.kr
         if market == "US":
             return self.us
+        if market == "COIN":
+            return self.coin
         raise ValueError(f"Unknown market: {market}")
 
 
