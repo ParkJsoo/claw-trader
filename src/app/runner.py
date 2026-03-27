@@ -33,6 +33,7 @@ from executor.risk import RiskConfig, RiskEngine
 from strategy.engine import StrategyConfig, StrategyEngine
 from exchange.kis.client import KisClient
 from exchange.ibkr.client import IbkrClient
+from exchange.upbit.client import UpbitClient
 from guards.data_guard import DataGuard
 from ai.advisor import AIAdvisor
 
@@ -76,6 +77,10 @@ def main():
             cooldown_sec=int(os.getenv("STRATEGY_KR_COOLDOWN_SEC", "300")),
             daily_cap=int(os.getenv("STRATEGY_KR_DAILY_CAP", "20")),
         ),
+        coin=MarketStrategyConfig(
+            cooldown_sec=int(os.getenv("STRATEGY_COIN_COOLDOWN_SEC", "300")),
+            daily_cap=int(os.getenv("STRATEGY_COIN_DAILY_CAP", "20")),
+        ),
     )
     risk_cfg = RiskConfig(
         kr=MarketRiskConfig(
@@ -83,7 +88,19 @@ def main():
             daily_loss_limit=_D(os.getenv("RISK_KR_DAILY_LOSS_LIMIT", "-500000")),
             allocation_cap_pct=_D(os.getenv("RISK_KR_ALLOCATION_CAP_PCT", "0.20")),
         ),
+        coin=MarketRiskConfig(
+            max_concurrent_positions=int(os.getenv("RISK_COIN_MAX_CONCURRENT", "3")),
+            daily_loss_limit=_D(os.getenv("RISK_COIN_DAILY_LOSS_LIMIT", "-50000")),
+            allocation_cap_pct=_D(os.getenv("RISK_COIN_ALLOCATION_CAP_PCT", "1.00")),
+        ),
     )
+
+    upbit = None
+    if os.getenv("UPBIT_ACCESS_KEY"):
+        try:
+            upbit = UpbitClient()
+        except Exception as e:
+            print(f"runner: Upbit init failed ({e}) — COIN market disabled", flush=True)
 
     strategy = StrategyEngine(r, strategy_cfg)
     ex_kr = Executor(kis, r, "KR", risk=RiskEngine(r, risk_cfg, kis))
@@ -98,6 +115,7 @@ def main():
         flush=True,
     )
     ex_us = Executor(ibkr, r, "US", risk=RiskEngine(r, risk_cfg, ibkr)) if ibkr else None
+    ex_coin = Executor(upbit, r, "COIN", risk=RiskEngine(r, risk_cfg, upbit)) if upbit else None
 
     # Phase 8: DataGuard + AI Advisory (shadow mode)
     data_guard = DataGuard(r)
@@ -180,6 +198,11 @@ def main():
                         print("runner: US executor not configured (IBKR_ACCOUNT_ID not set)")
                         continue
                     st = ex_us.execute_signal(signal)
+                elif signal.market == "COIN":
+                    if ex_coin is None:
+                        print("runner: COIN executor not configured (UPBIT_ACCESS_KEY not set)")
+                        continue
+                    st = ex_coin.execute_signal(signal)
                 else:
                     print("unknown market:", signal.market)
                     continue
