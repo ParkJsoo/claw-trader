@@ -9,9 +9,13 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import time
 import uuid
 
 logger = logging.getLogger(__name__)
+
+_RATE_LIMIT_RETRIES = 3
+_RATE_LIMIT_SLEEP = 0.5  # 429 수신 시 대기 초
 from decimal import Decimal
 from typing import Optional
 from urllib.parse import urlencode
@@ -60,20 +64,44 @@ class UpbitClient(ExchangeClient):
         return {"Authorization": f"Bearer {token}"}
 
     def _get(self, path: str, params: Optional[dict] = None) -> dict | list:
-        headers = self._auth_header(params)
-        resp = self.session.get(f"{_BASE_URL}{path}", params=params, headers=headers, timeout=10)
+        for attempt in range(_RATE_LIMIT_RETRIES):
+            headers = self._auth_header(params)
+            resp = self.session.get(f"{_BASE_URL}{path}", params=params, headers=headers, timeout=10)
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                logger.warning("rate_limit GET %s — retry %d/%d after %.1fs", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
         resp.raise_for_status()
         return resp.json()
 
     def _post(self, path: str, body: dict) -> dict:
-        headers = self._auth_header(body)
-        resp = self.session.post(f"{_BASE_URL}{path}", json=body, headers=headers, timeout=10)
+        for attempt in range(_RATE_LIMIT_RETRIES):
+            headers = self._auth_header(body)
+            resp = self.session.post(f"{_BASE_URL}{path}", json=body, headers=headers, timeout=10)
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                logger.warning("rate_limit POST %s — retry %d/%d after %.1fs", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
         resp.raise_for_status()
         return resp.json()
 
     def _delete(self, path: str, params: dict) -> dict:
-        headers = self._auth_header(params)
-        resp = self.session.delete(f"{_BASE_URL}{path}", params=params, headers=headers, timeout=10)
+        for attempt in range(_RATE_LIMIT_RETRIES):
+            headers = self._auth_header(params)
+            resp = self.session.delete(f"{_BASE_URL}{path}", params=params, headers=headers, timeout=10)
+            if resp.status_code == 429:
+                wait = _RATE_LIMIT_SLEEP * (attempt + 1)
+                logger.warning("rate_limit DELETE %s — retry %d/%d after %.1fs", path, attempt + 1, _RATE_LIMIT_RETRIES, wait)
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            return resp.json()
         resp.raise_for_status()
         return resp.json()
 

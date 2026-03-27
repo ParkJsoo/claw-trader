@@ -436,8 +436,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
 
-    # 5-b. Volume surge 필터 (KR만 — US는 데이터 없음)
-    if market == "KR" and not _has_volume_surge(r, market, symbol):
+    # 5-b. Volume surge 필터 (KR + COIN — US는 데이터 없음)
+    if market in ("KR", "COIN") and not _has_volume_surge(r, market, symbol):
         _log("runner.reject.volume_no_surge", symbol=symbol)
         _record_reject(r, market, "reject_volume_no_surge")
         return None

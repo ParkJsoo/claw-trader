@@ -62,7 +62,8 @@ def select_watchlist(upbit_client) -> list[str]:
 
 
 def write_watchlist(r: redis.Redis, symbols: list[str]) -> None:
-    pipe = r.pipeline()
+    # transaction=True (기본값): MULTI/EXEC로 DELETE+SADD 원자적 수행
+    pipe = r.pipeline(transaction=True)
     pipe.delete(_WL_KEY)
     if symbols:
         pipe.sadd(_WL_KEY, *symbols)
