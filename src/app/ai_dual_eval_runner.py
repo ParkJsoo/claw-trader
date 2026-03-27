@@ -213,7 +213,7 @@ def main():
             # 주기적 상태 로그
             if now - _last_status_ts >= _STATUS_LOG_INTERVAL:
                 _last_status_ts = now
-                for market in ("KR", "US"):
+                for market in ("KR", "US", "COIN"):
                     call_val = r.get(f"ai:dual_call_count:{market}:{today}")
                     call_count = int(call_val) if call_val else 0
                     print(
@@ -224,12 +224,13 @@ def main():
             # 동적 워치리스트 갱신 (매 폴링마다 Redis 확인)
             watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
             watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+            watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
 
             # AI 평가 (pause 상태와 무관 — No-Trade 모드)
-            for market, watchlist in [("KR", watchlist_kr), ("US", watchlist_us)]:
+            for market, watchlist in [("KR", watchlist_kr), ("US", watchlist_us), ("COIN", watchlist_coin)]:
                 if not watchlist:
                     continue
-                if not is_market_hours(market):
+                if not is_market_hours(market):  # COIN은 항상 True
                     print(f"dual: market_closed {market} skip", flush=True)
                     continue
                 for symbol in watchlist:

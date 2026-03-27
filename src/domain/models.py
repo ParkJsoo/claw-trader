@@ -73,7 +73,7 @@ class Position(BaseModel):
 # signal.schema.json 기반
 # =========================
 
-Market = Literal["KR", "US"]
+Market = Literal["KR", "US", "COIN"]
 Direction = Literal["LONG", "EXIT"]
 
 
@@ -100,8 +100,8 @@ class SignalStop(BaseModel):
     price: Decimal
 
 
-# KR: 숫자 6자리, US: 대문자 1-5자리 (e.g. AAPL, NVDA)
-_SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,10}$")
+# KR: 숫자 6자리, US: 대문자 1-5자리 (e.g. AAPL, NVDA), COIN: KRW-BTC 형식
+_SYMBOL_RE = re.compile(r"^[A-Z0-9-]{1,12}$")
 
 
 class Signal(BaseModel):

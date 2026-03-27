@@ -39,6 +39,7 @@ import redis
 
 from exchange.kis.client import KisClient
 from exchange.ibkr.client import IbkrClient
+from exchange.upbit.client import UpbitClient
 from domain.models import PlaceOrderRequest, OrderSide, OrderType, OrderStatus
 from utils.redis_helpers import is_market_hours, today_kst, get_config
 from guards.notifier import send_telegram
@@ -155,6 +156,18 @@ def _fetch_holdings(client, market: str) -> list[dict]:
     """market에 따라 적절한 holdings API 호출."""
     if market == "KR":
         return client.get_kr_holdings()
+    elif market == "COIN":
+        result = []
+        for b in client.get_balances():
+            currency = b.get("currency", "")
+            if currency == "KRW":
+                continue
+            qty = Decimal(str(b.get("balance", "0")))
+            avg_price = Decimal(str(b.get("avg_buy_price", "0")))
+            if qty <= 0:
+                continue
+            result.append({"symbol": f"KRW-{currency}", "qty": qty, "avg_price": avg_price})
+        return result
     else:
         return client.get_us_holdings()
 
@@ -167,7 +180,7 @@ def _sync_positions(r, client, market: str) -> dict:
     Returns:
         {symbol: {"qty": Decimal, "avg_price": Decimal, "opened_ts": int}}
     """
-    currency = "KRW" if market == "KR" else "USD"
+    currency = "KRW" if market in ("KR", "COIN") else "USD"
     idx_key = f"position_index:{market}"
 
     global _ibkr_fallback_count
@@ -210,8 +223,9 @@ def _sync_positions(r, client, market: str) -> dict:
             opened_ts = int(time.time())
 
         # BUY fill detection: 새로 나타난 종목 (Redis에 없었던 것)
+        # COIN: discovered BUY 스킵 — claw가 매수한 것만 추적 (기존 보유 코인 자동매도 방지)
         # 이미 Redis에 qty>0 포지션이 있으면 중복 fill 방지
-        if symbol not in existing:
+        if symbol not in existing and market != "COIN":
             existing_qty_raw = r.hget(pos_key, "qty")
             already_tracked = False
             if existing_qty_raw is not None:
@@ -226,6 +240,11 @@ def _sync_positions(r, client, market: str) -> dict:
                 _push_fill_event(r, symbol, "BUY", qty, avg_price, order_id,
                                  market=market)
                 r.set(f"claw:trail_hwm:{market}:{symbol}", str(avg_price), ex=_POSITION_TTL)
+
+        # COIN: claw가 매수하지 않은 코인(position_index에 없음)은 추적 제외
+        # 기존 보유 코인(SBD, APENFT 등) 자동매도 방지
+        if market == "COIN" and symbol not in existing:
+            continue
 
         # stop_pct/take_pct: 새 포지션이면 signal_pct에서 읽기, 기존이면 유지
         if symbol not in existing:
@@ -424,11 +443,13 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
 def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
                 limit_price: Decimal, reason: str) -> bool:
     """SELL 주문 제출 + Redis order/meta 기록."""
-    # US: 소수점 2자리, KR: 정수
-    if market == "US":
-        limit_price = limit_price.quantize(Decimal("0.01"))
-    else:
+    # KR: 정수, COIN: 소수점 8자리, US: 소수점 2자리
+    if market == "KR":
         limit_price = limit_price.quantize(Decimal("1"))
+    elif market == "COIN":
+        limit_price = limit_price.quantize(Decimal("0.00000001"))
+    else:
+        limit_price = limit_price.quantize(Decimal("0.01"))
 
     client_order_id = str(uuid.uuid4())
     req = PlaceOrderRequest(
@@ -474,7 +495,7 @@ def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
 
     # SELL 주문접수 알림
     try:
-        currency = "KRW" if market == "KR" else "USD"
+        currency = "KRW" if market in ("KR", "COIN") else "USD"
         send_telegram(
             f"[CLAW] SELL 주문접수\n"
             f"market={market} symbol={symbol}\n"
@@ -523,8 +544,13 @@ def _run_market(r, client, market: str) -> None:
     cfg_take = _cfg_or_none("take_pct")
     cfg_trail = _cfg_or_none("trail_pct")
 
-    # 가격 quantize 단위: KR=정수, US=소수점 2자리
-    q_unit = Decimal("1") if market == "KR" else Decimal("0.01")
+    # 가격 quantize 단위: KR=정수, COIN=소수점 8자리, US=소수점 2자리
+    if market == "KR":
+        q_unit = Decimal("1")
+    elif market == "COIN":
+        q_unit = Decimal("0.00000001")
+    else:
+        q_unit = Decimal("0.01")
 
     for symbol, pos in positions.items():
         qty = pos["qty"]
@@ -619,11 +645,13 @@ def _run_market(r, client, market: str) -> None:
             r.delete(lock_key)
 
 
-def run_once(r, kis: KisClient, ibkr: IbkrClient = None) -> None:
-    """KR/US 포지션 동기화 → exit 조건 체크 → 필요 시 매도."""
+def run_once(r, kis: KisClient, ibkr: IbkrClient = None, upbit: UpbitClient = None) -> None:
+    """KR/US/COIN 포지션 동기화 → exit 조건 체크 → 필요 시 매도."""
     _run_market(r, kis, "KR")
     if ibkr is not None:
         _run_market(r, ibkr, "US")
+    if upbit is not None:
+        _run_market(r, upbit, "COIN")
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +687,16 @@ def main():
         except Exception as e:
             _log("ibkr_init_failed", error=str(e))
 
-    markets = ["KR"] + (["US"] if ibkr else [])
+    # Upbit: UPBIT_ACCESS_KEY가 설정되어 있으면 COIN 시장도 처리
+    upbit = None
+    if os.getenv("UPBIT_ACCESS_KEY"):
+        try:
+            upbit = UpbitClient()
+            _log("upbit_enabled")
+        except Exception as e:
+            _log("upbit_init_failed", error=str(e))
+
+    markets = ["KR"] + (["US"] if ibkr else []) + (["COIN"] if upbit else [])
     print(
         f"exit_runner: started "
         f"markets={markets} "
@@ -677,7 +714,7 @@ def main():
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
             try:
-                run_once(r, kis, ibkr)
+                run_once(r, kis, ibkr, upbit)
             except Exception as e:
                 _log("unexpected_error", error=str(e))
             time.sleep(_POLL_SEC)

@@ -40,6 +40,8 @@ def is_market_hours(market: str) -> bool:
         if now.weekday() >= 5:
             return False
         return dtime(9, 20) <= now.time() <= dtime(16, 10)
+    if market == "COIN":
+        return True  # 업비트 코인 24/7
     return True
 
 

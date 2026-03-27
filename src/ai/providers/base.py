@@ -75,6 +75,17 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
             "Return HOLD if there is negative news that could extend the drop "
             "(earnings miss, scandal, regulatory action, credit risk, delisting risk, etc.)."
         )
+    elif market == "COIN":
+        market_ctx = (
+            "Market: COIN (Upbit KRW crypto market, 24/7 trading)\n"
+            "This cryptocurrency has dropped recently. Your job is to detect BAD NEWS / FUD only.\n"
+            "Emit LONG if the drop appears technical/temporary (profit-taking, whale rebalancing, "
+            "no fundamental problem). "
+            "Return HOLD if there is negative news that could extend the drop "
+            "(exchange hacks, regulatory bans, project rug pulls, whale dumps, protocol exploits, "
+            "de-listing announcements, etc.). "
+            "Prefer HOLD on ambiguous or unverifiable setups."
+        )
     else:
         market_ctx = (
             "Market: US (NYSE/NASDAQ, USD, session 09:30-16:00 ET)\n"

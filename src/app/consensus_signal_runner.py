@@ -40,6 +40,7 @@ from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_m
 # H1: 잔고 비율 기반 size_cash 계산
 _SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
 _SIZE_CASH_PCT_US = float(os.getenv("CONSENSUS_US_SIZE_CASH_PCT", "0.30"))
+_SIZE_CASH_PCT_COIN = float(os.getenv("CONSENSUS_COIN_SIZE_CASH_PCT", "0.30"))
 
 # KisClient / IbkrClient 싱글톤 캐시 (프로세스 재시작 시 초기화)
 _client_cache: dict[str, object] = {}
@@ -109,9 +110,11 @@ def normalize_kr_price_tick(price: Decimal) -> Decimal:
 
 
 def _normalize_price(market: str, price: Decimal) -> Decimal:
-    """market에 따라 가격 정규화: KR=호가단위, US=소수점 2자리."""
+    """market에 따라 가격 정규화: KR=호가단위, COIN=원본 유지, US=소수점 2자리."""
     if market == "KR":
         return normalize_kr_price_tick(price)
+    if market == "COIN":
+        return price  # 업비트 코인 가격은 원본 그대로 사용
     return price.quantize(Decimal("0.01"))
 
 
@@ -120,12 +123,15 @@ def _normalize_price(market: str, price: Decimal) -> Decimal:
 # ---------------------------------------------------------------------------
 
 def _get_client(market: str):
-    """KisClient/IbkrClient 싱글톤 캐시."""
+    """KisClient/IbkrClient/UpbitClient 싱글톤 캐시."""
     if market not in _client_cache:
         try:
             if market == "KR":
                 from exchange.kis.client import KisClient
                 _client_cache[market] = KisClient()
+            elif market == "COIN":
+                from exchange.upbit.client import UpbitClient
+                _client_cache[market] = UpbitClient()
             else:
                 from exchange.ibkr.client import IbkrClient
                 _client_cache[market] = IbkrClient()
@@ -137,7 +143,12 @@ def _get_client(market: str):
 
 def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
     """H1: 잔고 비율 기반 size_cash 계산. 실패 시 1주(current_price) fallback."""
-    pct = _SIZE_CASH_PCT_KR if market == "KR" else _SIZE_CASH_PCT_US
+    if market == "KR":
+        pct = _SIZE_CASH_PCT_KR
+    elif market == "COIN":
+        pct = _SIZE_CASH_PCT_COIN
+    else:
+        pct = _SIZE_CASH_PCT_US
     try:
         client = _get_client(market)
         if client is None:
@@ -580,9 +591,10 @@ def main():
 
     watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
     watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+    watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
 
-    if not watchlist_kr and not watchlist_us:
-        print("consensus: both KR/US watchlists empty — exiting", flush=True)
+    if not watchlist_kr and not watchlist_us and not watchlist_coin:
+        print("consensus: all watchlists empty — exiting", flush=True)
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
@@ -591,7 +603,8 @@ def main():
         f"prefilter=ret_5m<-{_MIN_DROP_5M} range_5m>{_MIN_RANGE_5M} "
         f"stop_pct=dynamic(range_5m*1.2,min=0.015) take_pct=dynamic(range_5m*2.0,min=0.020) "
         f"watchlist_kr={watchlist_kr} "
-        f"watchlist_us={watchlist_us}",
+        f"watchlist_us={watchlist_us} "
+        f"watchlist_coin={watchlist_coin}",
         flush=True,
     )
 
@@ -626,6 +639,21 @@ def main():
                         run_once("US", symbol, r)
                     except Exception as e:
                         _log("runner.error.unexpected", market="US",
+                             symbol=symbol, error=str(e))
+
+            # COIN 처리 (24/7)
+            watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
+            if watchlist_coin:
+                regime = _get_regime(r, "COIN", watchlist_coin)
+                _log("runner.regime", market="COIN", regime=regime,
+                     watchlist_size=len(watchlist_coin))
+                for symbol in watchlist_coin:
+                    if regime == "bearish":
+                        continue
+                    try:
+                        run_once("COIN", symbol, r)
+                    except Exception as e:
+                        _log("runner.error.unexpected", market="COIN",
                              symbol=symbol, error=str(e))
 
             time.sleep(_POLL_SEC)
