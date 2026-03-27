@@ -19,7 +19,7 @@ _KST_OFFSET = 9 * 3600
 
 def _today_kst() -> str:
     ts = time.time() + _KST_OFFSET
-    return datetime.utcfromtimestamp(ts).strftime("%Y%m%d")
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y%m%d")
 
 
 class UpbitFeed:
@@ -49,8 +49,8 @@ class UpbitFeed:
                 price = Decimal(str(t["trade_price"]))
                 volume_krw = float(t.get("acc_trade_price_24h", 0))
 
-                # mark (현재가)
-                pipe.set(f"mark:COIN:{symbol}", str(price))
+                # mark (현재가, TTL 300s — stale 가격 방지)
+                pipe.set(f"mark:COIN:{symbol}", str(price), ex=300)
 
                 # mark_hist (시계열, 최신이 index 0)
                 hist_key = f"mark_hist:COIN:{symbol}"

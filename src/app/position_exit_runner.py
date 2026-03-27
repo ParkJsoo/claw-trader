@@ -241,6 +241,11 @@ def _sync_positions(r, client, market: str) -> dict:
                                  market=market)
                 r.set(f"claw:trail_hwm:{market}:{symbol}", str(avg_price), ex=_POSITION_TTL)
 
+        # COIN: claw가 매수하지 않은 코인(position_index에 없음)은 추적 제외
+        # 기존 보유 코인(SBD, APENFT 등) 자동매도 방지
+        if market == "COIN" and symbol not in existing:
+            continue
+
         # stop_pct/take_pct: 새 포지션이면 signal_pct에서 읽기, 기존이면 유지
         if symbol not in existing:
             pct_raw = r.hgetall(f"claw:signal_pct:{market}:{symbol}")
@@ -438,11 +443,13 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
 def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
                 limit_price: Decimal, reason: str) -> bool:
     """SELL 주문 제출 + Redis order/meta 기록."""
-    # US: 소수점 2자리, KR: 정수
-    if market == "US":
-        limit_price = limit_price.quantize(Decimal("0.01"))
-    else:
+    # KR: 정수, COIN: 소수점 8자리, US: 소수점 2자리
+    if market == "KR":
         limit_price = limit_price.quantize(Decimal("1"))
+    elif market == "COIN":
+        limit_price = limit_price.quantize(Decimal("0.00000001"))
+    else:
+        limit_price = limit_price.quantize(Decimal("0.01"))
 
     client_order_id = str(uuid.uuid4())
     req = PlaceOrderRequest(

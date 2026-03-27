@@ -7,8 +7,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
+
+logger = logging.getLogger(__name__)
 from decimal import Decimal
 from typing import Optional
 from urllib.parse import urlencode
@@ -20,6 +23,7 @@ from exchange.base import ExchangeClient
 from domain.models import (
     AccountSnapshot,
     OrderSide,
+    OrderStatus,
     OrderType,
     PlaceOrderRequest,
     PlaceOrderResult,
@@ -87,11 +91,19 @@ class UpbitClient(ExchangeClient):
     def get_account_snapshot(self) -> AccountSnapshot:
         accounts = self._get("/accounts")
         krw_balance = Decimal("0")
+        krw_locked = Decimal("0")
         for item in accounts:
             if item.get("currency") == "KRW":
                 krw_balance = Decimal(str(item.get("balance", "0")))
+                krw_locked = Decimal(str(item.get("locked", "0")))
                 break
-        return AccountSnapshot(cash=krw_balance, currency="KRW")
+        available = krw_balance - krw_locked
+        return AccountSnapshot(
+            equity=krw_balance,
+            cash=krw_balance,
+            available_cash=available,
+            currency="KRW",
+        )
 
     def get_balances(self) -> list[dict]:
         """전체 잔고 반환 (KRW + 보유 코인)."""
@@ -159,22 +171,22 @@ class UpbitClient(ExchangeClient):
             if request.side == OrderSide.BUY:
                 # 시장가 매수: KRW 금액 지정
                 body["ord_type"] = "price"
-                body["price"] = str(request.quantity)  # BUY 시 quantity = KRW 금액
+                body["price"] = str(request.qty)
             else:
                 # 시장가 매도: 수량 지정
                 body["ord_type"] = "market"
-                body["volume"] = str(request.quantity)
+                body["volume"] = str(request.qty)
         else:
             # 지정가
             body["ord_type"] = "limit"
-            body["volume"] = str(request.quantity)
+            body["volume"] = str(request.qty)
             body["price"] = str(request.limit_price)
 
         resp = self._post("/orders", body)
         order_id = resp.get("uuid", "")
         return PlaceOrderResult(
             order_id=order_id,
-            success=bool(order_id),
+            status=OrderStatus.SUBMITTED,
             raw=resp,
         )
 
@@ -182,7 +194,8 @@ class UpbitClient(ExchangeClient):
         try:
             self._delete("/order", {"uuid": order_id})
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning("cancel_order failed: order_id=%s error=%s", order_id, e)
             return False
 
     def get_order(self, order_id: str) -> dict:
