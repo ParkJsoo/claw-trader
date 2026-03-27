@@ -35,12 +35,15 @@ class MarketStrategyConfig:
 class StrategyConfig:
     kr: MarketStrategyConfig = field(default_factory=MarketStrategyConfig)
     us: MarketStrategyConfig = field(default_factory=MarketStrategyConfig)
+    coin: MarketStrategyConfig = field(default_factory=MarketStrategyConfig)
 
     def for_market(self, market: str) -> MarketStrategyConfig:
         if market == "KR":
             return self.kr
         if market == "US":
             return self.us
+        if market == "COIN":
+            return self.coin
         raise ValueError(f"Unknown market: {market}")
 
 

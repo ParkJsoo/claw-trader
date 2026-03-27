@@ -205,7 +205,7 @@ class Executor:
         # BUY 주문접수/체결 알림
         if result.status in (OrderStatus.SUBMITTED, OrderStatus.FILLED):
             try:
-                currency = "KRW" if self.market == "KR" else "USD"
+                currency = "KRW" if self.market in ("KR", "COIN") else "USD"
                 side_str = req.side.value
                 send_telegram(
                     f"[CLAW] {side_str} 주문접수\n"
