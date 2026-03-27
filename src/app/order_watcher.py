@@ -142,12 +142,17 @@ class OrderWatcher:
         """
         브로커에 취소 요청.
         """
-        if market == "US":
-            if self.ibkr is None:
-                return False
-            return self.ibkr.cancel_order(order_id)
-        if market == "KR":
-            return self.kis.cancel_order(order_id)
+        try:
+            if market == "US":
+                if self.ibkr is None:
+                    return False
+                return self.ibkr.cancel_order(order_id)
+            if market == "KR":
+                return self.kis.cancel_order(order_id)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("_cancel_order failed market=%s order_id=%s error=%s", market, order_id, e)
+            return False
         return False
 
     # -------------------------
