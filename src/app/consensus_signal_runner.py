@@ -110,9 +110,11 @@ def normalize_kr_price_tick(price: Decimal) -> Decimal:
 
 
 def _normalize_price(market: str, price: Decimal) -> Decimal:
-    """market에 따라 가격 정규화: KR=호가단위, US=소수점 2자리."""
+    """market에 따라 가격 정규화: KR=호가단위, COIN=원본 유지, US=소수점 2자리."""
     if market == "KR":
         return normalize_kr_price_tick(price)
+    if market == "COIN":
+        return price  # 업비트 코인 가격은 원본 그대로 사용
     return price.quantize(Decimal("0.01"))
 
 
@@ -121,12 +123,15 @@ def _normalize_price(market: str, price: Decimal) -> Decimal:
 # ---------------------------------------------------------------------------
 
 def _get_client(market: str):
-    """KisClient/IbkrClient 싱글톤 캐시."""
+    """KisClient/IbkrClient/UpbitClient 싱글톤 캐시."""
     if market not in _client_cache:
         try:
             if market == "KR":
                 from exchange.kis.client import KisClient
                 _client_cache[market] = KisClient()
+            elif market == "COIN":
+                from exchange.upbit.client import UpbitClient
+                _client_cache[market] = UpbitClient()
             else:
                 from exchange.ibkr.client import IbkrClient
                 _client_cache[market] = IbkrClient()
