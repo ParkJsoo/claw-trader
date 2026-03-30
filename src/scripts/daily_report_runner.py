@@ -189,8 +189,11 @@ def main() -> None:
             now_kst = datetime.now(_KST)
             date_str = today_kst()
 
-            # 08:55~08:59 KST — daily cap 리셋
-            if (now_kst.hour == _DAILY_RESET_HOUR and
+            is_weekday = now_kst.weekday() < 5  # 0=월 … 4=금
+
+            # 08:55~08:59 KST — daily cap 리셋 (평일만)
+            if (is_weekday and
+                    now_kst.hour == _DAILY_RESET_HOUR and
                     _DAILY_RESET_MIN <= now_kst.minute < _DAILY_RESET_MIN + 5):
                 try:
                     _reset_daily_cap(r, "KR")
@@ -198,9 +201,10 @@ def main() -> None:
                 except Exception as e:
                     print(f"daily_report: daily_cap_reset error {e}", flush=True)
 
-            # KR: 15:40 KST 이후이면 발송
-            if (now_kst.hour > _KR_REPORT_HOUR or
-                    (now_kst.hour == _KR_REPORT_HOUR and now_kst.minute >= _KR_REPORT_MIN)):
+            # KR: 15:40 KST 이후이면 발송 (평일만 — 주말엔 장 없음)
+            if (is_weekday and
+                    (now_kst.hour > _KR_REPORT_HOUR or
+                     (now_kst.hour == _KR_REPORT_HOUR and now_kst.minute >= _KR_REPORT_MIN))):
                 if not _already_sent(r, "KR", date_str):
                     try:
                         _send_report(r, "KR")
