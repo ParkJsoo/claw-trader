@@ -318,27 +318,49 @@ def _has_volume_surge(r, market: str, symbol: str) -> bool:
 
 
 def _get_regime(r, market: str, watchlist: list) -> str:
-    """워치리스트 ret_5m 기반 regime 판별.
+    """워치리스트 mark_hist 기반 실시간 ret_5m으로 regime 판별.
 
+    AI eval features_json 대신 mark_hist를 사용해 stale 데이터 문제 방지.
     Returns: "bearish" | "bullish" | "neutral"
     """
     if not watchlist:
         return "neutral"
+
+    now_ms = int(time.time() * 1000)
+    target_ms = now_ms - 5 * 60 * 1000  # 5분 전
+    stale_threshold_ms = 5 * 60 * 1000  # 최신 시세가 5분 이상 오래됐으면 skip
+
     bearish = 0
     total = 0
     for symbol in watchlist:
-        raw = r.hget(f"ai:dual:last:claude:{market}:{symbol}", "features_json")
-        if not raw:
-            continue
         try:
-            features = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
-            ret_5m = features.get("ret_5m")
-            if ret_5m is not None:
-                total += 1
-                if float(ret_5m) < 0:
-                    bearish += 1
+            entries = r.lrange(f"mark_hist:{market}:{symbol}", 0, 20)
+            if not entries:
+                continue
+            ts_str, price_str = entries[0].decode().split(":", 1)
+            latest_ts = int(ts_str)
+            latest_price = float(price_str)
+
+            if now_ms - latest_ts > stale_threshold_ms:
+                continue  # 시세 오래됨 — 무시
+
+            past_price = None
+            for entry in entries[1:]:
+                t, p = entry.decode().split(":", 1)
+                if int(t) <= target_ms:
+                    past_price = float(p)
+                    break
+
+            if past_price is None or past_price == 0:
+                continue
+
+            ret_5m = (latest_price - past_price) / past_price
+            total += 1
+            if ret_5m < 0:
+                bearish += 1
         except Exception:
             continue
+
     if total < 3:
         return "neutral"
     ratio = bearish / total

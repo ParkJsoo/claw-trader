@@ -118,18 +118,18 @@ class UpbitClient(ExchangeClient):
 
     def get_account_snapshot(self) -> AccountSnapshot:
         accounts = self._get("/accounts")
-        krw_balance = Decimal("0")
-        krw_locked = Decimal("0")
+        krw_balance = Decimal("0")  # 주문 가능 잔고 (locked 제외)
+        krw_locked = Decimal("0")   # 주문에 묶인 금액
         for item in accounts:
             if item.get("currency") == "KRW":
                 krw_balance = Decimal(str(item.get("balance", "0")))
                 krw_locked = Decimal(str(item.get("locked", "0")))
                 break
-        available = krw_balance - krw_locked
+        total_krw = krw_balance + krw_locked  # 실제 보유 총액
         return AccountSnapshot(
-            equity=krw_balance,
-            cash=krw_balance,
-            available_cash=available,
+            equity=total_krw,
+            cash=total_krw,
+            available_cash=krw_balance,  # balance는 이미 locked 제외된 값
             currency="KRW",
         )
 
