@@ -123,8 +123,8 @@ def _auto_tune(r, market: str) -> None:
 
     config_key = f"claw:config:{market}"
 
-    current_stop = get_config(r, market, "stop_pct", 0.015)
-    current_take = get_config(r, market, "take_pct", 0.030)
+    current_stop = get_config(r, market, "stop_pct", 0.025)
+    current_take = get_config(r, market, "take_pct", 0.050)
     current_size = get_config(r, market, "size_cash_pct", 0.20)
 
     changes: dict[str, str] = {}
@@ -135,7 +135,7 @@ def _auto_tune(r, market: str) -> None:
         changes["size_cash_pct"] = str(new_size)
     elif avg_win_rate > 0.60:
         # 승률 높음: stop 소폭 축소(리스크 감소)
-        new_stop = round(max(float(current_stop) * 0.95, 0.015), 4)  # KR 시장 최소 1.5%
+        new_stop = round(max(float(current_stop) * 0.95, 0.025), 4)  # momentum breakout 최소 2.5%
         changes["stop_pct"] = str(new_stop)
 
     _MAX_DD_THRESHOLD = {"KR": 50000, "US": 50}
@@ -191,7 +191,14 @@ def main() -> None:
 
             is_weekday = now_kst.weekday() < 5  # 0=월 … 4=금
 
-            # 08:55~08:59 KST — daily cap 리셋 (평일만)
+            # 00:00~00:04 KST — COIN daily cap 리셋 (24/7 — 자정 기준)
+            if now_kst.hour == 0 and now_kst.minute < 5:
+                try:
+                    _reset_daily_cap(r, "COIN")
+                except Exception as e:
+                    print(f"daily_report: daily_cap_reset error COIN {e}", flush=True)
+
+            # 08:55~08:59 KST — KR/US daily cap 리셋 (평일만)
             if (is_weekday and
                     now_kst.hour == _DAILY_RESET_HOUR and
                     _DAILY_RESET_MIN <= now_kst.minute < _DAILY_RESET_MIN + 5):
