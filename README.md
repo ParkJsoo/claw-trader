@@ -1,24 +1,24 @@
 # Claw-Trader
 
-현금 전용 완전 자동매매 엔진. 한국(KIS) 및 미국(IBKR) 주식 시장 지원.
+현금 전용 완전 자동매매 엔진. 한국(KIS) / 미국(IBKR) / 코인(Upbit) 지원.
 
 ---
 
 ## 특징
 
-- **AI 신호 생성** — Claude 기반 mean reversion 신호 (bad news filter)
-- **동적 워치리스트** — Universe 종목 → 뉴스+모멘텀 스코어링 → 상위 12종목 자동 선정 (6시간 주기)
+- **AI 신호 생성** — Claude 기반 momentum breakout 신호 (catalyst quality filter)
+- **동적 워치리스트** — KR: Universe → 상위 12종목 자동 선정 / COIN: 거래대금 상위 15개 (1시간 갱신)
 - **뉴스 인텔리전스** — DART/Google News/Yahoo Finance RSS 수집 → AI 프롬프트 자동 주입
-- **신호 품질 필터** — ret_5m prefilter / range_5m / volume surge(×1.5) / 뉴스+신뢰도 가중 size_cash
-- **Trailing Stop** — HWM 기반 trailing + 비대칭 R:R (stop 1.5%, take 3%)
-- **Time Limit 연장** — 수익 중이면 최대 2× 홀딩
+- **신호 품질 필터** — ret_5m > +1% prefilter / range_5m / volume surge(×1.5) / live mark_hist 실시간 검증
+- **Trailing Stop** — HWM 기반 trailing + R:R (stop 2.5%, take 5%)
+- **Time Limit** — 30분 보유, 수익 중 최대 1시간 연장
 - **Regime Filter** — 3방향(bearish/neutral/bullish), bearish 시 모든 LONG 억제
 - **자동 파라미터 튜닝** — 5거래일 성과 기반 stop/size 자동 조정 (KST 15:40 후)
 - **streak 자본 조정** — 3연속 수익 → size +5%, 3연속 손실 → size −10%
 - **Fill Detection + PnL** — 잔고 diff 기반 체결 감지 → realized/unrealized PnL 자동 기록
 - **TG 일일 리포트** — win rate / profit factor / avg R:R / max drawdown 자동 발송
 - **백테스트 프레임워크** — stop/take/trail_pct 그리드 스윕, 매일 KST 16:10 자동 실행
-- **이중 시장** — KR (KIS API) / US (IBKR TWS API) 동시 운영
+- **3중 시장** — KR (KIS API) / US (IBKR TWS API) / COIN (Upbit API) 동시 운영
 - **현금 전용 리스크 모델** — 마진/레버리지/파생 거래 없음
 - **Telegram 제어판** — 원격 일시정지/재개/파라미터 변경
 
@@ -27,15 +27,15 @@
 ## 아키텍처
 
 ```
-Watchlist Selector (Universe → 뉴스+모멘텀 → dynamic:watchlist:KR, 12종목)
+Watchlist Selector (KR: Universe → 상위 12종목 / COIN: 거래대금 상위 15개, 1시간 갱신)
        ↓
 News Runner (DART / Google RSS / Yahoo Finance)
        ↓
 News Classifier → Redis (news:{symbol} / news:macro)
        ↓
-AI Dual Eval Runner (Claude) ← ret_5m prefilter / 뉴스 컨텍스트 주입
+AI Dual Eval Runner (Claude) ← ret_5m > +1% prefilter / 뉴스 컨텍스트 주입
        ↓
-Consensus Signal Runner (합의 + 4필터 + Regime Filter → Signal → queue)
+Consensus Signal Runner (live mark_hist ret_5m 재검증 + volume surge + Regime Filter → Signal → queue)
        ↓
 Strategy Engine (dedupe / cooldown / daily_cap)
        ↓
@@ -43,15 +43,15 @@ Risk Engine (5-rule gatekeeper)
        ↓
 Executor (idempotency / per-signal stop/take_pct / audit log)
        ↓
-KIS / IBKR Order API
+KIS / IBKR / Upbit Order API
        ↓
 Order Watcher (TTL 기반 미체결 취소)
        ↓
-Position Exit Runner (trailing stop / time_limit 연장 / take_profit)
+Position Exit Runner (trailing stop / time_limit 30분 / take_profit 5%)
        ↓
 Position Engine (Fill Detection → Portfolio / PnL / streak 조정)
        ↓
-Daily Report Runner (08:55 daily_cap 리셋 / 15:40 TG 리포트 + 자동 튜닝)
+Daily Report Runner (08:55 KR daily_cap 리셋 / 00:00 COIN 리셋 / 15:40 TG 리포트 + 자동 튜닝)
 ```
 
 ---
@@ -64,7 +64,8 @@ Daily Report Runner (08:55 daily_cap 리셋 / 15:40 TG 리포트 + 자동 튜닝
 | 상태 저장소 | Redis 7 (Docker) |
 | KR 거래소 | KIS OpenAPI |
 | US 거래소 | IBKR TWS API (ib_insync) |
-| AI (주) | Anthropic Claude |
+| COIN 거래소 | Upbit API |
+| AI (주) | Anthropic Claude (momentum catalyst filter) |
 | 뉴스 수집 | DART OpenAPI + Google News RSS + Yahoo Finance RSS |
 | 알림 | Telegram Bot API |
 | 프로세스 관리 | supervisord |
@@ -96,7 +97,7 @@ docker run -d --name claw-redis --restart always \
 # 4. 환경변수 로드
 set -a && source .env && source config/phase10_kr_micro.env && set +a
 
-# 5. supervisord 기동 (13개 프로세스 자동 관리)
+# 5. supervisord 기동 (15개 프로세스 자동 관리)
 supervisord -c config/supervisord.conf
 supervisorctl status   # 상태 확인
 supervisorctl tail -f runner   # 로그 실시간 확인
@@ -138,10 +139,12 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner
 `config/phase10_kr_micro.env` 추가 설정:
 
 ```bash
-EXIT_STOP_LOSS_PCT=0.015
-EXIT_TAKE_PROFIT_PCT=0.03
-EXIT_TRAIL_STOP_PCT=0.015
-EXIT_TIME_LIMIT_MAX_SEC=7200
+EXIT_STOP_LOSS_PCT=0.025       # -2.5% 손절
+EXIT_TAKE_PROFIT_PCT=0.05      # +5.0% 익절
+EXIT_TRAIL_STOP_PCT=0.020      # trailing stop
+EXIT_TIME_LIMIT_SEC=1800       # 30분 보유 제한
+EXIT_TIME_LIMIT_MAX_SEC=3600   # 수익 중 최대 1시간
+MB_MIN_SURGE_5M=0.010          # 5분 급등 최소 1%
 RISK_KR_MAX_CONCURRENT=3
 UNIVERSE_SELECT_COUNT=12
 ```
@@ -173,7 +176,6 @@ UNIVERSE_SELECT_COUNT=12
 - AI 호출 하드 캡 — 일일 cap 초과 시 자동 pause + TG 알림
 - 비정상 자동 감지 — MD_STALE / AI_ERROR_SPIKE → auto-pause + TG 알림
 - Exit 중복 방지 — `claw:exit_lock:{market}:{symbol}` SET NX TTL 60s
-- 헤지 중복 방지 — `claw:hedge_trigger:{market}` TTL 1h
 - supervisord crash-notifier — 프로세스 FATAL 시 TG 알림
 
 ---
