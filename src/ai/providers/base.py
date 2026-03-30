@@ -61,7 +61,7 @@ class DecisionProvider:
 
 
 def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str:
-    """Claude/Qwen 공통 프롬프트 — mean reversion bad-news filter."""
+    """Claude 공통 프롬프트 — momentum breakout catalyst quality filter."""
 
     def fmt(v: Optional[float]) -> str:
         return f"{v:.4f}" if v is not None else "N/A"
@@ -69,36 +69,40 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
     if market == "KR":
         market_ctx = (
             "Market: KR (KOSPI/KOSDAQ, Korean Won, session 09:00-15:30 KST)\n"
-            "This stock has dropped recently. Your job is to detect BAD NEWS only.\n"
-            "Emit LONG if the drop appears technical/temporary (profit-taking, sector rotation, "
-            "no fundamental problem). "
-            "Return HOLD if there is negative news that could extend the drop "
-            "(earnings miss, scandal, regulatory action, credit risk, delisting risk, etc.)."
+            "This stock is surging right now (strong 5-min positive return + high volume).\n"
+            "Your job: judge if this is REAL buying pressure (positive catalyst, breakout, "
+            "institutional accumulation, sector rotation into this stock) "
+            "OR a short-lived spike with no substance (retail panic buying, no catalyst, "
+            "likely to reverse immediately).\n"
+            "Emit LONG if there is a credible reason for momentum to continue (news catalyst, "
+            "technical breakout above resistance, strong sector tailwind, earnings beat, etc.). "
+            "Return HOLD if no catalyst found OR if signals suggest pump-and-dump / FOMO spike."
         )
     elif market == "COIN":
         market_ctx = (
             "Market: COIN (Upbit KRW crypto market, 24/7 trading)\n"
-            "This cryptocurrency has dropped recently. Your job is to detect BAD NEWS / FUD only.\n"
-            "Emit LONG if the drop appears technical/temporary (profit-taking, whale rebalancing, "
-            "no fundamental problem). "
-            "Return HOLD if there is negative news that could extend the drop "
-            "(exchange hacks, regulatory bans, project rug pulls, whale dumps, protocol exploits, "
-            "de-listing announcements, etc.). "
-            "Prefer HOLD on ambiguous or unverifiable setups."
+            "This cryptocurrency is surging right now (strong 5-min positive return + volume spike).\n"
+            "Your job: judge if this is REAL buying pressure (exchange listing news, partnership "
+            "announcement, protocol upgrade, broader crypto market rally, whale accumulation) "
+            "OR a pump-and-dump (coordinated pump, no news, suspicious volume, small-cap manipulation).\n"
+            "Emit LONG if the surge has a credible catalyst and momentum likely continues short-term. "
+            "Return HOLD if no catalyst, looks like a pump, or is ambiguous. "
+            "Prefer HOLD on unverifiable or suspicious setups."
         )
     else:
         market_ctx = (
             "Market: US (NYSE/NASDAQ, USD, session 09:30-16:00 ET)\n"
-            "This stock has dropped recently. Emit LONG if no bad fundamental news. "
-            "Return HOLD if negative catalyst detected."
+            "This stock is surging. Emit LONG if credible positive catalyst exists and momentum "
+            "is likely to continue. Return HOLD if no catalyst or looks like a short-squeeze / "
+            "pump with no fundamentals."
         )
 
     # 뉴스 컨텍스트 (있으면 추가)
     news_summary = features.get("news_summary", "")
 
     lines = [
-        "You are a cash-only equity trading signal evaluator.",
-        "Strategy: mean reversion — buy temporary dips, avoid fundamental deterioration.",
+        "You are a cash-only short-term momentum trading signal evaluator.",
+        "Strategy: momentum breakout — ride strong surges with real catalysts, avoid fake pumps.",
         "",
         market_ctx,
         f"Symbol: {symbol}",
@@ -117,9 +121,9 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
 
     lines.extend([
         "",
-        "Constraints: cash-only, no short selling.",
-        "emit=true → LONG (drop is temporary, safe to enter for recovery)",
-        "emit=false → HOLD (bad news detected, avoid entry)",
+        "Constraints: cash-only, no short selling. Hold time: up to 30 minutes.",
+        "emit=true → LONG (real catalyst detected, momentum likely continues)",
+        "emit=false → HOLD (no catalyst / pump-dump risk / ambiguous)",
         "confidence must be between 0.0 and 1.0.",
         "",
         "Respond with JSON only (no markdown, no extra text):",

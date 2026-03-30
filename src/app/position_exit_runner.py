@@ -452,14 +452,24 @@ def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
         limit_price = limit_price.quantize(Decimal("0.01"))
 
     client_order_id = str(uuid.uuid4())
-    req = PlaceOrderRequest(
-        symbol=symbol,
-        side=OrderSide.SELL,
-        qty=qty,
-        order_type=OrderType.LIMIT,
-        limit_price=limit_price,
-        client_order_id=client_order_id,
-    )
+    # COIN(Upbit): 시장가 매도 — 종목별 틱 단위 불일치로 지정가 400 오류 방지
+    if market == "COIN":
+        req = PlaceOrderRequest(
+            symbol=symbol,
+            side=OrderSide.SELL,
+            qty=qty,
+            order_type=OrderType.MARKET,
+            client_order_id=client_order_id,
+        )
+    else:
+        req = PlaceOrderRequest(
+            symbol=symbol,
+            side=OrderSide.SELL,
+            qty=qty,
+            order_type=OrderType.LIMIT,
+            limit_price=limit_price,
+            client_order_id=client_order_id,
+        )
     try:
         result = client.place_order(req)
     except Exception as e:

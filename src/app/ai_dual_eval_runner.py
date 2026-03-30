@@ -27,8 +27,8 @@ _DUAL_POLL_SEC = float(os.getenv("DUAL_POLL_SEC", "180"))
 _DUAL_DAILY_CALL_CAP = int(os.getenv("DUAL_DAILY_CALL_CAP", "500"))    # 시장별 일일 캡
 _DUAL_MIN_HIST = int(os.getenv("GEN_MIN_HIST", "20"))
 
-# prefilter: mean reversion — 5분 낙폭 최소 기준 (AI call 전 차단으로 call 절감)
-_MR_DROP_5M = float(os.getenv("MR_MIN_DROP_5M", "0.005"))   # 5분 낙폭 최소 0.5%
+# prefilter: momentum breakout — 5분 상승폭 최소 기준 (AI call 전 차단으로 call 절감)
+_MB_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.010"))  # 5분 급등 최소 1.0%
 _DUAL_MIN_RANGE_5M = 0.004
 _DUAL_LOG_MAX = 500           # 시장별 일일 로그 최대 보관 수
 _DUAL_JITTER_MAX_SEC = 3.0    # 심볼 간 호출 분산 최대 지터(초)
@@ -109,13 +109,13 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
         r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
         return
 
-    # 2. mean reversion prefilter: 낙폭 + 변동성 확인 (AI call 절감)
+    # 2. momentum breakout prefilter: 급등 + 변동성 확인 (AI call 절감)
     stats_key = f"ai:dual_stats:consensus:{market}:{today}"
     try:
         ret_5m_val = features.get("ret_5m")
         range_5m_val = features.get("range_5m")
-        # 5분 낙폭이 충분하지 않으면 skip (mean reversion 셋업 아님)
-        if ret_5m_val is not None and float(ret_5m_val) > -_MR_DROP_5M:
+        # 5분 상승폭이 충분하지 않으면 skip (momentum breakout 셋업 아님)
+        if ret_5m_val is not None and float(ret_5m_val) <= _MB_SURGE_5M:
             r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
             r.expire(stats_key, _DUAL_TTL)
             return
@@ -196,7 +196,7 @@ def main():
     print(
         f"eval: started poll_sec={_DUAL_POLL_SEC} "
         f"call_cap={_DUAL_DAILY_CALL_CAP}/market/day "
-        f"model={claude.model} strategy=mean_reversion drop_threshold={_MR_DROP_5M} "
+        f"model={claude.model} strategy=momentum_breakout surge_threshold={_MB_SURGE_5M} "
         f"kr={watchlist_kr} us={watchlist_us}",
         flush=True,
     )

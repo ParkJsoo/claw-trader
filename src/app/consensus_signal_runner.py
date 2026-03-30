@@ -55,8 +55,8 @@ _LOCK_TTL = 120  # seconds
 
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
-# mean reversion prefilter: 5분 낙폭 최소 기준
-_MIN_DROP_5M = float(os.getenv("MR_MIN_DROP_5M", "0.005"))   # 0.5% 낙폭 최소
+# momentum breakout prefilter: 5분 급등 최소 기준
+_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.010"))  # 1.0% 급등 최소
 _MIN_RANGE_5M = 0.004
 
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
@@ -79,10 +79,10 @@ _STATS_TTL = 30 * 86400
 # ---------------------------------------------------------------------------
 
 def _dynamic_pcts(range_5m: float) -> tuple:
-    """range_5m 기반 동적 stop/take pct 계산."""
-    stop = max(0.015, range_5m * 1.2)
-    take = max(0.020, range_5m * 2.0)
-    return Decimal(str(round(stop, 4))), Decimal(str(round(take, 4)))
+    """모멘텀 브레이크아웃: 고정 stop/take (넓은 여유폭으로 모멘텀 유지)."""
+    stop = Decimal("0.025")  # -2.5%
+    take = Decimal("0.050")  # +5.0%
+    return stop, take
 
 
 # ---------------------------------------------------------------------------
@@ -159,12 +159,14 @@ def _calc_size_cash(market: str, current_price: Decimal) -> Decimal:
             return current_price  # fallback: 1주
         size_cash = Decimal(str(float(available) * pct))
         # qty = size_cash / price 가 1 미만이면 1주 fallback
-        if size_cash < current_price:
+        # COIN(Upbit)은 소수점 매수 지원 → 1주 fallback 불필요
+        if market != "COIN" and size_cash < current_price:
             return current_price
         return size_cash
     except Exception as e:
         _log("size_cash_error", market=market, error=str(e), exc_type=type(e).__name__)
-        # 최소 size_cash 보장 (KR: 10만원, US: $100)
+        if market == "COIN":
+            return Decimal("5000")  # Upbit 최소 주문금액
         min_size = Decimal("100000") if market == "KR" else Decimal("100")
         return max(current_price, min_size)
 
@@ -376,6 +378,46 @@ def _is_bearish_regime(r, market: str, watchlist: list) -> bool:
     return _get_regime(r, market, watchlist) == "bearish"
 
 
+def _get_live_ret_5m(r, market: str, symbol: str) -> Optional[tuple]:
+    """mark_hist에서 실시간 ret_5m, latest_price 계산.
+
+    Returns: (ret_5m: float, latest_price: float) or None if insufficient data.
+    최신 시세가 2분 이상 오래됐으면 None 반환 (stale 거부).
+    """
+    now_ms = int(time.time() * 1000)
+    target_ms = now_ms - 5 * 60 * 1000  # 5분 전
+    stale_threshold_ms = 2 * 60 * 1000  # 최신 시세 2분 초과 시 skip
+
+    entries = r.lrange(f"mark_hist:{market}:{symbol}", 0, 30)
+    if not entries:
+        return None
+    try:
+        ts_str, price_str = entries[0].decode().split(":", 1)
+        latest_ts = int(ts_str)
+        latest_price = float(price_str)
+    except Exception:
+        return None
+
+    if now_ms - latest_ts > stale_threshold_ms:
+        return None  # 시세 2분 이상 오래됨
+
+    past_price = None
+    for entry in entries[1:]:
+        try:
+            t, p = entry.decode().split(":", 1)
+            if int(t) <= target_ms:
+                past_price = float(p)
+                break
+        except Exception:
+            continue
+
+    if past_price is None or past_price == 0:
+        return None
+
+    ret_5m = (latest_price - past_price) / past_price
+    return ret_5m, latest_price
+
+
 # ---------------------------------------------------------------------------
 # 핵심 처리: 심볼 1개
 # ---------------------------------------------------------------------------
@@ -434,21 +476,36 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_direction_not_long")
         return None
 
-    # 5. prefilter: ret_5m, range_5m
+    # 5. prefilter: live ret_5m (mark_hist 직접 계산 — stale eval 방지)
+    live = _get_live_ret_5m(r, market, symbol)
+    if live is None:
+        # mark_hist 데이터 없거나 stale → features_json fallback
+        try:
+            ret_5m_raw = c_features.get("ret_5m")
+            if ret_5m_raw is None:
+                raise ValueError("ret_5m missing")
+            ret_5m = float(ret_5m_raw)
+            live_price = None
+        except (TypeError, ValueError) as e:
+            _log("runner.reject.invalid_payload", symbol=symbol, reason=str(e))
+            _record_reject(r, market, "reject_invalid_payload")
+            return None
+    else:
+        ret_5m, live_price_float = live
+        live_price = Decimal(str(live_price_float))
+
     try:
-        ret_5m_raw   = c_features.get("ret_5m")
         range_5m_raw = c_features.get("range_5m")
-        if ret_5m_raw is None or range_5m_raw is None:
-            raise ValueError("ret_5m or range_5m missing in features_json")
-        ret_5m   = float(ret_5m_raw)
+        if range_5m_raw is None:
+            raise ValueError("range_5m missing in features_json")
         range_5m = float(range_5m_raw)
     except (TypeError, ValueError) as e:
         _log("runner.reject.invalid_payload", symbol=symbol, reason=str(e))
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    # mean reversion: 5분 낙폭이 충분해야 함
-    if ret_5m >= -_MIN_DROP_5M:
+    # momentum breakout: 지금 이 순간에도 5분 상승폭이 충분해야 함
+    if ret_5m <= _MIN_SURGE_5M:
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
         return None
@@ -464,18 +521,21 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_volume_no_surge")
         return None
 
-    # 6. current_price 추출 및 검증
-    try:
-        price_raw = c_features.get("current_price")
-        if not price_raw:
-            raise ValueError("current_price missing in features_json")
-        current_price = Decimal(str(price_raw))
-        if current_price <= 0:
-            raise ValueError(f"current_price must be positive: {current_price}")
-    except (InvalidOperation, ValueError) as e:
-        _log("runner.reject.invalid_payload", symbol=symbol, reason=f"current_price: {e}")
-        _record_reject(r, market, "reject_invalid_payload")
-        return None
+    # 6. current_price: live_price 우선, fallback features_json
+    if live_price is not None:
+        current_price = live_price
+    else:
+        try:
+            price_raw = c_features.get("current_price")
+            if not price_raw:
+                raise ValueError("current_price missing in features_json")
+            current_price = Decimal(str(price_raw))
+            if current_price <= 0:
+                raise ValueError(f"current_price must be positive: {current_price}")
+        except (InvalidOperation, ValueError) as e:
+            _log("runner.reject.invalid_payload", symbol=symbol, reason=f"current_price: {e}")
+            _record_reject(r, market, "reject_invalid_payload")
+            return None
 
     # 7. stop/take pct 동적 계산 + stop price 계산 (market-aware 정규화)
     stop_pct, take_pct = _dynamic_pcts(range_5m)
@@ -504,7 +564,11 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     else:
         conf_mult = Decimal("1.0")
 
-    size_cash = max(base_size * conf_mult, current_price)
+    # COIN은 소수점 매수 → current_price(BTC=99.5M 등) floor 불필요
+    if market == "COIN":
+        size_cash = base_size * conf_mult
+    else:
+        size_cash = max(base_size * conf_mult, current_price)
     _log("size_cash_weighted", symbol=symbol, conf=f"{c_conf:.2f}",
          mult=str(conf_mult), size_cash=str(size_cash))
 
@@ -542,7 +606,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "stop": {"price": str(signal.stop.price)},
         "source": "consensus_signal_runner",
         "status": "candidate",
-        "strategy": "mean_reversion",
+        "strategy": "momentum_breakout",
         "claude_emit": 1,
         "claude_conf": str(c_conf),
         "ret_5m": ret_5m,
@@ -621,9 +685,9 @@ def main():
         sys.exit(1)
 
     print(
-        f"consensus: started poll_sec={_POLL_SEC} strategy=mean_reversion "
-        f"prefilter=ret_5m<-{_MIN_DROP_5M} range_5m>{_MIN_RANGE_5M} "
-        f"stop_pct=dynamic(range_5m*1.2,min=0.015) take_pct=dynamic(range_5m*2.0,min=0.020) "
+        f"consensus: started poll_sec={_POLL_SEC} strategy=momentum_breakout "
+        f"prefilter=ret_5m>{_MIN_SURGE_5M} range_5m>{_MIN_RANGE_5M} "
+        f"stop_pct=0.025 take_pct=0.050 "
         f"watchlist_kr={watchlist_kr} "
         f"watchlist_us={watchlist_us} "
         f"watchlist_coin={watchlist_coin}",

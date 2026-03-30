@@ -126,6 +126,7 @@ class RedisPositionRepository:
                 "realized_pnl": str(realized_pnl),
                 "updated_ts": now_ms,
                 "currency": currency,
+                "side": "BUY",
             },
         )
         self.r.expire(key, self.POSITION_TTL)
