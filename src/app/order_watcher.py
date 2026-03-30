@@ -14,6 +14,7 @@ import redis
 from domain.models import FillEvent, OrderSide
 from exchange.ibkr.client import IbkrClient
 from exchange.kis.client import KisClient
+from exchange.upbit.client import UpbitClient
 from portfolio.engine import PositionEngine
 from portfolio.redis_repo import RedisPositionRepository
 
@@ -44,6 +45,7 @@ class OrderWatcher:
         # 브로커 클라이언트(Watcher는 "조회/취소" 용도)
         self.ibkr = IbkrClient() if os.getenv("IBKR_ACCOUNT_ID") else None
         self.kis = KisClient()
+        self.upbit = UpbitClient() if os.getenv("UPBIT_ACCESS_KEY") else None
 
         # Portfolio Engine (Fill → Position 갱신)
         repo = RedisPositionRepository(self.r)
@@ -149,6 +151,10 @@ class OrderWatcher:
                 return self.ibkr.cancel_order(order_id)
             if market == "KR":
                 return self.kis.cancel_order(order_id)
+            if market == "COIN":
+                if self.upbit is None:
+                    return False
+                return self.upbit.cancel_order(order_id)
         except Exception as e:
             import logging
             logging.getLogger(__name__).warning("_cancel_order failed market=%s order_id=%s error=%s", market, order_id, e)
@@ -249,6 +255,15 @@ class OrderWatcher:
             except Exception:
                 continue
 
+        # COIN
+        for k in self.r.scan_iter(match="order:COIN:*", count=self.cfg.scan_count):
+            try:
+                s = k.decode()
+                _, market, order_id = s.split(":", 2)
+                yield market, order_id
+            except Exception:
+                continue
+
     def run_forever(self):
         # Redis 연결 확인
         self.r.ping()
@@ -282,6 +297,22 @@ class OrderWatcher:
                             self._process_fill_on_filled(market, order_id)
                         self._set_order_status(market, order_id, real)
                         continue
+
+                # 1b) COIN: Upbit 주문 상태 조회
+                if market == "COIN" and self.upbit is not None:
+                    try:
+                        order_data = self.upbit.get_order(order_id)
+                        state = order_data.get("state", "")
+                        if state == "done":
+                            self._process_fill_on_filled(market, order_id)
+                            self._set_order_status(market, order_id, "FILLED")
+                            continue
+                        elif state == "cancel":
+                            self._set_order_status(market, order_id, "CANCELED")
+                            continue
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning("COIN order query failed order_id=%s error=%s", order_id, e)
 
                 # 2) TTL 초과면 자동 취소 (SELL 주문은 손절/익절이므로 취소 제외)
                 if age >= self.cfg.ttl_cancel_sec:
