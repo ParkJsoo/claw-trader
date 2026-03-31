@@ -33,7 +33,7 @@ _LOCK_KEY = "watchlist:selector:lock"
 _LOCK_TTL = 600
 
 _SELECT_INTERVAL_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_SEC", "21600"))  # 장외 6시간
-_SELECT_INTERVAL_MARKET_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_MARKET_SEC", "3600"))  # 장중 1시간
+_SELECT_INTERVAL_MARKET_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_MARKET_SEC", "1800"))  # 장중 30분 (1시간 → 30분)
 _SELECT_COUNT = int(os.getenv("UNIVERSE_SELECT_COUNT", "8"))
 _WL_TTL = 8 * 3600  # 8시간
 
@@ -149,12 +149,12 @@ def write_watchlist(r, market: str, symbols: list[str]) -> None:
 # 동적 유니버스 선정 (거래량 + 등락률 교집합)
 # ---------------------------------------------------------------------------
 
-_DYNAMIC_VOLUME_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_VOLUME_TOP_N", "30"))
-_DYNAMIC_FLUCT_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_FLUCT_TOP_N", "30"))
+_DYNAMIC_VOLUME_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_VOLUME_TOP_N", "50"))   # 30 → 50
+_DYNAMIC_FLUCT_TOP_N = int(os.getenv("WATCHLIST_DYNAMIC_FLUCT_TOP_N", "50"))     # 30 → 50
 _DYNAMIC_FALLBACK_N = int(os.getenv("WATCHLIST_DYNAMIC_FALLBACK_N", "20"))
 _DYNAMIC_PRICE_MIN = int(os.getenv("WATCHLIST_DYNAMIC_PRICE_MIN", "5000"))   # 초저가 소형주 제외
 _DYNAMIC_PRICE_MAX = int(os.getenv("WATCHLIST_DYNAMIC_PRICE_MAX", "100000"))
-_DYNAMIC_MIN_VOL = int(os.getenv("WATCHLIST_DYNAMIC_MIN_VOL", "500000"))     # 거래량 최소 50만
+_DYNAMIC_MIN_VOL = int(os.getenv("WATCHLIST_DYNAMIC_MIN_VOL", "100000"))      # 거래량 최소 10만 (50만 → 10만)
 _DYNAMIC_MIN_RATE = float(os.getenv("WATCHLIST_DYNAMIC_MIN_RATE", "1.0"))    # 등락률 최소 1%
 
 
@@ -192,16 +192,26 @@ def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None
     intersection = [s for s in vol_symbols if s in flu_set]  # vol 순서 유지
 
     if intersection:
-        universe = intersection
+        # 교집합 우선, count보다 적으면 vol_symbols으로 보충
+        universe = list(intersection)
+        if len(universe) < count:
+            seen = set(universe)
+            for s in vol_symbols:
+                if s not in seen:
+                    universe.append(s)
+                    seen.add(s)
+                if len(universe) >= count:
+                    break
         print(
-            f"watchlist_selector: dynamic universe intersection={len(universe)} "
-            f"(vol_top={len(vol_symbols)}, flu_top={len(flu_symbols)})",
+            f"watchlist_selector: dynamic universe intersection={len(intersection)} "
+            f"padded_to={len(universe)} (vol_top={len(vol_symbols)}, flu_top={len(flu_symbols)})",
             flush=True,
         )
     else:
-        universe = vol_symbols[:_DYNAMIC_FALLBACK_N]
+        # 교집합 없으면 거래량 상위 직접 사용
+        universe = vol_symbols[:max(count, _DYNAMIC_FALLBACK_N)]
         print(
-            f"watchlist_selector: dynamic universe fallback to vol_top={len(universe)} "
+            f"watchlist_selector: dynamic universe vol_fallback={len(universe)} "
             f"(no intersection between vol/flu)",
             flush=True,
         )
