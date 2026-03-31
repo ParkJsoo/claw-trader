@@ -27,7 +27,7 @@ from utils.redis_helpers import today_kst, load_watchlist
 # 상수
 # ---------------------------------------------------------------------------
 _LOCK_KEY = "news:runner:lock"
-_LOCK_TTL = 3600           # > NEWS_POLL_SEC (30분 보다 길게)
+_LOCK_TTL = 90             # 30초 갱신 주기 × 3 (크래시 시 90초 내 자동 해제)
 
 _POLL_SEC = float(os.getenv("NEWS_POLL_SEC", "1800"))     # 기본 30분
 _MAX_ITEMS = int(os.getenv("NEWS_MAX_ITEMS", "100"))

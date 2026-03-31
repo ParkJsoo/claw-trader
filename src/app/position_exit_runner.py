@@ -650,6 +650,11 @@ def _run_market(r, client, market: str) -> None:
             sell_price = mark_price * Decimal("0.997")
 
         ok = _place_sell(r, client, market, symbol, qty, sell_price, reason)
+        if ok and "stop_loss" in reason:
+            # 당일 재진입 차단 마킹
+            today = today_kst()
+            r.set(f"claw:daily_stop:{market}:{symbol}:{today}", "1", ex=86400)
+            _log("daily_stop_marked", market=market, symbol=symbol, today=today)
         if not ok:
             # 주문 실패 시 lock 해제 → 다음 폴링에서 재시도
             r.delete(lock_key)

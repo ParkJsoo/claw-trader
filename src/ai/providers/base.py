@@ -81,13 +81,16 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
     elif market == "COIN":
         market_ctx = (
             "Market: COIN (Upbit KRW crypto market, 24/7 trading)\n"
-            "This cryptocurrency is surging right now (strong 5-min positive return + volume spike).\n"
-            "Your job: judge if this is REAL buying pressure (exchange listing news, partnership "
-            "announcement, protocol upgrade, broader crypto market rally, whale accumulation) "
-            "OR a pump-and-dump (coordinated pump, no news, suspicious volume, small-cap manipulation).\n"
-            "Emit LONG if the surge has a credible catalyst and momentum likely continues short-term. "
-            "Return HOLD if no catalyst, looks like a pump, or is ambiguous. "
-            "Prefer HOLD on unverifiable or suspicious setups."
+            "This cryptocurrency is surging right now (positive 5-min return + volume spike).\n"
+            "Your job: judge if this is GENUINE momentum (sustained price action, healthy volume, "
+            "1-min continuation, broad market rally, or any credible reason) "
+            "OR a fake pump (spike-and-reverse pattern, 1-min already negative after 5-min surge, "
+            "suspicious small-cap with extreme volume, obvious coordinated manipulation).\n"
+            "Emit LONG if momentum looks genuine and likely to continue for 10-30 minutes. "
+            "Return HOLD ONLY if you see clear pump-and-dump signals (1-min already reversing, "
+            "extreme spike with immediate fade, or obvious manipulation pattern). "
+            "Do NOT require news catalyst — crypto momentum is often catalyst-free. "
+            "Lean toward LONG when 5-min return is positive and 1-min is not reversing."
         )
     else:
         market_ctx = (
