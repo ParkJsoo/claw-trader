@@ -97,7 +97,7 @@ class RedisPositionRepository:
             avg_price=Decimal(d("avg_price") or "0"),
             realized_pnl=Decimal(d("realized_pnl") or "0"),  # legacy/optional
             updated_ts=d("updated_ts") or "0",
-            currency=d("currency") or ("KRW" if market == "KR" else "USD"),
+            currency=d("currency") or ("KRW" if market in ("KR", "COIN") else "USD"),
         )
 
     def save_position(
@@ -212,7 +212,7 @@ class RedisPositionRepository:
     ) -> None:
         key = self._pnl_key(market)
         now_ms = str(int(time.time() * 1000))
-        currency = "KRW" if market == "KR" else "USD"
+        currency = "KRW" if market in ("KR", "COIN") else "USD"
 
         r, u = self.get_pnl(market)
         new_realized = r + realized_delta
@@ -308,7 +308,7 @@ class RedisPositionRepository:
         key = self._pnl_key(market)
         r, _ = self.get_pnl(market)
         now_ms = str(int(time.time() * 1000))
-        currency = "KRW" if market == "KR" else "USD"
+        currency = "KRW" if market in ("KR", "COIN") else "USD"
         self.r.hset(
             key,
             mapping={
