@@ -22,13 +22,13 @@ import redis
 _LOCK_KEY = "upbit:watchlist:selector:lock"
 _LOCK_TTL = 120
 
-_SELECT_INTERVAL_SEC = float(os.getenv("UPBIT_WATCHLIST_INTERVAL_SEC", "3600"))  # 1시간
+_SELECT_INTERVAL_SEC = float(os.getenv("UPBIT_WATCHLIST_INTERVAL_SEC", "600"))  # 10분
 _SELECT_COUNT = int(os.getenv("UPBIT_WATCHLIST_COUNT", "15"))
 _WL_KEY = "dynamic:watchlist:COIN"
-_WL_TTL = 2 * 3600  # 2시간 (interval보다 2배 — 선정 실패해도 기존 유지)
+_WL_TTL = 1200  # 20분 (interval보다 2배 — 선정 실패해도 기존 유지)
 
 # 거래대금 기준 후보 풀
-_VOL_TOP_N = int(os.getenv("UPBIT_VOL_TOP_N", "50"))
+_VOL_TOP_N = int(os.getenv("UPBIT_VOL_TOP_N", "999"))
 
 # 최소 거래대금 (원) — 유동성 필터
 _MIN_VOL_KRW = float(os.getenv("UPBIT_MIN_VOL_KRW", "5000000000"))  # 50억
@@ -38,27 +38,51 @@ _SYMBOL_BLACKLIST: set[str] = {
     "KRW-USDT", "KRW-BUSD", "KRW-USDC", "KRW-DAI", "KRW-TUSD",
 }
 
+# 급등 스캔 — 거래대금 기준 외 종목 편입
+_SURGE_RATE = float(os.getenv("UPBIT_SURGE_RATE", "0.05"))          # 당일 5% 이상
+_SURGE_MIN_VOL_KRW = float(os.getenv("UPBIT_SURGE_MIN_VOL_KRW", "1000000000"))  # 10억
+_SURGE_MAX_ADD = int(os.getenv("UPBIT_SURGE_MAX_ADD", "10"))         # 최대 추가 10개
+
 
 def _log(msg: str) -> None:
     print(f"upbit_watchlist: {msg}", flush=True)
 
 
 def select_watchlist(upbit_client) -> list[str]:
-    """거래대금 상위 코인 중 블랙리스트 제외 후 상위 N개 선정."""
+    """거래대금 상위 N개 + 당일 급등 종목을 합산하여 워치리스트 선정."""
     candidates = upbit_client.get_volume_rank(top_n=_VOL_TOP_N)
 
-    selected = []
+    # 거래대금 기준 상위 N개
+    vol_selected: list[str] = []
     for item in candidates:
         symbol = item["symbol"]
         if symbol in _SYMBOL_BLACKLIST:
             continue
         if item["volume_krw"] < _MIN_VOL_KRW:
             continue
-        selected.append(symbol)
-        if len(selected) >= _SELECT_COUNT:
+        vol_selected.append(symbol)
+        if len(vol_selected) >= _SELECT_COUNT:
             break
 
-    return selected
+    # 급등 종목 추가 편입 (거래대금 기준 미편입 종목 중)
+    vol_set = set(vol_selected)
+    surge_added: list[str] = []
+    for item in sorted(candidates, key=lambda x: -x["change_rate"]):
+        symbol = item["symbol"]
+        if symbol in _SYMBOL_BLACKLIST or symbol in vol_set:
+            continue
+        if item["change_rate"] < _SURGE_RATE:
+            break
+        if item["volume_krw"] < _SURGE_MIN_VOL_KRW:
+            continue
+        surge_added.append(symbol)
+        if len(surge_added) >= _SURGE_MAX_ADD:
+            break
+
+    if surge_added:
+        _log(f"surge_added={surge_added} (rate>={_SURGE_RATE:.0%})")
+
+    return vol_selected + surge_added
 
 
 def write_watchlist(r: redis.Redis, symbols: list[str]) -> None:
@@ -97,7 +121,7 @@ def main() -> None:
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
-    _log(f"started interval_sec={_SELECT_INTERVAL_SEC} select_count={_SELECT_COUNT} min_vol_krw={_MIN_VOL_KRW/1e8:.0f}억")
+    _log(f"started interval_sec={_SELECT_INTERVAL_SEC} select_count={_SELECT_COUNT} min_vol_krw={_MIN_VOL_KRW/1e8:.0f}억 surge_rate={_SURGE_RATE:.0%} surge_min_vol={_SURGE_MIN_VOL_KRW/1e8:.0f}억")
 
     try:
         while True:
@@ -107,7 +131,7 @@ def main() -> None:
                 selected = select_watchlist(upbit_client)
                 if selected:
                     write_watchlist(r, selected)
-                    _log(f"selected={selected}")
+                    _log(f"selected={selected} total={len(selected)}")
                 else:
                     _log("no candidates — watchlist unchanged")
             except Exception as e:
