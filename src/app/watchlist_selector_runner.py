@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 _KST = ZoneInfo("Asia/Seoul")
 
 _LOCK_KEY = "watchlist:selector:lock"
-_LOCK_TTL = 600
+_LOCK_TTL = 90             # 30초 갱신 주기 × 3 (크래시 시 90초 내 자동 해제)
 
 _SELECT_INTERVAL_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_SEC", "21600"))  # 장외 6시간
 _SELECT_INTERVAL_MARKET_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_MARKET_SEC", "1800"))  # 장중 30분 (1시간 → 30분)

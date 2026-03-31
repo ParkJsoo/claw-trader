@@ -62,6 +62,9 @@ _MIN_RANGE_5M = 0.004
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
 _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 
+# momentum breakout prefilter: 1분 급등 최소 기준
+_MIN_RET_1M = float(os.getenv("MB_MIN_RET_1M", "0.002"))  # 0.2%
+
 # Phase 17: 신호 품질 강화
 _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
 _VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
@@ -448,6 +451,14 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_cooldown")
         return None
 
+    # 2-c. 당일 stop_loss 이후 재진입 차단
+    today = today_kst()
+    daily_stop_key = f"claw:daily_stop:{market}:{symbol}:{today}"
+    if r.exists(daily_stop_key):
+        _log("runner.reject.daily_stop", symbol=symbol, market=market)
+        _record_reject(r, market, "reject_daily_stop")
+        return None
+
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
@@ -515,8 +526,20 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
 
-    # 5-b. Volume surge 필터 (KR + COIN — US는 데이터 없음)
-    if market in ("KR", "COIN") and not _has_volume_surge(r, market, symbol):
+    # 5-a2. ret_1m 최소 기준 프리필터
+    try:
+        ret_1m_raw = c_features.get("ret_1m")
+        if ret_1m_raw is not None:
+            ret_1m = float(ret_1m_raw)
+            if ret_1m < _MIN_RET_1M:
+                _log("runner.reject.prefilter_ret_1m", symbol=symbol, ret_1m=ret_1m)
+                _record_reject(r, market, "reject_prefilter_ret_1m")
+                return None
+    except (TypeError, ValueError):
+        pass  # ret_1m 없거나 파싱 실패 → 통과 (permissive)
+
+    # 5-b. Volume surge 필터 (KR만 — COIN은 이중 장벽 제거, US는 데이터 없음)
+    if market == "KR" and not _has_volume_surge(r, market, symbol):
         _log("runner.reject.volume_no_surge", symbol=symbol)
         _record_reject(r, market, "reject_volume_no_surge")
         return None
