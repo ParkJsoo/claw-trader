@@ -44,13 +44,12 @@ def main():
 
     repo = RedisPositionRepository(r)
     kis_feed = KisFeed()
-    ibkr_feed = IbkrFeed()
+    ibkr_feed = IbkrFeed() if os.getenv("IBKR_ACCOUNT_ID") else None
     updater = MarketDataUpdater(r, repo, kis_feed, ibkr_feed)
 
-    watchlist = {
-        "KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR"),
-        "US": load_watchlist(r, "US", "GEN_WATCHLIST_US"),
-    }
+    watchlist: dict = {"KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR")}
+    if ibkr_feed:
+        watchlist["US"] = load_watchlist(r, "US", "GEN_WATCHLIST_US")
     print(f"md_runner: started poll_interval={POLL_INTERVAL}s watchlist={watchlist}", flush=True)
 
     _wl_refresh_counter = 0
@@ -64,10 +63,9 @@ def main():
             _wl_refresh_counter += 1
             if _wl_refresh_counter >= _WL_REFRESH_EVERY:
                 _wl_refresh_counter = 0
-                new_wl = {
-                    "KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR"),
-                    "US": load_watchlist(r, "US", "GEN_WATCHLIST_US"),
-                }
+                new_wl: dict = {"KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR")}
+                if ibkr_feed:
+                    new_wl["US"] = load_watchlist(r, "US", "GEN_WATCHLIST_US")
                 if new_wl != watchlist:
                     print(f"md_runner: watchlist updated {watchlist} -> {new_wl}", flush=True)
                     watchlist = new_wl
