@@ -188,7 +188,7 @@ def main():
     print("dual: lock acquired", flush=True)
 
     watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
-    watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+    watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US") if os.getenv("IBKR_ACCOUNT_ID") else []
 
     gen = AISignalGenerator(r)      # feature 계산 유틸로만 사용
     claude = ClaudeProvider()
@@ -223,7 +223,7 @@ def main():
 
             # 동적 워치리스트 갱신 (매 폴링마다 Redis 확인)
             watchlist_kr = load_watchlist(r, "KR", "GEN_WATCHLIST_KR")
-            watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+            watchlist_us = load_watchlist(r, "US", "GEN_WATCHLIST_US") if os.getenv("IBKR_ACCOUNT_ID") else []
             watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
 
             # AI 평가 (pause 상태와 무관 — No-Trade 모드)
