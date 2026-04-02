@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from redis import Redis
@@ -29,7 +30,7 @@ class MarketDataUpdater:
         redis: Redis,
         repo: RedisPositionRepository,
         kis_feed: KisFeed,
-        ibkr_feed: IbkrFeed,
+        ibkr_feed: Optional[IbkrFeed],
     ):
         self.redis = redis
         self.repo = repo
@@ -72,6 +73,8 @@ class MarketDataUpdater:
             print(f"md_warn: {market} symbol_count={len(symbols)} >= {SYMBOL_COUNT_WARN}")
 
         feed = self.kis_feed if market == "KR" else self.ibkr_feed
+        if feed is None:
+            return
         t0 = time.time()
         updated = 0
         errors: dict[str, int] = {}
