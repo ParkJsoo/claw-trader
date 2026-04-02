@@ -40,7 +40,8 @@ _KST = ZoneInfo("Asia/Seoul")
 # ---------------------------------------------------------------------------
 
 def _get_watchlists(r) -> tuple[list[str], list[str]]:
-    return load_watchlist(r, "KR", "GEN_WATCHLIST_KR"), load_watchlist(r, "US", "GEN_WATCHLIST_US")
+    us = load_watchlist(r, "US", "GEN_WATCHLIST_US") if os.getenv("IBKR_ACCOUNT_ID") else []
+    return load_watchlist(r, "KR", "GEN_WATCHLIST_KR"), us
 
 
 def _run_once(r, today: str, kr_watchlist: list[str], us_watchlist: list[str]) -> None:
