@@ -1,6 +1,6 @@
 """upbit_watchlist_selector_runner — 업비트 코인 동적 워치리스트 선정.
 
-24/7 운영. 1시간마다 거래대금 상위 코인 중 mean reversion 후보 선정.
+24/7 운영. 10분마다 거래대금 상위 코인 선정 + 90초마다 급등 스캔으로 즉시 편입.
 Redis SET `dynamic:watchlist:COIN` 에 저장.
 
 기동:
@@ -23,6 +23,7 @@ _LOCK_KEY = "upbit:watchlist:selector:lock"
 _LOCK_TTL = 120
 
 _SELECT_INTERVAL_SEC = float(os.getenv("UPBIT_WATCHLIST_INTERVAL_SEC", "600"))  # 10분
+_SURGE_INTERVAL_SEC = float(os.getenv("UPBIT_SURGE_INTERVAL_SEC", "90"))       # 급등 스캔 90초
 _SELECT_COUNT = int(os.getenv("UPBIT_WATCHLIST_COUNT", "15"))
 _WL_KEY = "dynamic:watchlist:COIN"
 _WL_TTL = 1200  # 20분 (interval보다 2배 — 선정 실패해도 기존 유지)
@@ -95,6 +96,32 @@ def write_watchlist(r: redis.Redis, symbols: list[str]) -> None:
     pipe.execute()
 
 
+def scan_and_add_surge(r: redis.Redis, upbit_client) -> None:
+    """급등 종목만 빠르게 스캔해서 워치리스트에 즉시 추가 (기존 항목 유지)."""
+    candidates = upbit_client.get_volume_rank(top_n=_VOL_TOP_N)
+    current = {s.decode() if isinstance(s, bytes) else s for s in r.smembers(_WL_KEY)}
+
+    new_symbols: list[str] = []
+    for item in sorted(candidates, key=lambda x: -x["change_rate"]):
+        symbol = item["symbol"]
+        if symbol in _SYMBOL_BLACKLIST or symbol in current:
+            continue
+        if item["change_rate"] < _SURGE_RATE:
+            break
+        if item["volume_krw"] < _SURGE_MIN_VOL_KRW:
+            continue
+        new_symbols.append(symbol)
+        if len(new_symbols) >= _SURGE_MAX_ADD:
+            break
+
+    if new_symbols:
+        pipe = r.pipeline(transaction=True)
+        pipe.sadd(_WL_KEY, *new_symbols)
+        pipe.expire(_WL_KEY, _WL_TTL)
+        pipe.execute()
+        _log(f"surge_instant_added={new_symbols} (rate>={_SURGE_RATE:.0%})")
+
+
 def main() -> None:
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
@@ -121,25 +148,37 @@ def main() -> None:
         r.delete(_LOCK_KEY)
         sys.exit(1)
 
-    _log(f"started interval_sec={_SELECT_INTERVAL_SEC} select_count={_SELECT_COUNT} min_vol_krw={_MIN_VOL_KRW/1e8:.0f}억 surge_rate={_SURGE_RATE:.0%} surge_min_vol={_SURGE_MIN_VOL_KRW/1e8:.0f}억")
+    _log(f"started interval_sec={_SELECT_INTERVAL_SEC} surge_interval_sec={_SURGE_INTERVAL_SEC} select_count={_SELECT_COUNT} min_vol_krw={_MIN_VOL_KRW/1e8:.0f}억 surge_rate={_SURGE_RATE:.0%} surge_min_vol={_SURGE_MIN_VOL_KRW/1e8:.0f}억")
+
+    last_full_select = 0.0
 
     try:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
+            now = time.time()
 
-            try:
-                selected = select_watchlist(upbit_client)
-                if selected:
-                    write_watchlist(r, selected)
-                    _log(f"selected={selected} total={len(selected)}")
-                else:
-                    _log("no candidates — watchlist unchanged")
-            except Exception as e:
-                _log(f"error: {e}")
+            if now - last_full_select >= _SELECT_INTERVAL_SEC:
+                # 전체 선정 (거래대금 기반 + 급등 스캔, 워치리스트 교체)
+                try:
+                    selected = select_watchlist(upbit_client)
+                    if selected:
+                        write_watchlist(r, selected)
+                        _log(f"selected={selected} total={len(selected)}")
+                    else:
+                        _log("no candidates — watchlist unchanged")
+                    last_full_select = time.time()
+                except Exception as e:
+                    _log(f"full_select error: {e}")
+            else:
+                # 급등 스캔만 (기존 워치리스트 유지하며 즉시 추가)
+                try:
+                    scan_and_add_surge(r, upbit_client)
+                except Exception as e:
+                    _log(f"surge_scan error: {e}")
 
-            remaining = _SELECT_INTERVAL_SEC
+            remaining = _SURGE_INTERVAL_SEC
             while remaining > 0:
-                sleep_chunk = min(30.0, remaining)
+                sleep_chunk = min(15.0, remaining)
                 time.sleep(sleep_chunk)
                 remaining -= sleep_chunk
                 r.expire(_LOCK_KEY, _LOCK_TTL)
