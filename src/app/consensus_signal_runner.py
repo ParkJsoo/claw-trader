@@ -56,8 +56,8 @@ _LOCK_TTL = 120  # seconds
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
 # momentum breakout prefilter: 5분 급등 최소 기준
-_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.010"))  # 1.0% 급등 최소
-_MIN_RANGE_5M = 0.004
+_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))  # 2.0% 급등 최소
+_MIN_RANGE_5M = float(os.getenv("MB_MIN_RANGE_5M", "0.004"))
 
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
 _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
@@ -459,6 +459,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_daily_stop")
         return None
 
+    # 2-d. 종목별 일일 진입 상한 (max 3회)
+    symbol_daily_key = f"consensus:symbol_daily:{market}:{symbol}:{today}"
+    _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "3"))
+    symbol_count = int(r.get(symbol_daily_key) or 0)
+    if symbol_count >= _symbol_daily_cap:
+        _log("runner.reject.symbol_daily_cap", symbol=symbol, market=market, count=symbol_count)
+        _record_reject(r, market, "reject_symbol_daily_cap")
+        return None
+
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
@@ -647,6 +656,10 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _log("runner.error.publish_failed", symbol=symbol, signal_id=signal_id, error=str(e))
         r.delete(cooldown_key)  # lpush 실패 시 cooldown 롤백
         return None
+
+    # 종목별 일일 진입 카운트 증가
+    r.incr(symbol_daily_key)
+    r.expire(symbol_daily_key, 86400)
 
     # stop_pct/take_pct를 exit runner가 읽을 수 있도록 저장 (TTL 24시간)
     r.hset(f"claw:signal_pct:{market}:{symbol}", mapping={

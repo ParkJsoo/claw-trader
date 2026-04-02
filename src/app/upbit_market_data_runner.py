@@ -66,6 +66,7 @@ def main() -> None:
                 errors = feed.update(symbols)
                 elapsed = time.time() - t0
                 _log(f"updated symbols={len(symbols)} elapsed={elapsed:.2f}s errors={errors or 0}")
+                r.set("md:last_update:COIN", str(int(time.time() * 1000)), ex=300)
 
             time.sleep(_POLL_SEC)
 

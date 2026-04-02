@@ -641,12 +641,9 @@ def _run_market(r, client, market: str) -> None:
                 held_sec = (int(time.time() * 1000) - opened_ts) // 1000
             else:
                 held_sec = int(time.time()) - opened_ts
-            try:
-                _stop_pct = Decimal(pos_hash.get("stop_pct") or str(_STOP_LOSS_PCT))
-                _take_pct = Decimal(pos_hash.get("take_pct") or str(_TAKE_PROFIT_PCT))
-            except Exception:
-                _stop_pct = _STOP_LOSS_PCT
-                _take_pct = _TAKE_PROFIT_PCT
+            # hold 로그용 stop/take: cfg_stop/cfg_take (실제 exit 판단과 동일한 값 사용)
+            _stop_pct = cfg_stop if cfg_stop is not None else _STOP_LOSS_PCT
+            _take_pct = cfg_take if cfg_take is not None else _TAKE_PROFIT_PCT
             _log("hold", market=market, symbol=symbol,
                  avg=str(avg_price), mark=str(mark_price),
                  pnl_pct=f"{pnl_pct:+.2f}%",
@@ -677,6 +674,14 @@ def _run_market(r, client, market: str) -> None:
             today = today_kst()
             r.set(f"claw:daily_stop:{market}:{symbol}:{today}", "1", ex=86400)
             _log("daily_stop_marked", market=market, symbol=symbol, today=today)
+        if ok and "time_limit" in reason:
+            # time_limit 청산 후 2시간 쿨다운 (횡보 반복 진입 방지)
+            r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=7200)
+            _log("time_limit_cooldown_marked", market=market, symbol=symbol, cooldown_sec=7200)
+        if ok and "take_profit" in reason:
+            # take_profit 청산 후 30분 쿨다운 (모멘텀 지속 시 빠른 재진입 허용)
+            r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=1800)
+            _log("take_profit_cooldown_marked", market=market, symbol=symbol, cooldown_sec=1800)
         if not ok:
             # 주문 실패 시 lock 해제 → 다음 폴링에서 재시도
             r.delete(lock_key)
@@ -738,11 +743,15 @@ def main():
         f"exit_runner: started "
         f"markets={markets} "
         f"poll_sec={_POLL_SEC} "
-        f"stop_loss={float(_STOP_LOSS_PCT)*100:.1f}% "
+        f"KR: stop_loss={float(_STOP_LOSS_PCT)*100:.1f}% "
         f"take_profit={float(_TAKE_PROFIT_PCT)*100:.1f}% "
         f"time_limit={_TIME_LIMIT_SEC}s "
         f"trail_stop={float(_TRAIL_STOP_PCT)*100:.1f}% "
         f"time_limit_max={_TIME_LIMIT_MAX_SEC}s "
+        f"| COIN: take_profit={float(_COIN_TAKE_PROFIT_PCT)*100:.1f}% "
+        f"trail_stop={float(_COIN_TRAIL_STOP_PCT)*100:.1f}% "
+        f"time_limit={_COIN_TIME_LIMIT_SEC}s "
+        f"time_limit_max={_COIN_TIME_LIMIT_MAX_SEC}s "
         f"lock_ttl={_LOCK_TTL}s",
         flush=True,
     )
