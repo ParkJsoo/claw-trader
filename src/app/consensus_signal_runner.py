@@ -56,7 +56,8 @@ _LOCK_TTL = 120  # seconds
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
 # momentum breakout prefilter: 5분 급등 최소 기준
-_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))  # 2.0% 급등 최소
+_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))       # COIN 2.0% 급등 최소
+_MIN_SURGE_5M_KR = float(os.getenv("MB_MIN_SURGE_5M_KR", "0.030"))  # KR 3.0% (노이즈 필터링)
 _MIN_RANGE_5M = float(os.getenv("MB_MIN_RANGE_5M", "0.004"))
 
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
@@ -556,7 +557,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         return None
 
     # momentum breakout: 지금 이 순간에도 5분 상승폭이 충분해야 함
-    if ret_5m <= _MIN_SURGE_5M:
+    surge_threshold = _MIN_SURGE_5M_KR if market == "KR" else _MIN_SURGE_5M
+    if ret_5m <= surge_threshold:
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
         return None
