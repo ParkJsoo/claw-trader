@@ -455,13 +455,32 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_cooldown")
         return None
 
-    # 2-c. 당일 stop_loss 이후 재진입 차단
+    # 2-c. 당일 stop_loss 이후 재진입 차단 (완화: 2시간 경과 + 손절가 대비 +3% 회복 시 허용)
     today = today_kst()
     daily_stop_key = f"claw:daily_stop:{market}:{symbol}:{today}"
     if r.exists(daily_stop_key):
-        _log("runner.reject.daily_stop", symbol=symbol, market=market)
-        _record_reject(r, market, "reject_daily_stop")
-        return None
+        allow_reentry = False
+        try:
+            if r.type(daily_stop_key).decode() == "hash":
+                ds = _hgetall_str(r, daily_stop_key)
+                stop_ts = float(ds.get("stop_ts", 0))
+                elapsed = time.time() - stop_ts
+                if elapsed >= 7200 and ds.get("stop_price"):
+                    ds_stop_price = float(ds["stop_price"])
+                    live_check = _get_live_ret_5m(r, market, symbol)
+                    if live_check is not None and ds_stop_price > 0:
+                        recovery = (live_check[1] - ds_stop_price) / ds_stop_price
+                        if recovery >= 0.03:
+                            allow_reentry = True
+                            _log("runner.daily_stop.reentry_allowed", symbol=symbol,
+                                 elapsed_h=f"{elapsed/3600:.1f}h",
+                                 recovery_pct=f"{recovery*100:.1f}%")
+        except Exception:
+            pass
+        if not allow_reentry:
+            _log("runner.reject.daily_stop", symbol=symbol, market=market)
+            _record_reject(r, market, "reject_daily_stop")
+            return None
 
     # 2-d. 종목별 일일 진입 상한 (max 3회)
     symbol_daily_key = f"consensus:symbol_daily:{market}:{symbol}:{today}"

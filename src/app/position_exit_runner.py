@@ -673,9 +673,11 @@ def _run_market(r, client, market: str) -> None:
 
         ok = _place_sell(r, client, market, symbol, qty, sell_price, reason)
         if ok and "stop_loss" in reason:
-            # 당일 재진입 차단 마킹
+            # 당일 재진입 차단 마킹 (stop_price + ts 저장 → 2시간 후 가격 회복 시 재진입 허용)
             today = today_kst()
-            r.set(f"claw:daily_stop:{market}:{symbol}:{today}", "1", ex=86400)
+            _ds_key = f"claw:daily_stop:{market}:{symbol}:{today}"
+            r.hset(_ds_key, mapping={"stop_price": str(mark_price), "stop_ts": str(int(time.time()))})
+            r.expire(_ds_key, 86400)
             _log("daily_stop_marked", market=market, symbol=symbol, today=today)
         if ok and "time_limit" in reason:
             # time_limit 청산 후 2시간 쿨다운 (횡보 반복 진입 방지)
