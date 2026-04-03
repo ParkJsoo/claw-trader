@@ -82,15 +82,18 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
         market_ctx = (
             "Market: COIN (Upbit KRW crypto market, 24/7 trading)\n"
             "This cryptocurrency is surging right now (positive 5-min return + volume spike).\n"
-            "Your job: judge if this is GENUINE momentum (sustained price action, healthy volume, "
-            "1-min continuation, broad market rally, or any credible reason) "
-            "OR a fake pump (spike-and-reverse pattern, 1-min already negative after 5-min surge, "
-            "suspicious small-cap with extreme volume, obvious coordinated manipulation).\n"
-            "Emit LONG if momentum looks genuine and likely to continue for 10-30 minutes. "
-            "Return HOLD ONLY if you see clear pump-and-dump signals (1-min already reversing, "
-            "extreme spike with immediate fade, or obvious manipulation pattern). "
+            "Your job: judge if this is GENUINE momentum with staying power "
+            "OR a fake pump that will reverse quickly.\n"
+            "This is a Big Mover Ride strategy — hold time is 1-4 hours. "
+            "Only emit LONG for moves likely to sustain +5% or more over the next 1-2 hours.\n"
+            "Emit LONG only when you see clear evidence of sustained momentum: "
+            "volume increasing (not just a spike), 1-min return still positive and accelerating, "
+            "price action suggesting continuation (higher lows, not exhaustion candles), "
+            "and the move has room to run (not already extended/parabolic).\n"
+            "Return HOLD if: 1-min is reversing after the 5-min surge, volume is fading, "
+            "the move looks like a short pump-and-dump, or the price action looks exhausted. "
             "Do NOT require news catalyst — crypto momentum is often catalyst-free. "
-            "Lean toward LONG when 5-min return is positive and 1-min is not reversing."
+            "Be selective: only the strongest, cleanest momentum setups qualify."
         )
     else:
         market_ctx = (
@@ -124,7 +127,7 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
 
     lines.extend([
         "",
-        "Constraints: cash-only, no short selling. Hold time: up to 30 minutes.",
+        "Constraints: cash-only, no short selling. Hold time: 1-4 hours (Big Mover Ride).",
         "emit=true → LONG (real catalyst detected, momentum likely continues)",
         "emit=false → HOLD (no catalyst / pump-dump risk / ambiguous)",
         "confidence must be between 0.0 and 1.0.",

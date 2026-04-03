@@ -84,7 +84,7 @@ class OrderWatcher:
         return now
 
     def _set_order_status(self, market: str, order_id: str, status: str) -> None:
-        self.r.set(self._order_key(market, order_id), status)
+        self.r.set(self._order_key(market, order_id), status, ex=self.cfg.meta_ttl_sec)
 
     def _record_reject(self, market: str, tag: str, reason: str, detail: dict) -> None:
         rk = self._reject_key(market, tag)
@@ -304,6 +304,18 @@ class OrderWatcher:
                         order_data = self.upbit.get_order(order_id)
                         state = order_data.get("state", "")
                         if state == "done":
+                            # 실제 체결가/수량/수수료로 meta 업데이트 (시장가 주문 체결가 보정)
+                            trades = order_data.get("trades", [])
+                            if trades:
+                                mk = self._meta_key(market, order_id)
+                                update = {
+                                    "limit_price": str(trades[0].get("price", "")),
+                                    "qty": str(order_data.get("executed_volume", "")),
+                                    "paid_fee": str(order_data.get("paid_fee", "0")),
+                                }
+                                update = {k: v for k, v in update.items() if v}
+                                if update:
+                                    self.r.hset(mk, mapping=update)
                             self._process_fill_on_filled(market, order_id)
                             self._set_order_status(market, order_id, "FILLED")
                             continue

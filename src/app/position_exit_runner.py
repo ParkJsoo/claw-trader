@@ -58,6 +58,7 @@ _TRAIL_STOP_PCT = Decimal(os.getenv("EXIT_TRAIL_STOP_PCT", "0.015"))
 _TIME_LIMIT_MAX_SEC = int(os.getenv("EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_SEC * 2)))
 
 # COIN Big Mover Ride — 시장별 오버라이드 (KR scalp 그대로 유지)
+_COIN_STOP_LOSS_PCT = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", str(_STOP_LOSS_PCT)))
 _COIN_TAKE_PROFIT_PCT = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", str(_TAKE_PROFIT_PCT)))
 _COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", str(_TRAIL_STOP_PCT)))
 _COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT_SEC)))
@@ -571,6 +572,8 @@ def _run_market(r, client, market: str) -> None:
             cfg_take = _COIN_TAKE_PROFIT_PCT
         if cfg_trail is None:
             cfg_trail = _COIN_TRAIL_STOP_PCT
+        if cfg_stop is None:
+            cfg_stop = _COIN_STOP_LOSS_PCT
     else:
         _mkt_time_limit = _TIME_LIMIT_SEC
         _mkt_time_limit_max = _TIME_LIMIT_MAX_SEC
