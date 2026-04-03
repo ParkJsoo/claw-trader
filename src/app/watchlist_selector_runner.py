@@ -290,18 +290,33 @@ def main() -> None:
                 if _use_dynamic_kr:
                     selected = select_watchlist_dynamic(r, _SELECT_COUNT, kis_client=_kis_client)
                     if selected is None:
-                        # KIS 클라이언트 불가 → 기존 env var universe fallback
-                        selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT) if universe_kr else []
-                        print(
-                            f"watchlist_selector: KR fallback static selected={selected} "
-                            f"from universe={len(universe_kr)} symbols",
-                            flush=True,
-                        )
+                        if universe_kr:
+                            # KIS 클라이언트 불가 → 기존 env var universe fallback
+                            selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
+                            print(
+                                f"watchlist_selector: KR fallback static selected={selected} "
+                                f"from universe={len(universe_kr)} symbols",
+                                flush=True,
+                            )
+                            if selected:
+                                write_watchlist(r, "KR", selected)
+                        else:
+                            # KIS 불가 + env var 없음 → 기존 Redis 데이터 TTL 갱신만 (덮어쓰기 금지)
+                            existing = r.smembers("dynamic:watchlist:KR")
+                            if existing:
+                                r.expire("dynamic:watchlist:KR", _WL_TTL)
+                                print(
+                                    f"watchlist_selector: KR KIS unavailable, keeping existing {len(existing)} symbols",
+                                    flush=True,
+                                )
+                            else:
+                                print("watchlist_selector: KR KIS unavailable, no existing watchlist", flush=True)
                     else:
                         print(
                             f"watchlist_selector: KR dynamic selected={selected}",
                             flush=True,
                         )
+                        write_watchlist(r, "KR", selected)
                 else:
                     selected = select_watchlist(r, "KR", universe_kr, _SELECT_COUNT)
                     print(
@@ -309,8 +324,8 @@ def main() -> None:
                         f"from universe={len(universe_kr)} symbols",
                         flush=True,
                     )
-                if selected:
-                    write_watchlist(r, "KR", selected)
+                    if selected:
+                        write_watchlist(r, "KR", selected)
 
             if universe_us:
                 selected_us = select_watchlist(r, "US", universe_us, _SELECT_COUNT)

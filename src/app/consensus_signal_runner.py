@@ -81,10 +81,14 @@ _STATS_TTL = 30 * 86400
 # 동적 stop/take pct 계산
 # ---------------------------------------------------------------------------
 
-def _dynamic_pcts(range_5m: float) -> tuple:
-    """모멘텀 브레이크아웃: 고정 stop/take (넓은 여유폭으로 모멘텀 유지)."""
-    stop = Decimal("0.025")  # -2.5%
-    take = Decimal("0.050")  # +5.0%
+def _dynamic_pcts(range_5m: float, market: str = "KR") -> tuple:
+    """모멘텀 브레이크아웃: 시장별 stop/take 분기."""
+    if market == "COIN":
+        stop = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.040"))   # -4.0% (COIN 전용)
+        take = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.200")) # +20.0% (Big Mover Ride)
+    else:
+        stop = Decimal("0.025")  # -2.5%
+        take = Decimal("0.050")  # +5.0%
     return stop, take
 
 
@@ -547,8 +551,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     except (TypeError, ValueError):
         pass  # ret_1m 없거나 파싱 실패 → 통과 (permissive)
 
-    # 5-b. Volume surge 필터 (KR만 — COIN은 이중 장벽 제거, US는 데이터 없음)
-    if market == "KR" and not _has_volume_surge(r, market, symbol):
+    # 5-b. Volume surge 필터 (KR + COIN — US는 데이터 없음)
+    if market in ("KR", "COIN") and not _has_volume_surge(r, market, symbol):
         _log("runner.reject.volume_no_surge", symbol=symbol)
         _record_reject(r, market, "reject_volume_no_surge")
         return None
@@ -570,7 +574,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
             return None
 
     # 7. stop/take pct 동적 계산 + stop price 계산 (market-aware 정규화)
-    stop_pct, take_pct = _dynamic_pcts(range_5m)
+    stop_pct, take_pct = _dynamic_pcts(range_5m, market)
     stop_raw = current_price * (1 - stop_pct)
     stop_price = _normalize_price(market, stop_raw)
     if stop_price <= 0:
