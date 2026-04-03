@@ -73,6 +73,14 @@ _CLAUDE_ONLY = os.getenv("EXECUTION_MODE", "dual").lower() == "claude_only"  # Q
 
 _BULLISH_THRESHOLD = float(os.getenv("REGIME_BULLISH_THRESHOLD", "0.30"))  # bearish 비율 < 30% → bullish
 
+# Type B: 추세 탑승 신호 파라미터
+_TYPE_B_POLL_SEC = float(os.getenv("TYPE_B_POLL_SEC", "300"))           # 5분마다 체크
+_TYPE_B_COOLDOWN_SEC = int(os.getenv("TYPE_B_COOLDOWN_SEC", "14400"))   # 4시간 쿨다운
+_TYPE_B_MIN_CHANGE_RATE = float(os.getenv("TYPE_B_MIN_CHANGE_RATE", "0.05"))   # 전일대비 +5%
+_TYPE_B_MIN_VOL_KRW = float(os.getenv("TYPE_B_MIN_VOL_KRW", "10000000000"))    # 24h 거래대금 100억
+_TYPE_B_NEAR_HIGH_RATIO = float(os.getenv("TYPE_B_NEAR_HIGH_RATIO", "0.97"))   # 당일 고점 -3% 이내
+_TYPE_B_MIN_RET_5M = float(os.getenv("TYPE_B_MIN_RET_5M", "0.005"))            # 5분 ret 0.5% 이상
+
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
 
@@ -711,6 +719,180 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Type B: 추세 탑승 신호 (일간 서서히 오르는 종목 포착)
+# ---------------------------------------------------------------------------
+
+_anthropic_client = None
+
+
+def _get_anthropic_client():
+    global _anthropic_client
+    if _anthropic_client is None:
+        from anthropic import Anthropic
+        _anthropic_client = Anthropic()
+    return _anthropic_client
+
+
+def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
+    """Type B 추세 탑승: 일간 +5% 이상 상승 중이며 현재도 고점 유지 중인 종목."""
+    market = "COIN"
+
+    # Type B 쿨다운 (4시간)
+    tb_cooldown_key = f"consensus:type_b_cooldown:{market}:{symbol}"
+    if r.exists(tb_cooldown_key):
+        return None
+
+    # daily_stop 체크 (완화 로직 동일 적용)
+    daily_stop_key = f"claw:daily_stop:{market}:{symbol}:{today}"
+    if r.exists(daily_stop_key):
+        allow_reentry = False
+        try:
+            if r.type(daily_stop_key).decode() == "hash":
+                ds = _hgetall_str(r, daily_stop_key)
+                stop_ts = float(ds.get("stop_ts", 0))
+                elapsed = time.time() - stop_ts
+                if elapsed >= 7200 and ds.get("stop_price"):
+                    ds_stop_price = float(ds["stop_price"])
+                    live_check = _get_live_ret_5m(r, market, symbol)
+                    if live_check is not None and ds_stop_price > 0:
+                        if (live_check[1] - ds_stop_price) / ds_stop_price >= 0.03:
+                            allow_reentry = True
+        except Exception:
+            pass
+        if not allow_reentry:
+            return None
+
+    # Upbit ticker 조회
+    client = _get_client(market)
+    if client is None:
+        return None
+    try:
+        ticker = client.get_ticker(symbol)
+    except Exception as e:
+        _log("type_b.ticker_error", symbol=symbol, error=str(e))
+        return None
+
+    change_rate = float(ticker.get("signed_change_rate", 0))
+    trade_price = float(ticker.get("trade_price", 0))
+    high_price = float(ticker.get("high_price", 0))
+    vol_krw = float(ticker.get("acc_trade_price_24h", 0))
+
+    if trade_price <= 0 or high_price <= 0:
+        return None
+
+    # 조건 ①: 전일대비 +5% 이상
+    if change_rate < _TYPE_B_MIN_CHANGE_RATE:
+        return None
+
+    # 조건 ②: 당일 고점 -3% 이내 (추세 유지 확인)
+    near_high = trade_price / high_price
+    if near_high < _TYPE_B_NEAR_HIGH_RATIO:
+        _log("type_b.reject.far_from_high", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%", near_high=f"{near_high:.3f}")
+        return None
+
+    # 조건 ③: 거래대금 100억 이상
+    if vol_krw < _TYPE_B_MIN_VOL_KRW:
+        return None
+
+    # 조건 ④: 현재도 5분 상승 중
+    live = _get_live_ret_5m(r, market, symbol)
+    if live is None:
+        return None
+    ret_5m, live_price_float = live
+    if ret_5m < _TYPE_B_MIN_RET_5M:
+        _log("type_b.reject.ret_5m_weak", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        return None
+
+    current_price = Decimal(str(live_price_float))
+
+    # Claude 평가 (Type B 전용 프롬프트)
+    try:
+        from ai.providers.base import build_type_b_prompt, parse_decision_response
+        prompt = build_type_b_prompt(symbol, change_rate, trade_price, high_price, ret_5m, vol_krw)
+        ai_client = _get_anthropic_client()
+        resp = ai_client.messages.create(
+            model=os.getenv("AI_MODEL", "claude-haiku-4-5-20251001"),
+            max_tokens=128,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = resp.content[0].text
+        emit, direction, confidence, reason = parse_decision_response(raw)
+    except Exception as e:
+        _log("type_b.claude_error", symbol=symbol, error=str(e))
+        return None
+
+    if not emit or direction != "LONG":
+        _log("type_b.reject.claude_hold", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%", reason=reason[:60])
+        return None
+
+    # 신호 생성
+    stop_pct = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.040"))
+    take_pct = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.200"))
+    stop_price = current_price * (1 - stop_pct)
+
+    signal_id = str(uuid.uuid4())
+    ts_now = datetime.now(_KST).isoformat()
+    size_cash = _calc_size_cash(market, current_price)
+
+    try:
+        signal = Signal(
+            signal_id=signal_id,
+            ts=ts_now,
+            market=market,
+            symbol=symbol,
+            direction="LONG",
+            entry=SignalEntry(price=current_price, size_cash=size_cash),
+            stop=SignalStop(price=stop_price),
+            stop_pct=stop_pct,
+            take_pct=take_pct,
+        )
+    except Exception as e:
+        _log("type_b.signal_error", symbol=symbol, error=str(e))
+        return None
+
+    r.set(tb_cooldown_key, "1", ex=_TYPE_B_COOLDOWN_SEC)
+
+    payload = {
+        "signal_id": signal.signal_id,
+        "ts": signal.ts,
+        "market": market,
+        "symbol": symbol,
+        "direction": "LONG",
+        "entry": {"price": str(current_price), "size_cash": str(size_cash)},
+        "stop": {"price": str(stop_price)},
+        "source": "consensus_signal_runner_type_b",
+        "status": "candidate",
+        "strategy": "trend_riding",
+        "claude_emit": 1,
+        "claude_conf": str(confidence),
+        "ret_5m": ret_5m,
+        "change_rate_daily": change_rate,
+        "stop_pct": str(stop_pct),
+        "take_pct": str(take_pct),
+    }
+
+    try:
+        r.lpush("claw:signal:queue", json.dumps(payload))
+    except Exception as e:
+        _log("type_b.publish_failed", symbol=symbol, error=str(e))
+        r.delete(tb_cooldown_key)
+        return None
+
+    r.hset(f"claw:signal_pct:{market}:{symbol}", mapping={
+        "stop_pct": str(stop_pct), "take_pct": str(take_pct),
+    })
+    r.expire(f"claw:signal_pct:{market}:{symbol}", 86400)
+
+    _log("type_b.pass.signal_created", symbol=symbol, signal_id=signal_id,
+         change_rate=f"{change_rate*100:.1f}%", confidence=f"{confidence:.2f}",
+         entry=str(current_price), reason=reason[:60])
+    return payload
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -752,6 +934,8 @@ def main():
         f"watchlist_coin={watchlist_coin}",
         flush=True,
     )
+
+    _last_type_b_ts = 0.0  # Type B 마지막 체크 시각
 
     try:
         while True:
@@ -800,6 +984,17 @@ def main():
                     except Exception as e:
                         _log("runner.error.unexpected", market="COIN",
                              symbol=symbol, error=str(e))
+
+                # Type B: 5분마다 추세 탑승 신호 체크
+                if time.time() - _last_type_b_ts >= _TYPE_B_POLL_SEC and regime != "bearish":
+                    today = today_kst()
+                    for symbol in watchlist_coin:
+                        try:
+                            _run_type_b_coin(symbol, r, today)
+                        except Exception as e:
+                            _log("runner.error.type_b", market="COIN",
+                                 symbol=symbol, error=str(e))
+                    _last_type_b_ts = time.time()
 
             time.sleep(_POLL_SEC)
 

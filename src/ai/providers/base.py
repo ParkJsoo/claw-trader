@@ -53,6 +53,38 @@ def parse_decision_response(text: str) -> tuple[bool, str, float, str]:
     return emit, direction, confidence, reason
 
 
+def build_type_b_prompt(symbol: str, change_rate: float, trade_price: float,
+                        high_price: float, ret_5m: float, volume_krw: float) -> str:
+    """Type B (추세 탑승) Claude 프롬프트 — 일간 서서히 오르는 추세 평가."""
+    near_high_pct = (trade_price - high_price) / high_price * 100  # 음수
+    lines = [
+        "You are a cash-only short-term momentum trading signal evaluator.",
+        "Strategy: TREND RIDING — this coin has been gradually rising all day, NOT a flash pump.",
+        "",
+        "Market: COIN (Upbit KRW crypto market, 24/7 trading)",
+        f"Symbol: {symbol}",
+        f"Daily change vs yesterday: {change_rate*100:+.2f}%",
+        f"Current price: {trade_price}",
+        f"Today's high: {high_price}  (current is {near_high_pct:.1f}% from today's high)",
+        f"5-min return right now: {ret_5m*100:+.3f}%",
+        f"24h volume (KRW): {volume_krw/1e8:.0f}억",
+        "",
+        "Context: This coin has been gradually rising all day (slow trend, not a spike).",
+        "Your job: judge if the UPTREND has 2+ more hours of continuation potential.",
+        "Emit LONG if: trend looks sustained, price near high (not exhausted), volume strong,",
+        "and the move has room to continue — not yet overextended.",
+        "Return HOLD if: trend looks exhausted, price has fallen significantly from high,",
+        "volume fading, or the daily move is already too extended to chase.",
+        "",
+        "Hold time: 2-6 hours (Trend Riding). No news catalyst required — judge price action.",
+        "confidence must be between 0.0 and 1.0.",
+        "",
+        "Respond with JSON only (no markdown, no extra text):",
+        '{"emit": true|false, "direction": "LONG|HOLD", "confidence": 0.0-1.0, "reason": "<100 chars"}',
+    ]
+    return "\n".join(lines)
+
+
 class DecisionProvider:
     """판단 Provider 추상 기반 클래스."""
 
