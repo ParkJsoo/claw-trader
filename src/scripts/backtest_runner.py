@@ -86,7 +86,8 @@ def main() -> None:
         sent_key = f"backtest:sent:KR:{today_kst()}"
 
         if (
-            now.hour == _RUN_HOUR
+            now.weekday() < 5  # 평일만 실행 (KR 시장 없는 주말 제외)
+            and now.hour == _RUN_HOUR
             and now.minute == _RUN_MINUTE
             and not r.exists(sent_key)
         ):
