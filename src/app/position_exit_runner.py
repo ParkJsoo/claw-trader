@@ -438,8 +438,10 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _TIME_LIMIT_MAX_SEC
     if held_sec >= _eff_time_limit:
-        # 수익 중이면 time_limit_max까지 연장 (추세 포지션 보호)
-        if mark_price > avg_price and held_sec < _eff_time_limit_max:
+        # stop 절반 이내 손실까지 time_limit_max까지 연장 (추세 포지션 보호)
+        # e.g. stop=4% → -2% 이내 손실도 연장, flat 포지션 조기 청산 방지
+        _extend_floor = avg_price * (1 - _eff_stop / 2)
+        if mark_price >= _extend_floor and held_sec < _eff_time_limit_max:
             pass  # 연장: 아직 exit 조건 아님
         else:
             return f"time_limit(held={held_sec}s>={_eff_time_limit}s)"
