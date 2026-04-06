@@ -64,6 +64,10 @@ _COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", str(_TRAIL_
 _COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT_SEC)))
 _COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_MAX_SEC)))
 
+# 조기 청산: 5분 이상 보유 + pnl < -2.5% → 모멘텀 소멸 판단 (COIN 전용)
+_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "300"))
+_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.025"))
+
 # 설정값 유효성 검증
 if not (Decimal("0") < _STOP_LOSS_PCT < Decimal("1")):
     raise ValueError(f"EXIT_STOP_LOSS_PCT must be 0 < x < 1, got {_STOP_LOSS_PCT}")
@@ -382,7 +386,8 @@ def _get_mark_price(r, market: str, symbol: str):
 
 def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: dict = None, hwm_price: Decimal = None,
                 stop_pct: Decimal = None, take_pct: Decimal = None, trail_pct: Decimal = None,
-                time_limit_sec: int = None, time_limit_max_sec: int = None):
+                time_limit_sec: int = None, time_limit_max_sec: int = None,
+                early_exit_sec: int = None, early_exit_pct: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
@@ -435,6 +440,11 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
     if mark_price >= take_price:
         return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
+    # 조기 청산: N초 이상 보유 + pnl < -X% → 모멘텀 소멸, 자본 회전
+    if early_exit_sec is not None and early_exit_pct is not None:
+        if held_sec >= early_exit_sec and mark_price < avg_price * (1 - early_exit_pct):
+            pnl_pct = float((mark_price - avg_price) / avg_price * 100)
+            return f"early_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _TIME_LIMIT_MAX_SEC
     if held_sec >= _eff_time_limit:
@@ -570,6 +580,8 @@ def _run_market(r, client, market: str) -> None:
     if market == "COIN":
         _mkt_time_limit = _COIN_TIME_LIMIT_SEC
         _mkt_time_limit_max = _COIN_TIME_LIMIT_MAX_SEC
+        _mkt_early_exit_sec = _COIN_EARLY_EXIT_SEC
+        _mkt_early_exit_pct = _COIN_EARLY_EXIT_PCT
         if cfg_take is None:
             cfg_take = _COIN_TAKE_PROFIT_PCT
         if cfg_trail is None:
@@ -579,6 +591,8 @@ def _run_market(r, client, market: str) -> None:
     else:
         _mkt_time_limit = _TIME_LIMIT_SEC
         _mkt_time_limit_max = _TIME_LIMIT_MAX_SEC
+        _mkt_early_exit_sec = None
+        _mkt_early_exit_pct = None
 
     # 가격 quantize 단위: KR=정수, COIN=소수점 8자리, US=소수점 2자리
     if market == "KR":
@@ -638,7 +652,8 @@ def _run_market(r, client, market: str) -> None:
 
         reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price,
                              stop_pct=cfg_stop, take_pct=cfg_take, trail_pct=cfg_trail,
-                             time_limit_sec=_mkt_time_limit, time_limit_max_sec=_mkt_time_limit_max)
+                             time_limit_sec=_mkt_time_limit, time_limit_max_sec=_mkt_time_limit_max,
+                             early_exit_sec=_mkt_early_exit_sec, early_exit_pct=_mkt_early_exit_pct)
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             # H2: opened_ts 호환
@@ -681,6 +696,12 @@ def _run_market(r, client, market: str) -> None:
             r.hset(_ds_key, mapping={"stop_price": str(mark_price), "stop_ts": str(int(time.time()))})
             r.expire(_ds_key, 86400)
             _log("daily_stop_marked", market=market, symbol=symbol, today=today)
+            # stop_loss 당일 횟수 카운트 (2회 이상 시 consensus에서 재진입 완전 차단)
+            _sc_key = f"claw:stop_count:{market}:{symbol}:{today}"
+            stop_count = r.incr(_sc_key)
+            r.expire(_sc_key, 86400)
+            if stop_count >= 2:
+                _log("stop_count_blocked", market=market, symbol=symbol, count=stop_count)
         if ok and "time_limit" in reason:
             # time_limit 청산 후 2시간 쿨다운 (횡보 반복 진입 방지)
             r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=7200)

@@ -32,3 +32,4 @@ urllib3==2.6.3
 uvicorn==0.40.0
 supervisor>=4.3.0
 PyJWT
+websockets>=12.0

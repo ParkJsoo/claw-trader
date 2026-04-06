@@ -54,7 +54,8 @@ def parse_decision_response(text: str) -> tuple[bool, str, float, str]:
 
 
 def build_type_b_prompt(symbol: str, change_rate: float, trade_price: float,
-                        high_price: float, ret_5m: float, volume_krw: float) -> str:
+                        high_price: float, ret_5m: float, volume_krw: float,
+                        ob_ratio: float = None) -> str:
     """Type B (추세 탑승) Claude 프롬프트 — 일간 서서히 오르는 추세 평가."""
     near_high_pct = (trade_price - high_price) / high_price * 100  # 음수
     lines = [
@@ -77,11 +78,15 @@ def build_type_b_prompt(symbol: str, change_rate: float, trade_price: float,
         "volume fading, or the daily move is already too extended to chase.",
         "",
         "Hold time: 2-6 hours (Trend Riding). No news catalyst required — judge price action.",
+    ]
+    if ob_ratio is not None:
+        lines.append(f"Orderbook pressure: {ob_ratio:.2f} (bid/ask ratio — >1.2 strong buy pressure, <0.8 strong sell pressure)")
+    lines.extend([
         "confidence must be between 0.0 and 1.0.",
         "",
         "Respond with JSON only (no markdown, no extra text):",
         '{"emit": true|false, "direction": "LONG|HOLD", "confidence": 0.0-1.0, "reason": "<100 chars"}',
-    ]
+    ])
     return "\n".join(lines)
 
 
@@ -149,6 +154,15 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
         f"5-min return: {fmt(features['ret_5m'])}",
         f"5-min range: {fmt(features['range_5m'])}",
     ]
+
+    # 오더북 데이터 (있으면 추가)
+    ob_ratio = features.get("ob_ratio")
+    if ob_ratio is not None:
+        try:
+            ob_val = float(ob_ratio)
+            lines.append(f"Orderbook pressure: {ob_val:.2f} (bid/ask ratio — >1.2 strong buy pressure, <0.8 strong sell pressure)")
+        except (TypeError, ValueError):
+            pass
 
     if news_summary:
         lines.append("")

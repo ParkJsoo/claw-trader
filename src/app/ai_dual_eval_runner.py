@@ -145,6 +145,15 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
     if news_ctx:
         features["news_summary"] = news_ctx
 
+    # 2-f. 오더북 데이터 추가 (COIN만, ws_exit_monitor가 갱신)
+    if market == "COIN":
+        ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
+        if ob_raw:
+            try:
+                features["ob_ratio"] = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
+            except (TypeError, ValueError):
+                pass
+
     # 3. Claude 평가 (bad news filter)
     c_result = claude.evaluate(market, symbol, features)
     _save_provider(r, "claude", market, symbol, today, c_result, features)

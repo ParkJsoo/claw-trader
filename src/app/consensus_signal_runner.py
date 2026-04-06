@@ -500,6 +500,14 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_symbol_daily_cap")
         return None
 
+    # 2-e. 당일 stop_loss 2회 이상 → 완전 차단 (반복 손절 종목 자본 낭비 방지)
+    stop_count_key = f"claw:stop_count:{market}:{symbol}:{today}"
+    stop_count = int(r.get(stop_count_key) or 0)
+    if stop_count >= 2:
+        _log("runner.reject.stop_count", symbol=symbol, market=market, count=stop_count)
+        _record_reject(r, market, "reject_stop_count")
+        return None
+
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
@@ -764,6 +772,11 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         if not allow_reentry:
             return None
 
+    # 당일 stop_loss 2회 이상 → 완전 차단
+    stop_count_key = f"claw:stop_count:{market}:{symbol}:{today}"
+    if int(r.get(stop_count_key) or 0) >= 2:
+        return None
+
     # Upbit ticker 조회
     client = _get_client(market)
     if client is None:
@@ -809,10 +822,19 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
 
     current_price = Decimal(str(live_price_float))
 
+    # 오더북 데이터 읽기 (ws_exit_monitor가 갱신)
+    _ob_ratio = None
+    ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
+    if ob_raw:
+        try:
+            _ob_ratio = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
+        except (TypeError, ValueError):
+            pass
+
     # Claude 평가 (Type B 전용 프롬프트)
     try:
         from ai.providers.base import build_type_b_prompt, parse_decision_response
-        prompt = build_type_b_prompt(symbol, change_rate, trade_price, high_price, ret_5m, vol_krw)
+        prompt = build_type_b_prompt(symbol, change_rate, trade_price, high_price, ret_5m, vol_krw, ob_ratio=_ob_ratio)
         ai_client = _get_anthropic_client()
         resp = ai_client.messages.create(
             model=os.getenv("AI_MODEL", "claude-haiku-4-5-20251001"),
