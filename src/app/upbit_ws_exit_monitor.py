@@ -59,6 +59,9 @@ _COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", str(_TRAIL_
 _COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT_SEC)))
 _COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_MAX_SEC)))
 
+_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "300"))
+_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.025"))
+
 _FILL_QUEUE_KEY = "claw:fill:queue"
 _FILL_DEDUPE_TTL = 86400
 
@@ -144,7 +147,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
                 pos: dict = None, hwm_price: Decimal = None,
                 stop_pct: Decimal = None, take_pct: Decimal = None,
                 trail_pct: Decimal = None, time_limit_sec: int = None,
-                time_limit_max_sec: int = None):
+                time_limit_max_sec: int = None,
+                early_exit_sec: int = None, early_exit_pct: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열, 없으면 None."""
     if avg_price <= 0 or mark_price <= 0:
         return None
@@ -191,6 +195,10 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
     if mark_price >= take_price:
         return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
+    if early_exit_sec is not None and early_exit_pct is not None:
+        if held_sec >= early_exit_sec and mark_price < avg_price * (1 - early_exit_pct):
+            pnl_pct = float((mark_price - avg_price) / avg_price * 100)
+            return f"early_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
 
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _COIN_TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _COIN_TIME_LIMIT_MAX_SEC
@@ -344,6 +352,7 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
         avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price,
         stop_pct=cfg_stop, take_pct=cfg_take, trail_pct=cfg_trail,
         time_limit_sec=_COIN_TIME_LIMIT_SEC, time_limit_max_sec=_COIN_TIME_LIMIT_MAX_SEC,
+        early_exit_sec=_COIN_EARLY_EXIT_SEC, early_exit_pct=_COIN_EARLY_EXIT_PCT,
     )
     if reason is None:
         return
@@ -363,6 +372,11 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
         r.hset(_ds_key, mapping={"stop_price": str(mark_price), "stop_ts": str(int(time.time()))})
         r.expire(_ds_key, 86400)
         _log("daily_stop_marked", symbol=symbol, today=today)
+        _sc_key = f"claw:stop_count:COIN:{symbol}:{today}"
+        stop_count = r.incr(_sc_key)
+        r.expire(_sc_key, 86400)
+        if stop_count >= 2:
+            _log("stop_count_blocked", symbol=symbol, count=stop_count)
     if ok and "time_limit" in reason:
         r.set(f"consensus:symbol_cooldown:COIN:{symbol}", "1", ex=7200)
         _log("time_limit_cooldown_marked", symbol=symbol, cooldown_sec=7200)

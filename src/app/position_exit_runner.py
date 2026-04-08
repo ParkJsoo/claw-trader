@@ -82,6 +82,10 @@ _ORDER_META_TTL = 86400
 _ibkr_fallback_count = 0
 _IBKR_FALLBACK_MAX = 3
 
+# sync 에러 로그 rate-limit: 동일 market 에러를 5분에 1번만 출력
+_sync_error_last_log: dict[str, float] = {}
+_SYNC_ERROR_LOG_INTERVAL = 300  # 초
+
 
 # ---------------------------------------------------------------------------
 # 로깅
@@ -194,13 +198,18 @@ def _sync_positions(r, client, market: str) -> dict:
     currency = "KRW" if market in ("KR", "COIN") else "USD"
     idx_key = f"position_index:{market}"
 
-    global _ibkr_fallback_count
+    global _ibkr_fallback_count, _sync_error_last_log
     try:
         holdings = _fetch_holdings(client, market)
         if market == "US":
             _ibkr_fallback_count = 0  # 성공 시 리셋
+        _sync_error_last_log.pop(market, None)  # 성공 시 rate-limit 리셋
     except Exception as e:
-        _log("sync_error_fallback_cache", market=market, reason=str(e))
+        now = time.time()
+        last = _sync_error_last_log.get(market, 0)
+        if now - last >= _SYNC_ERROR_LOG_INTERVAL:
+            _log("sync_error_fallback_cache", market=market, reason=str(e))
+            _sync_error_last_log[market] = now
         if market == "US":
             _ibkr_fallback_count += 1
         return _load_cached_positions(r, market)

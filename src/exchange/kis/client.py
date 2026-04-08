@@ -53,6 +53,7 @@ class KisClient(ExchangeClient):
 
         self.session = requests.Session()
         self.access_token: str | None = None
+        self._token_fetched_at: float = 0.0  # Unix timestamp, 토큰 발급 시각
         self._redis: redis.Redis | None = None
         try:
             redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -61,14 +62,19 @@ class KisClient(ExchangeClient):
             pass
 
     def _ensure_token(self):
-        if self.access_token:
+        import time as _time
+        # 22시간 경과 시 선제 갱신 (KIS 토큰 유효기간 24h, Redis TTL 23h)
+        if self.access_token and _time.time() - self._token_fetched_at < 22 * 3600:
             return
-        # Redis 캐시 조회
+        # Redis 캐시 조회 (다른 프로세스가 이미 갱신했을 수 있음)
         if self._redis:
             try:
                 cached = self._redis.get(_REDIS_TOKEN_KEY)
                 if cached:
                     self.access_token = cached
+                    # Redis TTL 기반으로 발급 시각 추정
+                    ttl = self._redis.ttl(_REDIS_TOKEN_KEY)
+                    self._token_fetched_at = _time.time() - (_REDIS_TOKEN_TTL - max(ttl, 0))
                     return
             except Exception:
                 pass
@@ -107,7 +113,9 @@ class KisClient(ExchangeClient):
         data = resp.json()
         if "access_token" not in data:
             raise RuntimeError(f"KIS token refresh: unexpected response rt_cd={data.get('rt_cd')}")
+        import time as _time
         self.access_token = data["access_token"]
+        self._token_fetched_at = _time.time()
 
         # Redis에 캐시 저장
         if self._redis:
@@ -134,13 +142,19 @@ class KisClient(ExchangeClient):
         except Exception as e:
             raise RuntimeError(f"KIS API {method.upper()} request failed: {type(e).__name__}") from None
         if resp.status_code == 401:
+            # 401: 명시적 인증 실패 → 토큰 갱신 후 1회 재시도
             self.access_token = None
+            self._token_fetched_at = 0.0
             if self._redis:
                 try:
                     self._redis.delete(_REDIS_TOKEN_KEY)
                 except Exception:
                     pass
-            self._refresh_token()
+            try:
+                self._refresh_token()
+            except Exception:
+                resp.raise_for_status()
+                return resp
             headers["authorization"] = f"Bearer {self.access_token}"
             try:
                 resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
