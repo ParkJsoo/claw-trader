@@ -58,6 +58,7 @@ _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 # momentum breakout prefilter: 5분 급등 최소 기준
 _MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))       # COIN 2.0% 급등 최소
 _MIN_SURGE_5M_KR = float(os.getenv("MB_MIN_SURGE_5M_KR", "0.030"))  # KR 3.0% (노이즈 필터링)
+_MAX_SURGE_5M = float(os.getenv("MB_MAX_SURGE_5M", "0.035"))       # 5분 급등 상한 (꼭지 매수 방지)
 _MIN_RANGE_5M = float(os.getenv("MB_MIN_RANGE_5M", "0.004"))
 
 # Phase 11: symbol-level cooldown (같은 종목 N초 내 재emit 방지)
@@ -382,7 +383,9 @@ def _get_regime(r, market: str, watchlist: list) -> str:
     if total < 3:
         return "neutral"
     ratio = bearish / total
-    if ratio > 0.6:
+    # bearish threshold 완화: 0.6 → 0.45 (더 빠른 bearish 감지, env로 override 가능)
+    _bearish_thr = float(os.getenv("COIN_REGIME_BEARISH_THRESHOLD", "0.45"))
+    if ratio > _bearish_thr:
         return "bearish"
     if ratio < _BULLISH_THRESHOLD:
         return "bullish"
@@ -569,6 +572,12 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if ret_5m <= surge_threshold:
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
+        return None
+
+    # 꼭지 매수 차단: 이미 너무 많이 오른 경우 후발 진입 방지 (Type A Flash Surge 전용)
+    if ret_5m >= _MAX_SURGE_5M:
+        _log("runner.reject.prefilter_ret_5m_overextended", symbol=symbol, ret_5m=ret_5m)
+        _record_reject(r, market, "reject_prefilter_ret_5m_overextended")
         return None
 
     if range_5m <= _MIN_RANGE_5M:

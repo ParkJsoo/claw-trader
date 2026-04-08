@@ -59,8 +59,12 @@ _COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", str(_TRAIL_
 _COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT_SEC)))
 _COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_MAX_SEC)))
 
-_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "300"))
+_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "900"))
 _COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.025"))
+
+# 2단계 trailing stop (position_exit_runner와 동기)
+_COIN_TRAIL_STOP_TIGHT_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_TIGHT_PCT", "0.030"))
+_COIN_TRAIL_TIGHT_TRIGGER = Decimal(os.getenv("COIN_EXIT_TRAIL_TIGHT_TRIGGER", "0.050"))
 
 _FILL_QUEUE_KEY = "claw:fill:queue"
 _FILL_DEDUPE_TTL = 86400
@@ -148,7 +152,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
                 stop_pct: Decimal = None, take_pct: Decimal = None,
                 trail_pct: Decimal = None, time_limit_sec: int = None,
                 time_limit_max_sec: int = None,
-                early_exit_sec: int = None, early_exit_pct: Decimal = None):
+                early_exit_sec: int = None, early_exit_pct: Decimal = None,
+                trail_tight_pct: Decimal = None, trail_tight_trigger: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열, 없으면 None."""
     if avg_price <= 0 or mark_price <= 0:
         return None
@@ -179,8 +184,14 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
     stop_price = avg_price * (1 - _eff_stop)
 
     # Trailing stop: HWM에서 trail_pct 이상 하락하면 청산
+    # 2단계 tight trail: HWM이 +trigger% 이상 찍었으면 더 tight한 trail 적용
     if hwm_price is not None and hwm_price > avg_price:
-        trail_stop = hwm_price * (1 - _eff_trail)
+        if (trail_tight_pct is not None and trail_tight_trigger is not None
+                and hwm_price >= avg_price * (Decimal("1") + trail_tight_trigger)):
+            effective_trail = trail_tight_pct
+        else:
+            effective_trail = _eff_trail
+        trail_stop = hwm_price * (1 - effective_trail)
         stop_price = max(stop_price, trail_stop)
 
     take_price = avg_price * (1 + _eff_take)
@@ -203,8 +214,10 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _COIN_TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _COIN_TIME_LIMIT_MAX_SEC
     if held_sec >= _eff_time_limit:
-        _extend_floor = avg_price * (1 - _eff_stop / 2)
-        if mark_price >= _extend_floor and held_sec < _eff_time_limit_max:
+        # 한 번이라도 수익권 찍은 포지션만 연장 (HWM > avg)
+        # flat/손실 포지션은 곧바로 청산 → 죽은 포지션 장시간 홀딩 방지
+        if (hwm_price is not None and hwm_price > avg_price
+                and held_sec < _eff_time_limit_max):
             pass
         else:
             return f"time_limit(held={held_sec}s>={_eff_time_limit}s)"
@@ -353,6 +366,8 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
         stop_pct=cfg_stop, take_pct=cfg_take, trail_pct=cfg_trail,
         time_limit_sec=_COIN_TIME_LIMIT_SEC, time_limit_max_sec=_COIN_TIME_LIMIT_MAX_SEC,
         early_exit_sec=_COIN_EARLY_EXIT_SEC, early_exit_pct=_COIN_EARLY_EXIT_PCT,
+        trail_tight_pct=_COIN_TRAIL_STOP_TIGHT_PCT,
+        trail_tight_trigger=_COIN_TRAIL_TIGHT_TRIGGER,
     )
     if reason is None:
         return
