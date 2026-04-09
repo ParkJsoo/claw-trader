@@ -63,9 +63,12 @@ def _run_once(r, today: str, kr_watchlist: list[str], us_watchlist: list[str]) -
 
     # 2. Qwen 분류
     if _QWEN_CLASSIFY:
+        t_classify = time.time()
+        print(f"news: classify_start items={len(items)}", flush=True)
         items = classify_batch(items, enabled=True)
+        classify_elapsed = time.time() - t_classify
         classified = sum(1 for i in items if i.classified)
-        print(f"news: classified={classified}/{len(items)}", flush=True)
+        print(f"news: classified={classified}/{len(items)} classify_elapsed={classify_elapsed:.1f}s", flush=True)
     else:
         print("news: qwen_classify=off, skipping classification", flush=True)
 
