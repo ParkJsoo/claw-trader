@@ -1,7 +1,9 @@
-# 환경변수 (절대 커밋 금지)
+# 환경변수 및 시크릿 (절대 커밋 금지)
 .env
 .env.local
 .env.*.local
+config/redis.conf
+config/supervisord.conf
 
 # Python
 __pycache__/

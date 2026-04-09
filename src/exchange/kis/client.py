@@ -56,8 +56,9 @@ class KisClient(ExchangeClient):
         self._token_fetched_at: float = 0.0  # Unix timestamp, 토큰 발급 시각
         self._redis: redis.Redis | None = None
         try:
-            redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-            self._redis = redis.from_url(redis_url, decode_responses=True)
+            redis_url = os.getenv("REDIS_URL")
+            if redis_url:
+                self._redis = redis.from_url(redis_url, decode_responses=True)
         except Exception:
             pass
 

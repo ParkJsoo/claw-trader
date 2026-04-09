@@ -31,8 +31,9 @@ class KisFeed:
         self.access_token: Optional[str] = None
         self._redis: Optional[_redis.Redis] = None
         try:
-            redis_url = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-            self._redis = _redis.from_url(redis_url, decode_responses=True)
+            redis_url = os.getenv("REDIS_URL")
+            if redis_url:
+                self._redis = _redis.from_url(redis_url, decode_responses=True)
         except Exception:
             pass
 
