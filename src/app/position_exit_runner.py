@@ -371,6 +371,8 @@ def _sync_positions(r, client, market: str) -> dict:
             pipe.expire(f"position:{market}:{sym}", 60)
             pipe.srem(idx_key, sym)
             pipe.delete(f"claw:trail_hwm:{market}:{sym}")
+            pipe.delete(f"claw:exit_order:{market}:{sym}")
+            pipe.delete(f"claw:exit_lock:{market}:{sym}")
             pipe.execute()
             _log("position_removed", market=market, symbol=sym,
                  reason="not_in_holdings")
@@ -763,6 +765,31 @@ def run_once(r, kis: KisClient, ibkr: IbkrClient = None, upbit: UpbitClient = No
 
 
 # ---------------------------------------------------------------------------
+# 시작 시 Redis 잔재 정리
+# ---------------------------------------------------------------------------
+
+def _startup_cleanup(r) -> None:
+    """기동 시 포지션 없는 잔재 키 일괄 삭제. 재발 방지."""
+    open_pos = set()
+    for mkt in ("KR", "COIN", "US"):
+        for s in r.smembers(f"position_index:{mkt}"):
+            sym = s.decode() if isinstance(s, bytes) else s
+            open_pos.add(f"{mkt}:{sym}")
+
+    patterns = ("claw:exit_order:*", "claw:trail_hwm:*", "claw:exit_lock:*")
+    deleted = 0
+    for pattern in patterns:
+        for key in r.scan_iter(pattern):
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            if len(parts) >= 4 and f"{parts[2]}:{parts[3]}" not in open_pos:
+                r.delete(key)
+                deleted += 1
+    if deleted:
+        print(f"exit_runner: startup_cleanup deleted={deleted} stale keys", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -783,6 +810,8 @@ def main():
         print("exit_runner: SIGTERM received, lock released", flush=True)
         sys.exit(0)
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
+    _startup_cleanup(r)
 
     kis = KisClient()
 

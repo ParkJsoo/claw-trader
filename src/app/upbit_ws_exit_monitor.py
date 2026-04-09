@@ -387,6 +387,10 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
          avg=str(avg_price), mark=str(mark_price), qty=str(qty))
 
     ok = _place_sell(r, upbit, symbol, qty, mark_price, reason)
+    if ok:
+        # 매도 성공 즉시 잔재 키 정리 (position_removed 타이밍 의존 제거)
+        r.delete(f"claw:trail_hwm:COIN:{symbol}")
+        r.delete(f"claw:exit_order:COIN:{symbol}")
     if ok and "stop_loss" in reason:
         today = today_kst()
         _ds_key = f"claw:daily_stop:COIN:{symbol}:{today}"
@@ -573,6 +577,30 @@ async def _ws_loop(r, upbit: UpbitClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 시작 시 Redis 잔재 정리
+# ---------------------------------------------------------------------------
+
+def _startup_cleanup(r) -> None:
+    """기동 시 포지션 없는 COIN 잔재 키 일괄 삭제. 재발 방지."""
+    open_pos = set()
+    for s in r.smembers("position_index:COIN"):
+        sym = s.decode() if isinstance(s, bytes) else s
+        open_pos.add(sym)
+
+    patterns = ("claw:exit_order:COIN:*", "claw:trail_hwm:COIN:*", "claw:exit_lock:COIN:*")
+    deleted = 0
+    for pattern in patterns:
+        for key in r.scan_iter(pattern):
+            k = key.decode() if isinstance(key, bytes) else key
+            sym = k.split(":", 3)[-1]
+            if sym not in open_pos:
+                r.delete(key)
+                deleted += 1
+    if deleted:
+        print(f"ws_exit: startup_cleanup deleted={deleted} stale keys", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -597,6 +625,8 @@ def main():
         print("ws_exit: SIGTERM received, lock released", flush=True)
         sys.exit(0)
     _signal.signal(_signal.SIGTERM, _handle_sigterm)
+
+    _startup_cleanup(r)
 
     upbit = UpbitClient()
 
