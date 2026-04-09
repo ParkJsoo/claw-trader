@@ -579,6 +579,10 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
 
     # momentum breakout: 지금 이 순간에도 5분 상승폭이 충분해야 함
     surge_threshold = _MIN_SURGE_5M_KR if market == "KR" else _MIN_SURGE_5M
+    # 뉴스 boost: KR positive+high 뉴스 있으면 surge 하한선 30% 완화
+    if market == "KR" and _get_news_score(r, market, symbol) == "high":
+        surge_threshold = surge_threshold * 0.7
+        _log("runner.news_surge_relaxed", symbol=symbol, threshold=f"{surge_threshold:.3f}")
     if ret_5m <= surge_threshold:
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
@@ -663,6 +667,13 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         size_cash = max(base_size * conf_mult, current_price)
     _log("size_cash_weighted", symbol=symbol, conf=f"{c_conf:.2f}",
          mult=str(conf_mult), size_cash=str(size_cash))
+
+    # KR positive+high 뉴스: size_cash 1.5배 boost
+    if market == "KR":
+        news_score = _get_news_score(r, market, symbol)
+        if news_score == "high":
+            size_cash = size_cash * Decimal("1.5")
+            _log("runner.news_size_boost", symbol=symbol, news_score=news_score, size_cash=str(size_cash))
 
     try:
         signal = Signal(

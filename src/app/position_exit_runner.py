@@ -72,6 +72,9 @@ _COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.010"))
 _COIN_TRAIL_STOP_TIGHT_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_TIGHT_PCT", "0.030"))
 _COIN_TRAIL_TIGHT_TRIGGER = Decimal(os.getenv("COIN_EXIT_TRAIL_TIGHT_TRIGGER", "0.050"))
 
+# KR Trail-Only Mode: 지정 수익률 달성 시 take_profit 비활성화, trailing stop만으로 청산
+_KR_TRAIL_ONLY_TRIGGER_PCT = Decimal(os.getenv("KR_TRAIL_ONLY_TRIGGER_PCT", "0.030"))
+
 # 설정값 유효성 검증
 if not (Decimal("0") < _STOP_LOSS_PCT < Decimal("1")):
     raise ValueError(f"EXIT_STOP_LOSS_PCT must be 0 < x < 1, got {_STOP_LOSS_PCT}")
@@ -403,7 +406,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
                 stop_pct: Decimal = None, take_pct: Decimal = None, trail_pct: Decimal = None,
                 time_limit_sec: int = None, time_limit_max_sec: int = None,
                 early_exit_sec: int = None, early_exit_pct: Decimal = None,
-                trail_tight_pct: Decimal = None, trail_tight_trigger: Decimal = None):
+                trail_tight_pct: Decimal = None, trail_tight_trigger: Decimal = None,
+                trail_only_trigger: Decimal = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
@@ -460,7 +464,10 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
 
     if mark_price <= stop_price:
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
-    if mark_price >= take_price:
+    # Trail-only mode: 지정 수익률 달성 시 take_profit 비활성화, trailing stop만 유지
+    _in_trail_only = (trail_only_trigger is not None
+                      and (mark_price - avg_price) / avg_price >= trail_only_trigger)
+    if not _in_trail_only and mark_price >= take_price:
         return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
     # 조기 청산: N초 이상 보유 + pnl < -X% → 모멘텀 소멸, 자본 회전
     if early_exit_sec is not None and early_exit_pct is not None:
@@ -478,8 +485,9 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
     if held_sec >= _eff_time_limit:
         # 한 번이라도 수익권 찍은 포지션만 time_limit_max까지 연장 (HWM > avg)
         # flat/손실 포지션은 곧바로 청산 → 죽은 포지션 4시간 홀딩 방지
+        # trail-only mode: 수익권 찍은 포지션은 time_limit_max 이후에도 계속 연장
         if (hwm_price is not None and hwm_price > avg_price
-                and held_sec < _eff_time_limit_max):
+                and (_in_trail_only or held_sec < _eff_time_limit_max)):
             pass  # 연장: 수익권 찍은 추세 포지션 보호
         else:
             return f"time_limit(held={held_sec}s>={_eff_time_limit}s)"
@@ -687,7 +695,8 @@ def _run_market(r, client, market: str) -> None:
                              time_limit_sec=_mkt_time_limit, time_limit_max_sec=_mkt_time_limit_max,
                              early_exit_sec=_mkt_early_exit_sec, early_exit_pct=_mkt_early_exit_pct,
                              trail_tight_pct=_mkt_trail_tight_pct,
-                             trail_tight_trigger=_mkt_trail_tight_trigger)
+                             trail_tight_trigger=_mkt_trail_tight_trigger,
+                             trail_only_trigger=_KR_TRAIL_ONLY_TRIGGER_PCT if market == "KR" else None)
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             # H2: opened_ts 호환
