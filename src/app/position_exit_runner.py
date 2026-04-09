@@ -65,8 +65,8 @@ _COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT
 _COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_MAX_SEC)))
 
 # 조기 청산: 15분 이상 보유 + pnl < -2.5% → 초기 변동성 흡수 후 모멘텀 소멸 판단 (COIN 전용)
-_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "900"))
-_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.025"))
+_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "600"))
+_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.010"))
 
 # 2단계 trailing stop: +5% 달성 후 tight trail 적용 (빅무버 이익 보호)
 _COIN_TRAIL_STOP_TIGHT_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_TIGHT_PCT", "0.030"))
@@ -465,6 +465,12 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
         if held_sec >= early_exit_sec and mark_price < avg_price * (1 - early_exit_pct):
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             return f"early_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
+    # 횡보 청산: 20분 이상 보유 + |pnl| < 0.5% + 수익권 미진입 → 자본 회전
+    if (held_sec >= 1200
+            and abs(mark_price - avg_price) < avg_price * Decimal("0.005")
+            and (hwm_price is None or hwm_price < avg_price * Decimal("1.01"))):
+        pnl_pct = float((mark_price - avg_price) / avg_price * 100)
+        return f"stagnant_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _TIME_LIMIT_MAX_SEC
     if held_sec >= _eff_time_limit:
@@ -728,8 +734,14 @@ def _run_market(r, client, market: str) -> None:
             r.expire(_sc_key, 86400)
             if stop_count >= 2:
                 _log("stop_count_blocked", market=market, symbol=symbol, count=stop_count)
-        if ok and "time_limit" in reason:
-            # time_limit 청산 후 2시간 쿨다운 (횡보 반복 진입 방지)
+        if ok and ("early_exit" in reason or "stagnant_exit" in reason):
+            # 손실성/횡보 청산 → 재진입 횟수 카운트
+            _sc_today = today_kst()
+            _sc_key = f"claw:stop_count:{market}:{symbol}:{_sc_today}"
+            r.incr(_sc_key)
+            r.expire(_sc_key, 86400)
+        if ok and ("time_limit" in reason or "stagnant_exit" in reason):
+            # 횡보/시간만료 청산 후 2시간 쿨다운 (반복 진입 방지)
             r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=7200)
             _log("time_limit_cooldown_marked", market=market, symbol=symbol, cooldown_sec=7200)
         if ok and "take_profit" in reason:

@@ -210,6 +210,12 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
         if held_sec >= early_exit_sec and mark_price < avg_price * (1 - early_exit_pct):
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             return f"early_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
+    # 횡보 청산: 20분 이상 보유 + |pnl| < 0.5% + 수익권 미진입 → 자본 회전
+    if (held_sec >= 1200
+            and abs(mark_price - avg_price) < avg_price * Decimal("0.005")
+            and (hwm_price is None or hwm_price < avg_price * Decimal("1.01"))):
+        pnl_pct = float((mark_price - avg_price) / avg_price * 100)
+        return f"stagnant_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
 
     _eff_time_limit = time_limit_sec if time_limit_sec is not None else _COIN_TIME_LIMIT_SEC
     _eff_time_limit_max = time_limit_max_sec if time_limit_max_sec is not None else _COIN_TIME_LIMIT_MAX_SEC
@@ -392,7 +398,12 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
         r.expire(_sc_key, 86400)
         if stop_count >= 2:
             _log("stop_count_blocked", symbol=symbol, count=stop_count)
-    if ok and "time_limit" in reason:
+    if ok and ("early_exit" in reason or "stagnant_exit" in reason):
+        _sc_today = today_kst()
+        _sc_key = f"claw:stop_count:COIN:{symbol}:{_sc_today}"
+        r.incr(_sc_key)
+        r.expire(_sc_key, 86400)
+    if ok and ("time_limit" in reason or "stagnant_exit" in reason):
         r.set(f"consensus:symbol_cooldown:COIN:{symbol}", "1", ex=7200)
         _log("time_limit_cooldown_marked", symbol=symbol, cooldown_sec=7200)
     if ok and "take_profit" in reason:

@@ -494,9 +494,9 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
             _record_reject(r, market, "reject_daily_stop")
             return None
 
-    # 2-d. 종목별 일일 진입 상한 (max 3회)
+    # 2-d. 종목별 일일 진입 상한 (max 2회, Type A/B 공유 카운터)
     symbol_daily_key = f"consensus:symbol_daily:{market}:{symbol}:{today}"
-    _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "3"))
+    _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "2"))
     symbol_count = int(r.get(symbol_daily_key) or 0)
     if symbol_count >= _symbol_daily_cap:
         _log("runner.reject.symbol_daily_cap", symbol=symbol, market=market, count=symbol_count)
@@ -510,6 +510,16 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _log("runner.reject.stop_count", symbol=symbol, market=market, count=stop_count)
         _record_reject(r, market, "reject_stop_count")
         return None
+
+    # 2-f. COIN Type A: 유동성 게이트 (24h 거래대금 하한) — 소형 알트코인 노이즈 필터
+    if market == "COIN":
+        _type_a_min_vol = float(os.getenv("TYPE_A_MIN_VOL_KRW", "30000000000"))  # 기본 300억
+        vol_raw = r.get(f"vol:COIN:{symbol}:{today}")
+        vol_24h = float(vol_raw.decode() if isinstance(vol_raw, bytes) else vol_raw) if vol_raw else 0.0
+        if vol_24h < _type_a_min_vol:
+            _log("runner.reject.low_vol_24h", symbol=symbol, vol_24h=f"{vol_24h/1e8:.0f}억")
+            _record_reject(r, market, "reject_low_vol_24h")
+            return None
 
     # 3. 데이터 무결성: features_json 파싱
     try:
@@ -786,6 +796,13 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if int(r.get(stop_count_key) or 0) >= 2:
         return None
 
+    # 종목별 일일 진입 상한 (Type A와 공유 카운터)
+    symbol_daily_key = f"consensus:symbol_daily:{market}:{symbol}:{today}"
+    _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "2"))
+    if int(r.get(symbol_daily_key) or 0) >= _symbol_daily_cap:
+        _log("type_b.reject.symbol_daily_cap", symbol=symbol)
+        return None
+
     # Upbit ticker 조회
     client = _get_client(market)
     if client is None:
@@ -913,6 +930,10 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         _log("type_b.publish_failed", symbol=symbol, error=str(e))
         r.delete(tb_cooldown_key)
         return None
+
+    # 종목별 일일 진입 카운터 증가 (Type A와 공유)
+    r.incr(symbol_daily_key)
+    r.expire(symbol_daily_key, 86400)
 
     r.hset(f"claw:signal_pct:{market}:{symbol}", mapping={
         "stop_pct": str(stop_pct), "take_pct": str(take_pct),
