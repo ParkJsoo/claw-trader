@@ -17,6 +17,8 @@ from domain.models import (
 
 _REDIS_TOKEN_KEY = "kis:access_token"
 _REDIS_TOKEN_TTL = 23 * 3600  # 23시간 (KIS 토큰 유효기간 24시간)
+_REDIS_TOKEN_BLOCKED_KEY = "kis:token_refresh_blocked"
+_REDIS_TOKEN_BLOCKED_TTL = 3600  # 403 발생 시 1시간 재시도 차단
 
 
 def _kr_tick_size(price: int) -> int:
@@ -79,6 +81,15 @@ class KisClient(ExchangeClient):
                     return
             except Exception:
                 pass
+            # 403 rate limit 쿨다운 중이면 재시도 차단
+            try:
+                blocked_ttl = self._redis.ttl(_REDIS_TOKEN_BLOCKED_KEY)
+                if blocked_ttl > 0:
+                    raise RuntimeError(f"KIS token refresh blocked (rate limited, retry in {blocked_ttl}s)")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
         self._refresh_token()
 
     def _refresh_token(self):
@@ -102,6 +113,11 @@ class KisClient(ExchangeClient):
                         if cached:
                             self.access_token = cached.decode() if isinstance(cached, bytes) else cached
                             return
+                    except Exception:
+                        pass
+                    # 재조회도 실패 → 1시간 쿨다운 등록 (30초마다 무한 재시도 방지)
+                    try:
+                        self._redis.set(_REDIS_TOKEN_BLOCKED_KEY, "1", ex=_REDIS_TOKEN_BLOCKED_TTL, nx=True)
                     except Exception:
                         pass
                 raise RuntimeError("KIS token refresh failed: 403 Forbidden (rate limited)")
