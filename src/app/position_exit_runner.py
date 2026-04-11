@@ -32,8 +32,19 @@ import signal as _signal
 import sys
 import time
 import uuid
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+
+# 모든 print에 타임스탬프 자동 prefix
+import builtins as _builtins
+_orig_print = _builtins.print
+def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
+    _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args and isinstance(args[0], str):
+        _orig_print(f"[{_ts}] {args[0]}", *args[1:], sep=sep, end=end, file=file, flush=flush)
+    else:
+        _orig_print(f"[{_ts}]", *args, sep=sep, end=end, file=file, flush=flush)
 
 import redis
 

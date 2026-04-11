@@ -38,6 +38,20 @@ from utils.redis_helpers import secs_until_kst_midnight as _secs_until_kst_midni
 # ---------------------------------------------------------------------------
 _KST = ZoneInfo("Asia/Seoul")
 _POLL_INTERVAL_SEC = float(os.getenv("OPENCLAW_POLL_SEC", "3"))
+
+# 모든 print에 타임스탬프 자동 prefix
+import builtins as _builtins
+_orig_print = _builtins.print
+def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
+    _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args and isinstance(args[0], str):
+        _orig_print(f"[{_ts}] {args[0]}", *args[1:], sep=sep, end=end, file=file, flush=flush)
+    else:
+        _orig_print(f"[{_ts}]", *args, sep=sep, end=end, file=file, flush=flush)
+
+
+class _TgNetworkError(RuntimeError):
+    """일시적 네트워크 에러 — backoff 증가 없이 재시도."""
 _POLL_BACKOFF_MAX_SEC = 60.0
 _BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
 _ALLOWED_CHAT_ID = os.getenv("TG_ALLOWED_CHAT_ID", "")
@@ -88,6 +102,9 @@ def _tg_request(method: str, payload: dict, timeout: int = 10) -> dict | None:
     except urllib.error.HTTPError as e:
         print(f"openclaw: tg_http_error {method} status={e.code}", flush=True)
         return None
+    except (urllib.error.URLError, ConnectionResetError, OSError):
+        # 일시적 네트워크 에러 — 조용히 None 반환 (_get_updates가 _TgNetworkError로 변환)
+        return None
     except Exception as e:
         print(f"openclaw: tg_error {method} {e}", flush=True)
         return None
@@ -100,11 +117,11 @@ def _send_message(chat_id: str | int, text: str) -> None:
 def _get_updates(offset: int) -> list[dict]:
     result = _tg_request(
         "getUpdates",
-        {"offset": offset, "timeout": 25, "limit": 10},
-        timeout=30,
+        {"offset": offset, "timeout": 10, "limit": 10},
+        timeout=15,
     )
     if result is None:
-        raise RuntimeError("getUpdates network error")
+        raise _TgNetworkError("getUpdates network error")
     if result.get("ok"):
         return result.get("result", [])
     return []
@@ -625,6 +642,9 @@ def main():
                         print(f"openclaw: dispatch_error {e}", flush=True)
                         _send_message(chat_id, "Internal error. Check logs.")
 
+            except _TgNetworkError:
+                # 일시적 네트워크 에러(Connection reset 등) — backoff 증가 없이 재시도
+                pass
             except Exception as e:
                 print(f"openclaw: poll_error {e}", flush=True)
                 backoff = min(backoff * 2, _POLL_BACKOFF_MAX_SEC)

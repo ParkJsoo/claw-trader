@@ -27,7 +27,18 @@ import websockets
 from exchange.upbit.client import UpbitClient
 from domain.models import PlaceOrderRequest, OrderSide, OrderType, OrderStatus
 from utils.redis_helpers import is_market_hours, today_kst
+from datetime import datetime
 from guards.notifier import send_telegram
+
+# 모든 print에 타임스탬프 자동 prefix
+import builtins as _builtins
+_orig_print = _builtins.print
+def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
+    _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args and isinstance(args[0], str):
+        _orig_print(f"[{_ts}] {args[0]}", *args[1:], sep=sep, end=end, file=file, flush=flush)
+    else:
+        _orig_print(f"[{_ts}]", *args, sep=sep, end=end, file=file, flush=flush)
 
 # ---------------------------------------------------------------------------
 # 상수

@@ -13,6 +13,16 @@ from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
 
+# 모든 print에 타임스탬프 자동 prefix
+import builtins as _builtins
+_orig_print = _builtins.print
+def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
+    _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args and isinstance(args[0], str):
+        _orig_print(f"[{_ts}] {args[0]}", *args[1:], sep=sep, end=end, file=file, flush=flush)
+    else:
+        _orig_print(f"[{_ts}]", *args, sep=sep, end=end, file=file, flush=flush)
+
 # 재시작 시 큐에 남은 오래된 신호 skip (기본 5분)
 _SIGNAL_MAX_AGE_SEC = int(os.getenv("SIGNAL_MAX_AGE_SEC", "300"))
 

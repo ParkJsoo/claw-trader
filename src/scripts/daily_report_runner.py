@@ -24,6 +24,16 @@ from utils.redis_helpers import today_kst, get_config
 
 _KST = ZoneInfo("Asia/Seoul")
 _POLL_SEC = 60  # 1분마다 체크
+
+# 모든 print에 타임스탬프 자동 prefix
+import builtins as _builtins
+_orig_print = _builtins.print
+def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
+    _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    if args and isinstance(args[0], str):
+        _orig_print(f"[{_ts}] {args[0]}", *args[1:], sep=sep, end=end, file=file, flush=flush)
+    else:
+        _orig_print(f"[{_ts}]", *args, sep=sep, end=end, file=file, flush=flush)
 _KR_REPORT_HOUR = 15
 _KR_REPORT_MIN = 40
 _REPORT_DONE_TTL = 20 * 3600  # 당일 중복 발송 방지
