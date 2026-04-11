@@ -355,9 +355,11 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
     hwm_key = f"claw:trail_hwm:COIN:{symbol}"
     hwm_raw = r.get(hwm_key)
     try:
-        prev_hwm = Decimal(hwm_raw.decode()) if hwm_raw else mark_price
+        # Redis HWM 없으면 avg_price로 초기화 (mark_price 기준으로 하면 매수 직후 하락 시
+        # HWM < avg_price가 되어 trailing stop이 static stop보다 낮게 계산될 수 있음)
+        prev_hwm = Decimal(hwm_raw.decode()) if hwm_raw else avg_price
     except Exception:
-        prev_hwm = mark_price
+        prev_hwm = avg_price
     hwm_price = max(prev_hwm, mark_price)
     r.set(hwm_key, str(hwm_price), ex=_POSITION_TTL)
 
