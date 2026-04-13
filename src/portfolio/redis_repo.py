@@ -117,6 +117,8 @@ class RedisPositionRepository:
             self.r.srem(idx_key, symbol)
             return
 
+        is_new_position = not self.r.exists(key)
+
         now_ms = str(int(time.time() * 1000))
         self.r.hset(
             key,
@@ -132,6 +134,13 @@ class RedisPositionRepository:
         self.r.expire(key, self.POSITION_TTL)
         self.r.sadd(idx_key, symbol)
         self.r.expire(idx_key, self.POSITION_TTL)
+
+        # 신규 포지션 오픈 시 HWM을 avg_price로 초기화
+        # 이전 포지션의 HWM 잔재가 trailing stop 계산에 영향 미치는 것 방지
+        # (재진입 시 stop이 avg_price보다 높게 설정되어 즉시 stop_loss 발동하는 버그 차단)
+        if is_new_position:
+            hwm_key = f"claw:trail_hwm:{market}:{symbol}"
+            self.r.set(hwm_key, str(avg_price), ex=self.POSITION_TTL)
 
     def get_all_positions(self, market: str) -> list[PositionState]:
         idx_key = self._position_index_key(market)
