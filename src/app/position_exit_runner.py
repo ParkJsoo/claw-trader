@@ -100,6 +100,8 @@ _ORDER_META_TTL = 86400
 _ibkr_fallback_count = 0
 _IBKR_FALLBACK_MAX = 3
 
+_last_orphan_scan: dict[str, float] = {}  # market → last scan timestamp (60s throttle)
+
 # sync 에러 로그 rate-limit: 동일 market 에러를 5분에 1번만 출력
 _sync_error_last_log: dict[str, float] = {}
 _SYNC_ERROR_LOG_INTERVAL = 300  # 초
@@ -598,6 +600,18 @@ def _run_market(r, client, market: str) -> None:
         return
 
     positions = _sync_positions(r, client, market)
+
+    # orphan trail_hwm 정리: position_index에 없는 심볼의 HWM 키 삭제 (60s throttle)
+    now = time.time()
+    if now - _last_orphan_scan.get(market, 0) >= 60:
+        _last_orphan_scan[market] = now
+        for key in r.scan_iter(f"claw:trail_hwm:{market}:*"):
+            k = key.decode() if isinstance(key, bytes) else key
+            sym = k.split(":")[-1]
+            if sym not in positions:
+                r.delete(key)
+                _log("orphan_hwm_cleaned", market=market, symbol=sym)
+
     if not positions:
         return
 
