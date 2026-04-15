@@ -123,19 +123,38 @@ def classify_item(item: NewsItem) -> NewsItem:
 
 
 def classify_batch(items: list[NewsItem], enabled: bool = True) -> list[NewsItem]:
-    """뉴스 목록 병렬 분류. enabled=False면 분류 건너뜀."""
+    """뉴스 목록 병렬 분류. enabled=False면 분류 건너뜀.
+
+    이미 classified=True인 아이템(IFE 등 사전 분류)은 Qwen 전달 없이 통과.
+    """
     if not enabled or not items:
         return items
 
-    results: list[NewsItem] = [None] * len(items)  # type: ignore[list-item]
+    already = [i for i in items if getattr(i, "classified", False)]
+    to_classify = [i for i in items if not getattr(i, "classified", False)]
+
+    logger.info(
+        "news: classify_start items=%d to_classify=%d",
+        len(items),
+        len(to_classify),
+    )
+    print(
+        f"news: classify_start items={len(items)} to_classify={len(to_classify)}",
+        flush=True,
+    )
+
+    if not to_classify:
+        return items
+
+    classified_results: list[NewsItem] = [None] * len(to_classify)  # type: ignore[list-item]
     with ThreadPoolExecutor(max_workers=_CLASSIFY_WORKERS) as executor:
-        future_to_idx = {executor.submit(classify_item, item): idx for idx, item in enumerate(items)}
+        future_to_idx = {executor.submit(classify_item, item): idx for idx, item in enumerate(to_classify)}
         for future in as_completed(future_to_idx):
             idx = future_to_idx[future]
             try:
-                results[idx] = future.result()
+                classified_results[idx] = future.result()
             except Exception as e:
                 logger.warning("classify_batch worker error idx=%d: %s", idx, e)
-                results[idx] = items[idx]  # 원본 유지
+                classified_results[idx] = to_classify[idx]  # 원본 유지
 
-    return results
+    return already + classified_results

@@ -106,6 +106,53 @@ def write_batch(r, items: list[NewsItem], today: str) -> tuple[int, int]:
     return saved, skipped
 
 
+_IFE_REPORT_TTL = 3 * 86400   # 3일
+_IFE_REPORT_MAX = 20
+
+
+def write_ife_report(r, symbol: str, report: dict, today: str) -> None:
+    """IFE 브로커 리포트를 Redis에 저장.
+
+    키: news:ife:report:{symbol}:{today}
+    LPUSH + LTRIM 20 + EXPIRE 3일
+    """
+    try:
+        import json as _json
+        key = f"news:ife:report:{symbol}:{today}"
+        payload = _json.dumps(report)
+        r.lpush(key, payload)
+        r.ltrim(key, 0, _IFE_REPORT_MAX - 1)
+        r.expire(key, _IFE_REPORT_TTL)
+    except Exception as e:
+        logger.debug("write_ife_report error symbol=%r: %s", symbol, e)
+
+
+def get_ife_report_context(r, symbol: str, today: str, max_items: int = 3) -> str:
+    """Claude 프롬프트용 IFE 브로커 리포트 컨텍스트 반환.
+
+    형식: "[REPORT][{broker}][{rating}] TP={target_price}"
+    오류 시 빈 문자열 반환.
+    """
+    try:
+        import json as _json
+        key = f"news:ife:report:{symbol}:{today}"
+        raw_items = r.lrange(key, 0, max_items - 1)
+        lines: list[str] = []
+        for raw in raw_items:
+            try:
+                d = _json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                broker = d.get("broker", "알수없음")
+                rating = d.get("rating", "")
+                target = d.get("target_price", "")
+                lines.append(f"[REPORT][{broker}][{rating}] TP={target}")
+            except Exception as e:
+                logger.debug("get_ife_report_context parse error: %s", e)
+        return "\n".join(lines)
+    except Exception as e:
+        logger.debug("get_ife_report_context error symbol=%r: %s", symbol, e)
+        return ""
+
+
 def get_symbol_context(r, market: str, symbol: str, today: str, max_items: int = 5) -> str:
     """Claude 프롬프트용 종목별 뉴스 컨텍스트 문자열 반환."""
     sym_key = f"news:symbol:{market}:{symbol}:{today}"

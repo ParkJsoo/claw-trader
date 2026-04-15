@@ -30,6 +30,7 @@ _SOURCE_RELIABILITY: dict[str, float] = {
     "yahoo_us": 0.80,
     "google_kr": 0.65,
     "google_us": 0.65,
+    "ife_home": 0.85,
 }
 
 _HEADERS = {
@@ -268,28 +269,55 @@ def collect_yahoo_rss(symbol: str, max_items: int = 5) -> list[NewsItem]:
         return []
 
 
+_GOOGLE_KR_SYMBOL_ENABLED = os.getenv("NEWS_GOOGLE_KR_SYMBOL_ENABLED", "false").lower() in ("true", "1", "yes")
+
+
 def collect_all(
     dart_api_key: str,
     kr_watchlist: list[str],
     us_watchlist: list[str],
     date_str: str,
     max_per_query: int = 8,
+    redis_client=None,
 ) -> list[NewsItem]:
-    """전체 수집 — DART + Google News (종목별 + 매크로) + Yahoo."""
+    """전체 수집 — IFE + DART + Google News (종목별 + 매크로) + Yahoo."""
     all_items: list[NewsItem] = []
     kr_names = _load_kr_names()
     us_names = _load_us_names()
+
+    # 0. IFE 홈 최근 변경사건 (장 시간에만, 우선순위 높음 → prepend)
+    now_kst = datetime.now(_KST)
+    _market_open = now_kst.replace(hour=8, minute=50, second=0, microsecond=0)
+    _market_close = now_kst.replace(hour=15, minute=40, second=0, microsecond=0)
+    _is_market = _market_open <= now_kst <= _market_close and now_kst.weekday() < 5
+
+    if _is_market:
+        try:
+            from .ife_client import fetch_home_events, resolve_symbol_code
+            ife_events = fetch_home_events(max_items=60)
+            ife_items: list[NewsItem] = []
+            for ev in ife_events:
+                code = resolve_symbol_code(ev.symbol_name, redis_client)
+                ife_items.append(ev.to_news_item(symbol_code=code))
+            # prepend — IFE 아이템을 앞에 추가해 우선순위 부여
+            all_items = ife_items + all_items
+            print(f"news:collect ife_home={len(ife_items)}", flush=True)
+        except Exception as e:
+            logger.warning("collect_all: IFE step error: %s", e)
+    else:
+        print("news:collect ife_home=skip (off-hours)", flush=True)
 
     # 1. DART 공시 (KR)
     dart_items = collect_dart(dart_api_key, date_str)
     all_items.extend(dart_items)
     print(f"news:collect dart={len(dart_items)}", flush=True)
 
-    # 2. Google News — KR 종목별
-    for symbol in kr_watchlist:
-        name = kr_names.get(symbol, symbol)
-        items = collect_google_rss(name, "KR", [symbol], max_per_query)
-        all_items.extend(items)
+    # 2. Google News — KR 종목별 (NEWS_GOOGLE_KR_SYMBOL_ENABLED=true 일 때만)
+    if _GOOGLE_KR_SYMBOL_ENABLED:
+        for symbol in kr_watchlist:
+            name = kr_names.get(symbol, symbol)
+            items = collect_google_rss(name, "KR", [symbol], max_per_query)
+            all_items.extend(items)
 
     print(f"news:collect google_kr_symbol={sum(1 for i in all_items if i.source == 'google_kr')}", flush=True)
 

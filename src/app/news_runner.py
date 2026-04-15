@@ -20,7 +20,7 @@ import redis
 
 from news.collector import collect_all
 from news.classifier import classify_batch
-from news.redis_writer import write_batch
+from news.redis_writer import write_batch, write_ife_report
 from utils.redis_helpers import today_kst, load_watchlist
 
 # ---------------------------------------------------------------------------
@@ -29,11 +29,27 @@ from utils.redis_helpers import today_kst, load_watchlist
 _LOCK_KEY = "news:runner:lock"
 _LOCK_TTL = 90             # 30초 갱신 주기 × 3 (크래시 시 90초 내 자동 해제)
 
-_POLL_SEC = float(os.getenv("NEWS_POLL_SEC", "1800"))     # 기본 30분
+_POLL_SEC_MARKET = int(os.getenv("NEWS_POLL_SEC_MARKET", "300"))      # 장중: 5분
+_POLL_SEC_OFFHOURS = int(os.getenv("NEWS_POLL_SEC_OFFHOURS", "1800")) # 장외: 30분
+# 하위 호환: NEWS_POLL_SEC 설정 시 장중/장외 모두 해당 값으로 덮어씀
+_POLL_SEC_LEGACY = os.getenv("NEWS_POLL_SEC")
+if _POLL_SEC_LEGACY:
+    _POLL_SEC_MARKET = int(float(_POLL_SEC_LEGACY))
+    _POLL_SEC_OFFHOURS = int(float(_POLL_SEC_LEGACY))
+
 _MAX_ITEMS = int(os.getenv("NEWS_MAX_ITEMS", "100"))
 _QWEN_CLASSIFY = os.getenv("NEWS_QWEN_CLASSIFY", "true").lower() in ("true", "1", "yes")
 _DART_API_KEY = os.getenv("DART_API_KEY", "")
 _KST = ZoneInfo("Asia/Seoul")
+
+
+def _is_market_hours() -> bool:
+    """KST 08:50~15:40 평일 장중 여부."""
+    from datetime import time as dtime
+    now = datetime.now(_KST)
+    if now.weekday() >= 5:
+        return False
+    return dtime(8, 50) <= now.time() <= dtime(15, 40)
 
 # ---------------------------------------------------------------------------
 # 런타임
@@ -55,6 +71,7 @@ def _run_once(r, today: str, kr_watchlist: list[str], us_watchlist: list[str]) -
         us_watchlist=us_watchlist,
         date_str=today,
         max_per_query=8,
+        redis_client=r,
     )
 
     if not items:
@@ -81,7 +98,29 @@ def _run_once(r, today: str, kr_watchlist: list[str], us_watchlist: list[str]) -
         flush=True,
     )
 
-    # 4. 통계 로그
+    # 4. IFE 위키 리포트 — watchlist 상위 20 심볼 대상
+    try:
+        from news.ife_client import fetch_wiki, resolve_symbol_code
+        kr_names_rev: dict[str, str] = {}
+        from news.collector import _load_kr_names
+        kr_names_map = _load_kr_names()
+        kr_names_rev = {v: k for k, v in kr_names_map.items()}
+
+        wiki_targets = kr_watchlist[:20]
+        wiki_saved = 0
+        for symbol in wiki_targets:
+            sym_name = kr_names_map.get(symbol, symbol)
+            wiki = fetch_wiki(sym_name)
+            if wiki and wiki.reports:
+                for report in wiki.reports:
+                    write_ife_report(r, symbol, report, today)
+                    wiki_saved += 1
+        if wiki_saved:
+            print(f"news: ife_wiki_reports saved={wiki_saved}", flush=True)
+    except Exception as e:
+        print(f"news: ife_wiki error {e}", flush=True)
+
+    # 5. 통계 로그
     stats_kr = r.hgetall(f"news:stats:KR:{today}") or {}
     stats_us = r.hgetall(f"news:stats:US:{today}") or {}
     def _fmt(d: dict) -> str:
@@ -118,7 +157,7 @@ def main() -> None:
 
     kr_watchlist, us_watchlist = _get_watchlists(r)
     print(
-        f"news: started poll_sec={_POLL_SEC} "
+        f"news: started poll_sec_market={_POLL_SEC_MARKET} poll_sec_offhours={_POLL_SEC_OFFHOURS} "
         f"qwen_classify={_QWEN_CLASSIFY} "
         f"dart={'on' if _DART_API_KEY else 'off'} "
         f"kr={kr_watchlist} us={us_watchlist}",
@@ -136,8 +175,13 @@ def main() -> None:
             except Exception as e:
                 print(f"news: run_once error {e}", flush=True)
 
+            # 시간대에 따라 폴링 주기 분기
+            _mkt = _is_market_hours()
+            poll_sec = float(_POLL_SEC_MARKET if _mkt else _POLL_SEC_OFFHOURS)
+            print(f"news: next poll in {poll_sec:.0f}s (market_hours={_mkt})", flush=True)
+
             # 다음 폴링까지 대기 (30초 단위로 lock 갱신)
-            remaining = _POLL_SEC
+            remaining = poll_sec
             while remaining > 0:
                 sleep_chunk = min(30.0, remaining)
                 time.sleep(sleep_chunk)
