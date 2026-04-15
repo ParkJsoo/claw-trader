@@ -85,16 +85,16 @@ def main():
     strategy_cfg = StrategyConfig(
         kr=MarketStrategyConfig(
             cooldown_sec=int(os.getenv("STRATEGY_KR_COOLDOWN_SEC", "300")),
-            daily_cap=int(os.getenv("STRATEGY_KR_DAILY_CAP", "20")),
+            daily_cap=int(os.getenv("STRATEGY_KR_DAILY_CAP", "15")),
         ),
         coin=MarketStrategyConfig(
             cooldown_sec=int(os.getenv("STRATEGY_COIN_COOLDOWN_SEC", "300")),
-            daily_cap=int(os.getenv("STRATEGY_COIN_DAILY_CAP", "20")),
+            daily_cap=int(os.getenv("STRATEGY_COIN_DAILY_CAP", "30")),
         ),
     )
     risk_cfg = RiskConfig(
         kr=MarketRiskConfig(
-            max_concurrent_positions=int(os.getenv("RISK_KR_MAX_CONCURRENT", "5")),
+            max_concurrent_positions=int(os.getenv("RISK_KR_MAX_CONCURRENT", "3")),
             daily_loss_limit=_D(os.getenv("RISK_KR_DAILY_LOSS_LIMIT", "-500000")),
             allocation_cap_pct=_D(os.getenv("RISK_KR_ALLOCATION_CAP_PCT", "0.20")),
         ),
@@ -163,8 +163,8 @@ def main():
                 if sig_age > _SIGNAL_MAX_AGE_SEC:
                     print(f"stale_signal: {signal.signal_id} symbol={signal.symbol} age={sig_age:.0f}s — skip", flush=True)
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"stale_signal_check_error: {signal.signal_id} {e}", flush=True)
 
             try:
                 # Phase 8: DataGuard — stale market data 감지 (v1: warn only)

@@ -341,7 +341,7 @@ def _has_volume_surge(r, market: str, symbol: str) -> bool:
             continue
 
     if len(vols) < 3:
-        return True  # 과거 데이터 부족 → 통과
+        return False  # 과거 데이터 부족 → 거래량 검증 불가, 진입 차단
     avg_vol = sum(vols) / len(vols)
     return today_vol >= avg_vol * _VOLUME_SURGE_RATIO
 
@@ -464,10 +464,18 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if not claude:
         return None  # Claude 결과 없음 — cold start
 
+    # 1-b. stale emit=0 eval 무시: 30분 넘은 HOLD는 재평가 대기 (영구 차단 방지)
+    _eval_stale_sec = int(os.getenv("EVAL_STALE_SEC", "1800"))
+    c_ts_ms_raw = claude.get("ts_ms", "0")
+    if claude.get("emit") != "1" and c_ts_ms_raw:
+        eval_age_ms = int(time.time() * 1000) - int(c_ts_ms_raw)
+        if eval_age_ms > _eval_stale_sec * 1000:
+            return None  # stale HOLD — 새 eval 대기
+
     # 2. dedup: 이미 이 ts_ms로 처리한 결과면 스킵 (중복 push 방지)
     c_ts_ms = claude.get("ts_ms", "")
     seen_key = f"consensus:seen:{market}:{symbol}:{c_ts_ms}"
-    if not r.set(seen_key, "1", nx=True, ex=max(int(_POLL_SEC * 6), 60)):
+    if not r.set(seen_key, "1", nx=True, ex=600):
         return None  # 이미 처리한 eval 결과
 
     # 2-b. symbol-level cooldown: consensus 판단 전 체크 (불필요한 처리 방지)
@@ -562,20 +570,12 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     # 5. prefilter: live ret_5m (mark_hist 직접 계산 — stale eval 방지)
     live = _get_live_ret_5m(r, market, symbol)
     if live is None:
-        # mark_hist 데이터 없거나 stale → features_json fallback
-        try:
-            ret_5m_raw = c_features.get("ret_5m")
-            if ret_5m_raw is None:
-                raise ValueError("ret_5m missing")
-            ret_5m = float(ret_5m_raw)
-            live_price = None
-        except (TypeError, ValueError) as e:
-            _log("runner.reject.invalid_payload", symbol=symbol, reason=str(e))
-            _record_reject(r, market, "reject_invalid_payload")
-            return None
-    else:
-        ret_5m, live_price_float = live
-        live_price = Decimal(str(live_price_float))
+        # mark_hist 데이터 없거나 stale → 다음 폴링 대기 (stale 가격으로 진입 방지)
+        _log("runner.reject.no_live_price", symbol=symbol)
+        _record_reject(r, market, "reject_no_live_price")
+        return None
+    ret_5m, live_price_float = live
+    live_price = Decimal(str(live_price_float))
 
     try:
         range_5m_raw = c_features.get("range_5m")

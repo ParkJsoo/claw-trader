@@ -111,19 +111,37 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
 
     # 2. momentum breakout prefilter: 급등 + 변동성 확인 (AI call 절감)
     stats_key = f"ai:dual_stats:consensus:{market}:{today}"
+
+    # 직전 eval이 emit=0이고 30분 이상 지났으면 prefilter 우회 (stale HOLD 재평가)
+    _stale_reeval_sec = int(os.getenv("EVAL_STALE_SEC", "1800"))
+    last_eval_raw = r.hgetall(f"ai:dual:last:claude:{market}:{symbol}")
+    _force_reeval = False
+    if last_eval_raw:
+        last_emit = (last_eval_raw.get(b"emit") or b"1").decode()
+        last_ts_ms = int((last_eval_raw.get(b"ts_ms") or b"0").decode())
+        if last_emit == "0" and (now_ms - last_ts_ms) > _stale_reeval_sec * 1000:
+            _force_reeval = True
+
     try:
         ret_5m_val = features.get("ret_5m")
         range_5m_val = features.get("range_5m")
-        # 5분 상승폭이 충분하지 않으면 skip (momentum breakout 셋업 아님)
-        if ret_5m_val is not None and float(ret_5m_val) <= _MB_SURGE_5M:
-            r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
-            r.expire(stats_key, _DUAL_TTL)
-            return
-        # 변동성 없으면 skip
-        if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
-            r.hincrby(stats_key, "skip_prefilter_range5m", 1)
-            r.expire(stats_key, _DUAL_TTL)
-            return
+        if _force_reeval:
+            # stale HOLD 재평가: 폭락 중인 종목은 재평가 불필요 (call_cap 절감)
+            if ret_5m_val is not None and float(ret_5m_val) < -0.005:
+                r.hincrby(stats_key, "skip_prefilter_stale_falling", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
+        else:
+            # 5분 상승폭이 충분하지 않으면 skip (momentum breakout 셋업 아님)
+            if ret_5m_val is not None and float(ret_5m_val) <= _MB_SURGE_5M:
+                r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
+            # 변동성 없으면 skip
+            if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
+                r.hincrby(stats_key, "skip_prefilter_range5m", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
     except (TypeError, ValueError):
         pass
 

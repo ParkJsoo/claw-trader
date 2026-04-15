@@ -420,7 +420,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
                 time_limit_sec: int = None, time_limit_max_sec: int = None,
                 early_exit_sec: int = None, early_exit_pct: Decimal = None,
                 trail_tight_pct: Decimal = None, trail_tight_trigger: Decimal = None,
-                trail_only_trigger: Decimal = None):
+                trail_only_trigger: Decimal = None,
+                stagnant_exit: bool = True):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
@@ -487,8 +488,9 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
         if held_sec >= early_exit_sec and mark_price < avg_price * (1 - early_exit_pct):
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             return f"early_exit(held={held_sec}s pnl={pnl_pct:.2f}%)"
-    # 횡보 청산: 20분 이상 보유 + |pnl| < 0.5% + 수익권 미진입 → 자본 회전
-    if (held_sec >= 1200
+    # 횡보 청산: 20분 이상 보유 + |pnl| < 0.5% + 수익권 미진입 → 자본 회전 (COIN 전용)
+    if (stagnant_exit
+            and held_sec >= 1200
             and abs(mark_price - avg_price) < avg_price * Decimal("0.005")
             and (hwm_price is None or hwm_price < avg_price * Decimal("1.01"))):
         pnl_pct = float((mark_price - avg_price) / avg_price * 100)
@@ -595,22 +597,29 @@ def _place_sell(r, client, market: str, symbol: str, qty: Decimal,
 
 def _run_market(r, client, market: str) -> None:
     """단일 market의 포지션 동기화 → exit 조건 체크 → 필요 시 매도."""
+    # orphan trail_hwm 정리: 장중 여부 무관, 매 폴링마다 실행 (60s throttle)
+    # 장 시작 직후 stale HWM 잔재 방지를 위해 market_hours 체크보다 먼저 실행
+    now = time.time()
+    if now - _last_orphan_scan.get(market, 0) >= 60:
+        _last_orphan_scan[market] = now
+        idx_syms = {
+            (s.decode() if isinstance(s, bytes) else s)
+            for s in r.smembers(f"position_index:{market}")
+        }
+        for key in r.scan_iter(f"claw:trail_hwm:{market}:*"):
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(":")
+            sym = parts[-1]
+            if not k.endswith("_ts") and sym not in idx_syms:
+                r.delete(key)
+                r.delete(f"claw:trail_hwm_ts:{market}:{sym}")
+                _log("orphan_hwm_cleaned", market=market, symbol=sym)
+
     # 장중에만 exit 평가 (time_limit 스팸 방지 + 장외 주문 방지)
     if not is_market_hours(market):
         return
 
     positions = _sync_positions(r, client, market)
-
-    # orphan trail_hwm 정리: position_index에 없는 심볼의 HWM 키 삭제 (60s throttle)
-    now = time.time()
-    if now - _last_orphan_scan.get(market, 0) >= 60:
-        _last_orphan_scan[market] = now
-        for key in r.scan_iter(f"claw:trail_hwm:{market}:*"):
-            k = key.decode() if isinstance(key, bytes) else key
-            sym = k.split(":")[-1]
-            if sym not in positions:
-                r.delete(key)
-                _log("orphan_hwm_cleaned", market=market, symbol=sym)
 
     if not positions:
         return
@@ -707,15 +716,25 @@ def _run_market(r, client, market: str) -> None:
 
         # Trailing stop용 HWM(고점) 갱신
         hwm_key = f"claw:trail_hwm:{market}:{symbol}"
+        hwm_ts_key = f"claw:trail_hwm_ts:{market}:{symbol}"
         hwm_raw = r.get(hwm_key)
+        hwm_ts_raw = r.get(hwm_ts_key)
         try:
             # Redis HWM 없으면 avg_price로 초기화 (mark_price 기준으로 하면 매수 직후 하락 시
             # HWM < avg_price가 되어 trailing stop이 static stop보다 낮게 계산될 수 있음)
             prev_hwm = Decimal(hwm_raw.decode()) if hwm_raw else avg_price
+            # stale HWM 감지: HWM 기록 시각이 현재 포지션 opened_ts 이전이면 초기화
+            if hwm_raw and hwm_ts_raw:
+                hwm_set_ts = int(hwm_ts_raw.decode())
+                pos_opened_sec = opened_ts if opened_ts < 1_000_000_000_000 else opened_ts // 1000
+                if hwm_set_ts < pos_opened_sec:
+                    prev_hwm = avg_price
+                    _log("hwm_stale_reset", market=market, symbol=symbol)
         except Exception:
             prev_hwm = avg_price
         hwm_price = max(prev_hwm, mark_price)
         r.set(hwm_key, str(hwm_price), ex=_POSITION_TTL)
+        r.set(hwm_ts_key, str(int(time.time())), ex=_POSITION_TTL)
 
         reason = _check_exit(avg_price, mark_price, opened_ts, pos=pos_hash, hwm_price=hwm_price,
                              stop_pct=cfg_stop, take_pct=cfg_take, trail_pct=cfg_trail,
@@ -723,7 +742,8 @@ def _run_market(r, client, market: str) -> None:
                              early_exit_sec=_mkt_early_exit_sec, early_exit_pct=_mkt_early_exit_pct,
                              trail_tight_pct=_mkt_trail_tight_pct,
                              trail_tight_trigger=_mkt_trail_tight_trigger,
-                             trail_only_trigger=_KR_TRAIL_ONLY_TRIGGER_PCT if market == "KR" else None)
+                             trail_only_trigger=_KR_TRAIL_ONLY_TRIGGER_PCT if market == "KR" else None,
+                             stagnant_exit=(market != "KR"))
         if reason is None:
             pnl_pct = float((mark_price - avg_price) / avg_price * 100)
             # H2: opened_ts 호환
@@ -772,6 +792,9 @@ def _run_market(r, client, market: str) -> None:
             r.expire(_sc_key, 86400)
             if stop_count >= 2:
                 _log("stop_count_blocked", market=market, symbol=symbol, count=stop_count)
+            # stop_loss 후 30분 cooldown (bounce 재진입 → 재손절 방지)
+            r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=1800)
+            _log("stop_loss_cooldown_marked", market=market, symbol=symbol, cooldown_sec=1800)
         if ok and ("early_exit" in reason or "stagnant_exit" in reason):
             # 손실성/횡보 청산 → 재진입 횟수 카운트
             _sc_today = today_kst()
@@ -812,7 +835,7 @@ def _startup_cleanup(r) -> None:
             sym = s.decode() if isinstance(s, bytes) else s
             open_pos.add(f"{mkt}:{sym}")
 
-    patterns = ("claw:exit_order:*", "claw:trail_hwm:*", "claw:exit_lock:*")
+    patterns = ("claw:exit_order:*", "claw:trail_hwm:*", "claw:trail_hwm_ts:*", "claw:exit_lock:*")
     deleted = 0
     for pattern in patterns:
         for key in r.scan_iter(pattern):
