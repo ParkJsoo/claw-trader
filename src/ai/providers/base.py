@@ -107,13 +107,34 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
         market_ctx = (
             "Market: KR (KOSPI/KOSDAQ, Korean Won, session 09:00-15:30 KST)\n"
             "This stock is surging right now (strong 5-min positive return + high volume).\n"
-            "Your job: judge if this is REAL buying pressure (positive catalyst, breakout, "
-            "institutional accumulation, sector rotation into this stock) "
-            "OR a short-lived spike with no substance (retail panic buying, no catalyst, "
-            "likely to reverse immediately).\n"
-            "Emit LONG if there is a credible reason for momentum to continue (news catalyst, "
-            "technical breakout above resistance, strong sector tailwind, earnings beat, etc.). "
-            "Return HOLD if no catalyst found OR if signals suggest pump-and-dump / FOMO spike."
+            "\n"
+            "Strategy: momentum breakout — ride the start of big moves (+5~10% target).\n"
+            "Risk management in play:\n"
+            "  - Hard stop: -2.5% from entry (limits downside)\n"
+            "  - Trailing stop: -2.0% from high water mark\n"
+            "  - At +3% gain, trailing stop activates (trail-only mode, protect profits)\n"
+            "  - Hold time: 15-60 minutes\n"
+            "\n"
+            "Your role: BAD NEWS FILTER — block entries only if you detect a SPECIFIC risk.\n"
+            "Default bias: LONG. Do NOT require news catalyst to emit LONG.\n"
+            "\n"
+            "Emit LONG if:\n"
+            "  - 1-min return is positive (momentum still active, not reversing)\n"
+            "  - Volume is surging (genuine buying pressure, not thin air)\n"
+            "  - Sector/theme rotation is in play — Korean market frequently moves by theme\n"
+            "    (defense, secondary batteries, semiconductors, AI, bio). Sector-wide moves\n"
+            "    are VALID entries even without stock-specific news.\n"
+            "  - This looks like the START of a move (not already exhausted)\n"
+            "\n"
+            "Return HOLD ONLY if you detect a specific risk:\n"
+            "  - 1-min return is NEGATIVE after the 5-min surge (momentum reversing = late entry)\n"
+            "  - Negative news for this stock (fraud, delisting, earnings miss, scandal)\n"
+            "  - Price already up +10% or more today (bulk of move is behind us)\n"
+            "  - Clear exhaustion: 1-min and 5-min returns nearly identical (no acceleration)\n"
+            "  - Known pump-and-dump pattern for this symbol\n"
+            "\n"
+            "No stock-specific news catalyst required. Sector and macro-driven moves are valid.\n"
+            "When momentum is positive and no specific risk detected, emit LONG."
         )
     elif market == "COIN":
         market_ctx = (
@@ -158,7 +179,7 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
 
     lines = [
         "You are a cash-only short-term momentum trading signal evaluator.",
-        "Strategy: momentum breakout — ride strong surges with real catalysts, avoid fake pumps.",
+        "Strategy: momentum breakout — ride strong surges early, exit with trailing stop.",
         "",
         market_ctx,
         f"Symbol: {symbol}",
@@ -167,6 +188,8 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
         f"5-min return: {fmt(features['ret_5m'])}",
         f"5-min range: {fmt(features['range_5m'])}",
     ]
+    if features.get("market_time"):
+        lines.append(f"Market time: {features['market_time']}")
 
     # 오더북 데이터 (있으면 추가)
     ob_ratio = features.get("ob_ratio")
@@ -184,11 +207,18 @@ def build_dual_prompt(market: str, symbol: str, features: dict[str, Any]) -> str
             if news_line.strip():
                 lines.append(f"- {news_line.strip()}")
 
+    if market == "KR":
+        footer_hold_time = "Hold time: 15-60 minutes."
+        footer_emit_false = "emit=false → HOLD (reversal risk / negative news / exhaustion detected)"
+    else:
+        footer_hold_time = "Hold time: 1-4 hours (Big Mover Ride)."
+        footer_emit_false = "emit=false → HOLD (pump-dump risk / ambiguous / no continuation)"
+
     lines.extend([
         "",
-        "Constraints: cash-only, no short selling. Hold time: 1-4 hours (Big Mover Ride).",
-        "emit=true → LONG (real catalyst detected, momentum likely continues)",
-        "emit=false → HOLD (no catalyst / pump-dump risk / ambiguous)",
+        f"Constraints: cash-only, no short selling. {footer_hold_time}",
+        "emit=true → LONG (momentum likely continues, no specific risk detected)",
+        footer_emit_false,
         "confidence must be between 0.0 and 1.0.",
         "",
         "Respond with JSON only (no markdown, no extra text):",

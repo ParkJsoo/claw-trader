@@ -30,7 +30,7 @@ class ClaudeProvider(DecisionProvider):
                 client = self._get_client()
                 resp = client.messages.create(
                     model=self.model,
-                    max_tokens=128,
+                    max_tokens=192,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 raw = resp.content[0].text
