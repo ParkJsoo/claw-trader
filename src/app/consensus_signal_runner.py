@@ -393,8 +393,11 @@ def _get_regime(r, market: str, watchlist: list) -> str:
     if total < 3:
         return "neutral"
     ratio = bearish / total
-    # bearish threshold 완화: 0.6 → 0.45 (더 빠른 bearish 감지, env로 override 가능)
-    _bearish_thr = float(os.getenv("COIN_REGIME_BEARISH_THRESHOLD", "0.45"))
+    # 마켓별 bearish threshold: KR은 장 초반 눌림 오판 방지를 위해 높게 설정
+    if market == "KR":
+        _bearish_thr = float(os.getenv("KR_REGIME_BEARISH_THRESHOLD", "0.60"))
+    else:
+        _bearish_thr = float(os.getenv("COIN_REGIME_BEARISH_THRESHOLD", "0.45"))
     if ratio > _bearish_thr:
         return "bearish"
     if ratio < _BULLISH_THRESHOLD:

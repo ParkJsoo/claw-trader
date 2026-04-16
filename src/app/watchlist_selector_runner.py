@@ -219,6 +219,24 @@ def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None
     if not universe:
         return None
 
+    # KIS API 응답(vol_items + flu_items)에서 종목명→코드 매핑을 Redis에 캐시
+    # IFE 특징주 심볼 해석에 사용 (watchlist:KR:name_to_code)
+    try:
+        name_map: dict[str, str] = {}
+        for item in (vol_items + flu_items):
+            sym = item.get("symbol", "")
+            name = item.get("name", "")
+            if sym and name:
+                name_map[name] = sym
+        if name_map:
+            pipe = r.pipeline()
+            pipe.delete("watchlist:KR:name_to_code")
+            pipe.hset("watchlist:KR:name_to_code", mapping=name_map)
+            pipe.expire("watchlist:KR:name_to_code", 8 * 3600)
+            pipe.execute()
+    except Exception as _e:
+        print(f"watchlist_selector: name_to_code cache error ({_e})", flush=True)
+
     # KIS API에서 이미 가격 필터 적용됐으므로 mark 없어도 허용 (score만 적용)
     today = today_kst()
     scored = [(sym, score_symbol(r, "KR", sym, today)) for sym in universe]

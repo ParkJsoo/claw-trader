@@ -293,11 +293,20 @@ def collect_all(
 
     if _is_market:
         try:
-            from .ife_client import fetch_home_events, resolve_symbol_code
+            from .ife_client import fetch_home_events
             ife_events = fetch_home_events(max_items=60)
             ife_items: list[NewsItem] = []
+            # kr_names(code→name) 역매핑 — env 추가분 포함, resolve_symbol_code보다 풍부
+            kr_name_to_code = {v: k for k, v in kr_names.items()}
             for ev in ife_events:
-                code = resolve_symbol_code(ev.symbol_name, redis_client)
+                code = kr_name_to_code.get(ev.symbol_name)
+                if not code and redis_client is not None:
+                    try:
+                        val = redis_client.hget("watchlist:KR:name_to_code", ev.symbol_name)
+                        if val:
+                            code = val.decode() if isinstance(val, bytes) else val
+                    except Exception:
+                        pass
                 ife_items.append(ev.to_news_item(symbol_code=code))
             # prepend — IFE 아이템을 앞에 추가해 우선순위 부여
             all_items = ife_items + all_items
