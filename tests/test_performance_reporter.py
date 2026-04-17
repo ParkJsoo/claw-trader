@@ -157,6 +157,34 @@ class TestComputeDailyStats:
         assert pnl[b"unrealized_pnl"].decode() == "321"
         assert pnl[b"currency"].decode() == "KRW"
 
+    def test_scan_trade_index_fallback_captures_symbols_missing_from_trade_symbols_set(self):
+        r = fakeredis.FakeRedis()
+        reporter = PerformanceReporter(r)
+
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        base_ms = int(datetime(2026, 4, 17, 20, 15, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+
+        trade_id = f"trade-KRW-KAT-{base_ms}"
+        r.hset(f"trade:COIN:{trade_id}", mapping={
+            "symbol": "KRW-KAT",
+            "side": "SELL",
+            "qty": "10",
+            "price": "13.6",
+            "realized_pnl": "-557.74",
+            "ts": str(base_ms),
+            "fee": "0",
+            "signal_id": "test",
+            "source": "test",
+        })
+        r.zadd("trade_index:COIN:KRW-KAT", {trade_id: base_ms})
+        # trade_symbols:COIN intentionally left empty
+
+        stats = reporter.compute_daily_stats("COIN", "20260417")
+
+        assert stats["trade_count"] == 1
+        assert Decimal(stats["net_pnl"]) == Decimal("-557.74")
+
 
 class TestFormatReport:
     def test_no_trades_message(self):

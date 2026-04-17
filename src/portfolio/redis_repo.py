@@ -48,6 +48,7 @@ class RedisPositionRepository:
     POSITION_INDEX_KEY = "position_index:{market}"
     TRADE_DEDUPE_KEY = "trade_dedupe:{market}:{trade_id}"
     TRADE_INDEX_KEY = "trade_index:{market}:{symbol}"
+    TRADE_SYMBOLS_KEY = "trade_symbols:{market}"
     MARK_KEY = "mark:{market}:{symbol}"
     FILL_QUEUE_KEY = "claw:fill:queue"
     FILL_DLQ_KEY = "claw:fill:dlq"
@@ -75,6 +76,9 @@ class RedisPositionRepository:
 
     def _trade_index_key(self, market: str, symbol: str) -> str:
         return self.TRADE_INDEX_KEY.format(market=market, symbol=symbol)
+
+    def _trade_symbols_key(self, market: str) -> str:
+        return self.TRADE_SYMBOLS_KEY.format(market=market)
 
     def _mark_key(self, market: str, symbol: str) -> str:
         return self.MARK_KEY.format(market=market, symbol=symbol)
@@ -191,10 +195,13 @@ class RedisPositionRepository:
         self.r.expire(key, self.TRADE_TTL)
 
         idx_key = self._trade_index_key(fill.market, fill.symbol)
+        symbols_key = self._trade_symbols_key(fill.market)
         try:
             score = int(fill_ts_ms)
             self.r.zadd(idx_key, {trade_id: score})
             self.r.expire(idx_key, self.TRADE_TTL)
+            self.r.sadd(symbols_key, fill.symbol)
+            self.r.expire(symbols_key, self.TRADE_TTL)
         except Exception:
             pass
         return True

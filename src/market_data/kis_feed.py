@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import redis as _redis
+import time
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
@@ -13,6 +14,12 @@ _REDIS_TOKEN_BLOCKED_KEY = "kis:token_refresh_blocked"
 _REDIS_TOKEN_BLOCKED_TTL = 3600
 _REDIS_TOKEN_RETRY_KEY = "kis:token_refresh_retry_after"
 _REDIS_TOKEN_RETRY_TTL = 30
+_REDIS_TOKEN_LOCK_KEY = "kis:token_refresh_lock"
+_REDIS_TOKEN_LOCK_TTL = 15
+_TOKEN_LOCK_WAIT_SEC = 8.0
+_TOKEN_LOCK_POLL_SEC = 0.2
+_PRICE_RETRY_ATTEMPTS = 3
+_PRICE_RETRY_BASE_SEC = 0.2
 
 _TOKEN_EXPIRED = object()  # sentinel: 401/403 토큰 만료 신호
 
@@ -69,6 +76,23 @@ class KisFeed:
                 raise
             except Exception:
                 pass
+        lock_acquired = False
+        if self._redis:
+            try:
+                lock_acquired = bool(
+                    self._redis.set(
+                        _REDIS_TOKEN_LOCK_KEY,
+                        "1",
+                        nx=True,
+                        ex=_REDIS_TOKEN_LOCK_TTL,
+                    )
+                )
+            except Exception:
+                lock_acquired = False
+            if not lock_acquired:
+                if self._wait_for_shared_token():
+                    return
+                raise RuntimeError("KIS token refresh in progress by another process")
         try:
             resp = self.session.post(
                 f"{self.base_url}/oauth2/tokenP",
@@ -111,36 +135,95 @@ class KisFeed:
         if self._redis:
             try:
                 self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+                self._redis.delete(_REDIS_TOKEN_BLOCKED_KEY)
                 self._redis.delete(_REDIS_TOKEN_RETRY_KEY)
             except Exception:
                 pass
+            finally:
+                try:
+                    if lock_acquired:
+                        self._redis.delete(_REDIS_TOKEN_LOCK_KEY)
+                except Exception:
+                    pass
+
+    def _wait_for_shared_token(self, timeout_sec: float = _TOKEN_LOCK_WAIT_SEC) -> bool:
+        if not self._redis:
+            return False
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                cached = self._redis.get(_REDIS_TOKEN_KEY)
+                if cached:
+                    self.access_token = cached
+                    return True
+            except Exception:
+                return False
+            time.sleep(_TOKEN_LOCK_POLL_SEC)
+        return False
+
+    def _format_price_error(self, symbol: str, resp: requests.Response) -> str:
+        parts = [f"status={resp.status_code}", f"symbol={symbol}"]
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = None
+
+        if isinstance(payload, dict):
+            for key in ("rt_cd", "msg_cd", "msg1"):
+                value = payload.get(key)
+                if value not in (None, ""):
+                    parts.append(f"{key}={value}")
+        else:
+            text = (resp.text or "").strip()
+            if text:
+                parts.append(f"body={text[:160]}")
+
+        return "KIS price request failed: " + " ".join(parts)
 
     def _fetch_price(self, symbol: str) -> Optional[Decimal]:
         """단일 가격 요청. 호출 전 토큰이 유효해야 함."""
-        resp = self.session.get(
-            f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers={
-                "authorization": f"Bearer {self.access_token}",
-                "appkey": self.app_key,
-                "appsecret": self.app_secret,
-                "tr_id": "FHKST01010100",
-                "content-type": "application/json",
-            },
-            params={
-                "FID_COND_MRKT_DIV_CODE": "J",
-                "FID_INPUT_ISCD": symbol,
-            },
-            timeout=5,
-        )
-        # 401/403: 토큰 만료 신호 — sentinel 반환, 호출자가 재발급 처리
-        if resp.status_code in (401, 403):
-            print(f"kis_token_expired: {symbol} status={resp.status_code}")
-            return _TOKEN_EXPIRED  # type: ignore[return-value]
+        for attempt in range(1, _PRICE_RETRY_ATTEMPTS + 1):
+            try:
+                resp = self.session.get(
+                    f"{self.base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                    headers={
+                        "authorization": f"Bearer {self.access_token}",
+                        "appkey": self.app_key,
+                        "appsecret": self.app_secret,
+                        "tr_id": "FHKST01010100",
+                        "content-type": "application/json",
+                    },
+                    params={
+                        "FID_COND_MRKT_DIV_CODE": "J",
+                        "FID_INPUT_ISCD": symbol,
+                    },
+                    timeout=5,
+                )
+            except requests.RequestException as e:
+                if attempt < _PRICE_RETRY_ATTEMPTS:
+                    time.sleep(_PRICE_RETRY_BASE_SEC * attempt)
+                    continue
+                raise RuntimeError(
+                    f"KIS price request failed: request_error={type(e).__name__} symbol={symbol}"
+                ) from None
 
-        try:
-            resp.raise_for_status()
-        except Exception as e:
-            raise RuntimeError(f"KIS price request failed: {type(e).__name__}") from None
+            # 401/403: 토큰 만료 신호 — sentinel 반환, 호출자가 재발급 처리
+            if resp.status_code in (401, 403):
+                print(f"kis_token_expired: {symbol} status={resp.status_code}")
+                return _TOKEN_EXPIRED  # type: ignore[return-value]
+
+            if resp.status_code == 429 or resp.status_code >= 500:
+                if attempt < _PRICE_RETRY_ATTEMPTS:
+                    time.sleep(_PRICE_RETRY_BASE_SEC * attempt)
+                    continue
+                raise RuntimeError(self._format_price_error(symbol, resp))
+
+            try:
+                resp.raise_for_status()
+            except Exception:
+                raise RuntimeError(self._format_price_error(symbol, resp)) from None
+            break
 
         output = resp.json().get("output", {})
         raw = output.get("stck_prpr", "")
@@ -168,21 +251,21 @@ class KisFeed:
             return None
 
     def _clear_token(self) -> None:
-        """in-memory + Redis 토큰 캐시 삭제."""
+        """in-memory 토큰만 삭제. 공유 Redis 캐시는 보존."""
         self.access_token = None
-        if self._redis:
-            try:
-                self._redis.delete(_REDIS_TOKEN_KEY)
-            except Exception:
-                pass
 
     def get_price(self, symbol: str) -> Optional[Decimal]:
         """
-        현재가 조회. 401/403(토큰 만료) 또는 HTTPError 시 토큰 재발급 후 1회 재시도.
-        데이터 없음(거래정지 등)은 토큰 재발급 없이 None 반환.
+        현재가 조회.
+        - 401/403: 공유 토큰 재사용 또는 재발급 후 1회 재시도
+        - 429/5xx/네트워크: 가격 요청 자체에서 짧게 재시도
+        - 기타 HTTP 오류/데이터 없음: 로그 후 None 반환
         """
         def _retry() -> Optional[Decimal]:
             self._clear_token()
+            if self._wait_for_shared_token(timeout_sec=1.0):
+                result = self._fetch_price(symbol)
+                return None if result is _TOKEN_EXPIRED else result  # type: ignore[comparison-overlap]
             self._ensure_token()
             result = self._fetch_price(symbol)
             return None if result is _TOKEN_EXPIRED else result  # type: ignore[comparison-overlap]
@@ -194,11 +277,6 @@ class KisFeed:
                 # 401/403 토큰 만료 → 재발급 후 재시도
                 return _retry()
             return result  # type: ignore[return-value]
-
-        except Exception:
-            # HTTPError 등 → 토큰 재발급 후 1회 재시도
-            try:
-                return _retry()
-            except Exception as e:
-                print(f"kis_price_error: {symbol} {e}")
-                return None
+        except Exception as e:
+            print(f"kis_price_error: {symbol} {e}")
+            return None

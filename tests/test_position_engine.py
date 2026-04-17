@@ -102,3 +102,32 @@ def test_duplicate_coin_sell_is_skipped_without_dlq():
     assert repo.get_position("COIN", "KRW-OPEN") is None
     assert repo.get_pnl("COIN")[0] == Decimal("99")
     assert r.llen("claw:fill:dlq") == 0
+
+
+def test_trade_symbols_set_is_updated_when_fill_is_applied():
+    r = fakeredis.FakeRedis()
+    repo = RedisPositionRepository(r)
+    engine = PositionEngine(repo)
+
+    engine.apply_fill(
+        _fill(
+            order_id="buy-1",
+            symbol="KRW-CARV",
+            side=OrderSide.BUY,
+            qty="10",
+            price="100",
+            exec_id="coin_fill_buy-1",
+        )
+    )
+    engine.apply_fill(
+        _fill(
+            order_id="sell-1",
+            symbol="KRW-CARV",
+            side=OrderSide.SELL,
+            qty="10",
+            price="95",
+            exec_id="coin_fill_sell-1",
+        )
+    )
+
+    assert r.sismember("trade_symbols:COIN", "KRW-CARV")

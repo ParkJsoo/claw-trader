@@ -31,6 +31,7 @@ env/
 # Claude Code / OMC (세션 데이터, 대화 리플레이 포함)
 .claude/
 .omc/
+.codex/
 
 # 로그
 *.log

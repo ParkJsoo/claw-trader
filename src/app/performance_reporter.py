@@ -43,6 +43,26 @@ class PerformanceReporter:
             return {}
         return {self._decode(k): self._decode(v) for k, v in raw.items()}
 
+    def _get_trade_symbols(self, market: str) -> list[str]:
+        """trade_symbols SET + trade_index scan 결과를 합쳐 심볼 목록 반환."""
+        symbols: set[str] = set()
+
+        for raw_symbol in self.r.smembers(f"trade_symbols:{market}"):
+            symbol = self._decode(raw_symbol)
+            if symbol:
+                symbols.add(symbol)
+
+        prefix = f"trade_index:{market}:"
+        for raw_key in self.r.scan_iter(match=f"{prefix}*"):
+            key = self._decode(raw_key)
+            if not key.startswith(prefix):
+                continue
+            symbol = key[len(prefix):]
+            if symbol:
+                symbols.add(symbol)
+
+        return sorted(symbols)
+
     def _get_sell_trades_for_date(self, market: str, date_str: str) -> list[dict]:
         """해당 날짜(KST)의 SELL 체결 trade 목록 반환."""
         try:
@@ -53,9 +73,7 @@ class PerformanceReporter:
         day_start_ms = int(dt.timestamp() * 1000)
         day_end_ms = int((dt + timedelta(days=1)).timestamp() * 1000)
 
-        # trade_symbols SET에서 심볼 목록 조회 (scan_iter 대신 O(N) smembers 사용)
-        symbols_raw = self.r.smembers(f"trade_symbols:{market}")
-        symbols = [self._decode(s) for s in symbols_raw]
+        symbols = self._get_trade_symbols(market)
 
         trades = []
         for symbol in symbols:

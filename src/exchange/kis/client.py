@@ -22,6 +22,10 @@ _REDIS_TOKEN_BLOCKED_KEY = "kis:token_refresh_blocked"
 _REDIS_TOKEN_BLOCKED_TTL = 3600  # 403 발생 시 1시간 재시도 차단
 _REDIS_TOKEN_RETRY_KEY = "kis:token_refresh_retry_after"
 _REDIS_TOKEN_RETRY_TTL = 30  # 일시적 5xx/네트워크 실패 시 30초 재시도 지연
+_REDIS_TOKEN_LOCK_KEY = "kis:token_refresh_lock"
+_REDIS_TOKEN_LOCK_TTL = 15
+_TOKEN_LOCK_WAIT_SEC = 8.0
+_TOKEN_LOCK_POLL_SEC = 0.2
 _REQUEST_RETRY_ATTEMPTS = 3
 _REQUEST_RETRY_BASE_SEC = 0.3
 
@@ -105,8 +109,45 @@ class KisClient(ExchangeClient):
                 pass
         self._refresh_token()
 
+    def _wait_for_shared_token(self, timeout_sec: float = _TOKEN_LOCK_WAIT_SEC) -> bool:
+        if not self._redis:
+            return False
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                cached = self._redis.get(_REDIS_TOKEN_KEY)
+                if cached:
+                    self.access_token = cached
+                    ttl = self._redis.ttl(_REDIS_TOKEN_KEY)
+                    self._token_fetched_at = time.time() - (_REDIS_TOKEN_TTL - max(ttl, 0))
+                    return True
+            except Exception:
+                return False
+            time.sleep(_TOKEN_LOCK_POLL_SEC)
+        return False
+
     def _refresh_token(self):
         url = f"{self.base_url}/oauth2/tokenP"
+        lock_acquired = False
+
+        if self._redis:
+            try:
+                lock_acquired = bool(
+                    self._redis.set(
+                        _REDIS_TOKEN_LOCK_KEY,
+                        "1",
+                        nx=True,
+                        ex=_REDIS_TOKEN_LOCK_TTL,
+                    )
+                )
+            except Exception:
+                lock_acquired = False
+
+            if not lock_acquired:
+                if self._wait_for_shared_token():
+                    return
+                raise RuntimeError("KIS token refresh in progress by another process")
 
         try:
             resp = self.session.post(
@@ -156,9 +197,25 @@ class KisClient(ExchangeClient):
         if self._redis:
             try:
                 self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+                self._redis.delete(_REDIS_TOKEN_BLOCKED_KEY)
                 self._redis.delete(_REDIS_TOKEN_RETRY_KEY)
             except Exception:
                 pass
+            finally:
+                try:
+                    if lock_acquired:
+                        self._redis.delete(_REDIS_TOKEN_LOCK_KEY)
+                except Exception:
+                    pass
+        elif lock_acquired and self._redis:
+            try:
+                self._redis.delete(_REDIS_TOKEN_LOCK_KEY)
+            except Exception:
+                pass
+
+    def _invalidate_local_token(self):
+        self.access_token = None
+        self._token_fetched_at = 0.0
 
     def _auth_headers(self, tr_id: str):
         self._ensure_token()
@@ -188,13 +245,11 @@ class KisClient(ExchangeClient):
                 raise RuntimeError(last_error) from None
 
             if resp.status_code in (401, 403) and not auth_refreshed:
-                self.access_token = None
-                self._token_fetched_at = 0.0
-                if self._redis:
-                    try:
-                        self._redis.delete(_REDIS_TOKEN_KEY)
-                    except Exception:
-                        pass
+                self._invalidate_local_token()
+                if self._wait_for_shared_token(timeout_sec=1.0):
+                    req_headers["authorization"] = f"Bearer {self.access_token}"
+                    auth_refreshed = True
+                    continue
                 self._refresh_token()
                 req_headers["authorization"] = f"Bearer {self.access_token}"
                 auth_refreshed = True
