@@ -1,7 +1,8 @@
-"""daily_report_runner — 장 마감 후 성과 리포트 자동 발송 + Daily cap 리셋 + 자동 튜닝.
+"""daily_report_runner — 일별 성과 저장/발송 + Daily cap 리셋 + 자동 튜닝.
 
 KST 08:55 — strategy:daily_count 자동 리셋 (장 시작 전)
 KST 15:40 — KR 성과 리포트 자동 발송 + 파라미터 자동 튜닝
+KST 00:00 — COIN 전일 성과 저장/발송 + daily cap 리셋
 
 기동:
     PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner
@@ -56,14 +57,22 @@ def _mark_sent(r, market: str, date_str: str) -> None:
     r.set(f"perf:report_sent:{market}:{date_str}", "1", ex=_REPORT_DONE_TTL)
 
 
-def _send_report(r, market: str) -> None:
+def _send_report(r, market: str, date_str: str | None = None) -> dict:
     reporter = PerformanceReporter(r)
-    date_str = today_kst()
-    stats = reporter.compute_and_save(market, date_str)
+    target_date = date_str or today_kst()
+    stats = reporter.compute_and_save(market, target_date)
     msg = reporter.format_report(market, stats)
     send_telegram(msg)
-    _mark_sent(r, market, date_str)
-    print(f"daily_report: sent {market} {date_str}", flush=True)
+    _mark_sent(r, market, target_date)
+    print(f"daily_report: sent {market} {target_date}", flush=True)
+    return stats
+
+
+def _sync_intraday_realized_pnl(r, market: str, date_str: str | None = None) -> dict:
+    """trade history 기준 당일 realized_pnl과 perf:daily를 동기화."""
+    reporter = PerformanceReporter(r)
+    target_date = date_str or today_kst()
+    return reporter.sync_realized_pnl(market, target_date)
 
 
 def _reset_daily_cap(r, market: str) -> None:
@@ -201,10 +210,20 @@ def main() -> None:
 
             is_weekday = now_kst.weekday() < 5  # 0=월 … 4=금
 
+            # COIN은 24/7이므로 매 루프 현재 날짜 기준 stats/pnl 동기화
+            try:
+                _sync_intraday_realized_pnl(r, "COIN", date_str)
+            except Exception as e:
+                print(f"daily_report: sync_realized_pnl error COIN {e}", flush=True)
+
             # 00:00~00:04 KST — COIN daily cap 리셋 (24/7 — 자정 기준)
             if now_kst.hour == 0 and now_kst.minute < 5:
                 try:
+                    yesterday = (datetime.strptime(date_str, "%Y%m%d") - timedelta(days=1)).strftime("%Y%m%d")
+                    if not _already_sent(r, "COIN", yesterday):
+                        _send_report(r, "COIN", yesterday)
                     _reset_daily_cap(r, "COIN")
+                    _sync_intraday_realized_pnl(r, "COIN", date_str)
                 except Exception as e:
                     print(f"daily_report: daily_cap_reset error COIN {e}", flush=True)
 

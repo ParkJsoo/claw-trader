@@ -64,7 +64,7 @@ _HELP_TEXT = (
     "/claw pnl         - PnL + open positions\n"
     "/claw report      - 오늘 KR 성과 리포트 즉시 발송\n"
     "/claw backtest    - KR 파라미터 스윕 백테스트 즉시 실행\n"
-    "/claw set [KR|US|ALL] <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
+    "/claw set [KR|US|COIN|ALL] <param> <value> - 파라미터 변경 (stop_pct, take_pct, trail_pct, size_cash_pct, max_concurrent)\n"
     "/claw pause on    - 전역 일시정지 (자정 KST 자동 만료)\n"
     "/claw pause off   - 일시정지 해제\n"
     "/claw help        - this help"
@@ -72,7 +72,7 @@ _HELP_TEXT = (
 
 _ALLOWED_PARAMS: dict[str, tuple[float, float]] = {
     "stop_pct":       (0.005, 0.05),
-    "take_pct":       (0.01,  0.10),
+    "take_pct":       (0.01,  0.30),
     "trail_pct":      (0.005, 0.05),
     "size_cash_pct":  (0.05,  0.50),
     "max_concurrent": (1,     5),
@@ -394,21 +394,22 @@ def handle_news(r) -> str:
 
 
 def handle_set(r, args: str) -> str:
-    """/claw set [KR|US|ALL] <param> <value> — Redis config 파라미터 변경.
+    """/claw set [KR|US|COIN|ALL] <param> <value> — Redis config 파라미터 변경.
 
     사용법:
       /claw set stop_pct 0.015        → KR에만 적용 (market 생략 시 KR 기본)
       /claw set KR stop_pct 0.015     → KR에만 적용
       /claw set US stop_pct 0.015     → US에만 적용
-      /claw set ALL stop_pct 0.015    → KR+US 모두 적용
+      /claw set COIN take_pct 0.15    → COIN에만 적용
+      /claw set ALL stop_pct 0.015    → KR+US+COIN 모두 적용
     """
     parts = args.split()
-    if len(parts) == 3 and parts[0].upper() in ("KR", "US", "ALL"):
+    if len(parts) == 3 and parts[0].upper() in ("KR", "US", "COIN", "ALL"):
         market_arg, param, value_str = parts[0].upper(), parts[1], parts[2]
     elif len(parts) == 2:
         market_arg, param, value_str = "KR", parts[0], parts[1]
     else:
-        return "사용법: /claw set [KR|US|ALL] <param> <value>"
+        return "사용법: /claw set [KR|US|COIN|ALL] <param> <value>"
 
     if param not in _ALLOWED_PARAMS:
         allowed_desc = ", ".join(
@@ -425,7 +426,7 @@ def handle_set(r, args: str) -> str:
     if not (lo <= value <= hi):
         return f"❌ {param} 범위 초과: {lo}~{hi}"
 
-    markets = ["KR", "US"] if market_arg == "ALL" else [market_arg]
+    markets = ["KR", "US", "COIN"] if market_arg == "ALL" else [market_arg]
     for market in markets:
         r.hset(f"claw:config:{market}", param, str(value))
 

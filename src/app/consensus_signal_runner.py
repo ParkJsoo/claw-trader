@@ -104,11 +104,11 @@ _STATS_TTL = 30 * 86400
 def _dynamic_pcts(range_5m: float, market: str = "KR") -> tuple:
     """모멘텀 브레이크아웃: 시장별 stop/take 분기."""
     if market == "COIN":
-        stop = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.040"))   # -4.0% (COIN 전용)
-        take = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.200")) # +20.0% (Big Mover Ride)
+        stop = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.030"))   # -3.0% (COIN 전용)
+        take = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.150")) # +15.0% (Big Mover Ride)
     else:
-        stop = Decimal("0.025")  # -2.5%
-        take = Decimal("0.050")  # +5.0%
+        stop = Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.015"))        # -1.5%
+        take = Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.030"))      # +3.0%
     return stop, take
 
 
@@ -258,6 +258,23 @@ def _record_reject(r, market: str, reason_code: str) -> None:
     stats_key = f"consensus:stats:{market}:{today}"
     r.hincrby(stats_key, reason_code, 1)
     r.expire(stats_key, _STATS_TTL)
+
+
+def _classify_claude_veto(reason: str) -> tuple[str, str]:
+    """Claude veto reason을 운영용 reject bucket으로 정규화."""
+    text = (reason or "").strip().lower()
+    if not text:
+        return "reject_claude_veto", "claude_veto"
+
+    patterns = [
+        (("market close", "market closed", "after close", "closing bell", "장 마감", "장종료"), "reject_market_close", "market_close"),
+        (("late entry", "too late", "late breakout", "late move", "chasing", "chase", "늦은 진입", "추격 매수"), "reject_late_entry", "late_entry"),
+        (("momentum decay", "momentum faded", "momentum weak", "weakened momentum", "pullback", "모멘텀 둔화", "탄력 둔화"), "reject_momentum_decay", "momentum_decay"),
+    ]
+    for needles, code, label in patterns:
+        if any(needle in text for needle in needles):
+            return code, label
+    return "reject_claude_veto", "claude_veto"
 
 
 def _get_dates_for_news(today: str) -> list:
@@ -550,11 +567,12 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_invalid_payload")
         return None
 
-    # 4. Claude emit 확인 (bad news filter: emit=False → bad news detected)
+    # 4. Claude emit 확인 (시장 종료 / 늦은 진입 / 모멘텀 둔화 등 veto 포함)
     c_emit = claude.get("emit") == "1"
     if not c_emit:
-        _log("runner.reject.bad_news", symbol=symbol, reason=claude.get("reason", "")[:60])
-        _record_reject(r, market, "reject_bad_news")
+        veto_code, veto_label = _classify_claude_veto(claude.get("reason", ""))
+        _log("runner.reject.claude_veto", symbol=symbol, veto=veto_label, reason=claude.get("reason", "")[:60])
+        _record_reject(r, market, veto_code)
         return None
 
     # 방향 확인
@@ -903,8 +921,8 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         return None
 
     # 신호 생성
-    stop_pct = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.040"))
-    take_pct = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.200"))
+    stop_pct = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.030"))
+    take_pct = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.150"))
     stop_price = current_price * (1 - stop_pct)
 
     signal_id = str(uuid.uuid4())
@@ -1006,7 +1024,10 @@ def main():
     print(
         f"consensus: started poll_sec={_POLL_SEC} strategy=momentum_breakout "
         f"prefilter=ret_5m>{_MIN_SURGE_5M} range_5m>{_MIN_RANGE_5M} "
-        f"stop_pct=0.025 take_pct=0.050 "
+        f"kr_stop_pct={os.getenv('EXIT_STOP_LOSS_PCT', '0.015')} "
+        f"kr_take_pct={os.getenv('EXIT_TAKE_PROFIT_PCT', '0.030')} "
+        f"coin_stop_pct={os.getenv('COIN_EXIT_STOP_LOSS_PCT', '0.030')} "
+        f"coin_take_pct={os.getenv('COIN_EXIT_TAKE_PROFIT_PCT', '0.150')} "
         f"watchlist_kr={watchlist_kr} "
         f"watchlist_us={watchlist_us} "
         f"watchlist_coin={watchlist_coin}",

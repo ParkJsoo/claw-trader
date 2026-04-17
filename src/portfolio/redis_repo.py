@@ -79,6 +79,10 @@ class RedisPositionRepository:
     def _mark_key(self, market: str, symbol: str) -> str:
         return self.MARK_KEY.format(market=market, symbol=symbol)
 
+    def trade_exists(self, market: str, trade_id: str) -> bool:
+        """멱등키 존재 여부 확인."""
+        return bool(self.r.exists(self._trade_dedupe_key(market, trade_id)))
+
     def get_position(self, market: str, symbol: str) -> Optional[PositionState]:
         key = self._position_key(market, symbol)
         raw = self.r.hgetall(key)

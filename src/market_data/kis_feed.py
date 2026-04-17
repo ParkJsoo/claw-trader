@@ -9,6 +9,10 @@ import requests
 
 _REDIS_TOKEN_KEY = "kis:access_token"
 _REDIS_TOKEN_TTL = 23 * 3600  # 23시간
+_REDIS_TOKEN_BLOCKED_KEY = "kis:token_refresh_blocked"
+_REDIS_TOKEN_BLOCKED_TTL = 3600
+_REDIS_TOKEN_RETRY_KEY = "kis:token_refresh_retry_after"
+_REDIS_TOKEN_RETRY_TTL = 30
 
 _TOKEN_EXPIRED = object()  # sentinel: 401/403 토큰 만료 신호
 
@@ -49,6 +53,22 @@ class KisFeed:
                     return
             except Exception:
                 pass
+            try:
+                blocked_ttl = self._redis.ttl(_REDIS_TOKEN_BLOCKED_KEY)
+                if blocked_ttl > 0:
+                    raise RuntimeError(f"KIS token refresh blocked (retry in {blocked_ttl}s)")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            try:
+                retry_ttl = self._redis.ttl(_REDIS_TOKEN_RETRY_KEY)
+                if retry_ttl > 0:
+                    raise RuntimeError(f"KIS token refresh deferred (retry in {retry_ttl}s)")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
         try:
             resp = self.session.post(
                 f"{self.base_url}/oauth2/tokenP",
@@ -59,8 +79,29 @@ class KisFeed:
                 },
                 timeout=10,
             )
+            if resp.status_code == 403:
+                if self._redis:
+                    try:
+                        cached = self._redis.get(_REDIS_TOKEN_KEY)
+                        if cached:
+                            self.access_token = cached
+                            return
+                    except Exception:
+                        pass
+                    try:
+                        self._redis.set(_REDIS_TOKEN_BLOCKED_KEY, "1", ex=_REDIS_TOKEN_BLOCKED_TTL, nx=True)
+                    except Exception:
+                        pass
+                raise RuntimeError("KIS token refresh failed: 403 Forbidden (rate limited)")
             resp.raise_for_status()
+        except RuntimeError:
+            raise
         except Exception as e:
+            if self._redis:
+                try:
+                    self._redis.set(_REDIS_TOKEN_RETRY_KEY, "1", ex=_REDIS_TOKEN_RETRY_TTL, nx=True)
+                except Exception:
+                    pass
             raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
         data = resp.json()
         if "access_token" not in data:
@@ -70,6 +111,7 @@ class KisFeed:
         if self._redis:
             try:
                 self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+                self._redis.delete(_REDIS_TOKEN_RETRY_KEY)
             except Exception:
                 pass
 

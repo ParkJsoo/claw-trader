@@ -58,20 +58,20 @@ _EXIT_LOCK_TTL = 60           # 중복 매도 방지 lock TTL
 _OB_TTL = 10                  # orderbook Redis TTL
 
 # Exit 파라미터 (position_exit_runner와 동일)
-_STOP_LOSS_PCT = Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.02"))
-_TAKE_PROFIT_PCT = Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.02"))
+_STOP_LOSS_PCT = Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.015"))
+_TAKE_PROFIT_PCT = Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.030"))
 _TRAIL_STOP_PCT = Decimal(os.getenv("EXIT_TRAIL_STOP_PCT", "0.015"))
-_TIME_LIMIT_SEC = int(os.getenv("EXIT_TIME_LIMIT_SEC", "1800"))
+_TIME_LIMIT_SEC = int(os.getenv("EXIT_TIME_LIMIT_SEC", "900"))
 _TIME_LIMIT_MAX_SEC = int(os.getenv("EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_SEC * 2)))
 
-_COIN_STOP_LOSS_PCT = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", str(_STOP_LOSS_PCT)))
-_COIN_TAKE_PROFIT_PCT = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", str(_TAKE_PROFIT_PCT)))
-_COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", str(_TRAIL_STOP_PCT)))
-_COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", str(_TIME_LIMIT_SEC)))
-_COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", str(_TIME_LIMIT_MAX_SEC)))
+_COIN_STOP_LOSS_PCT = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.030"))
+_COIN_TAKE_PROFIT_PCT = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.150"))
+_COIN_TRAIL_STOP_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_PCT", "0.040"))
+_COIN_TIME_LIMIT_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_SEC", "3600"))
+_COIN_TIME_LIMIT_MAX_SEC = int(os.getenv("COIN_EXIT_TIME_LIMIT_MAX_SEC", "14400"))
 
-_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "900"))
-_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.025"))
+_COIN_EARLY_EXIT_SEC = int(os.getenv("COIN_EARLY_EXIT_SEC", "600"))
+_COIN_EARLY_EXIT_PCT = Decimal(os.getenv("COIN_EARLY_EXIT_PCT", "0.010"))
 
 # 2단계 trailing stop (position_exit_runner와 동기)
 _COIN_TRAIL_STOP_TIGHT_PCT = Decimal(os.getenv("COIN_EXIT_TRAIL_STOP_TIGHT_PCT", "0.030"))

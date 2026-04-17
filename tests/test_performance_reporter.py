@@ -137,6 +137,26 @@ class TestComputeDailyStats:
         assert loaded["trade_count"] == "3"
         assert loaded["win_rate"] == "66.7"
 
+    def test_sync_realized_pnl_updates_market_pnl(self):
+        r = fakeredis.FakeRedis()
+        reporter = PerformanceReporter(r)
+
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        base_ms = int(datetime(2026, 3, 18, 10, 0, tzinfo=ZoneInfo("Asia/Seoul")).timestamp() * 1000)
+
+        _add_trade(r, "COIN", "KRW-BTC", "SELL", Decimal("3000.12"), base_ms)
+        _add_trade(r, "COIN", "KRW-ETH", "SELL", Decimal("-1000.01"), base_ms + 1000)
+        r.hset("pnl:COIN", mapping={"realized_pnl": "999", "unrealized_pnl": "321", "currency": "KRW"})
+
+        stats = reporter.sync_realized_pnl("COIN", "20260318")
+        pnl = r.hgetall("pnl:COIN")
+
+        assert Decimal(stats["net_pnl"]) == Decimal("2000.11")
+        assert Decimal(pnl[b"realized_pnl"].decode()) == Decimal("2000.11")
+        assert pnl[b"unrealized_pnl"].decode() == "321"
+        assert pnl[b"currency"].decode() == "KRW"
+
 
 class TestFormatReport:
     def test_no_trades_message(self):
@@ -162,3 +182,18 @@ class TestFormatReport:
         assert "66.7%" in msg
         assert "2000" in msg
         assert "005930" in msg
+
+    def test_coin_report_uses_krw_label(self):
+        r = fakeredis.FakeRedis()
+        reporter = PerformanceReporter(r)
+        stats = {
+            "date": "20260318", "market": "COIN",
+            "trade_count": "1", "win_count": "1", "loss_count": "0",
+            "win_rate": "100.0", "net_pnl": "1234.56",
+            "profit_factor": "999.0", "avg_rr": "0",
+            "best_trade_symbol": "KRW-BTC", "best_trade_pnl": "1234.56",
+            "worst_trade_symbol": "KRW-BTC", "worst_trade_pnl": "1234.56",
+            "max_drawdown": "0",
+        }
+        msg = reporter.format_report("COIN", stats)
+        assert "1234.56 원" in msg

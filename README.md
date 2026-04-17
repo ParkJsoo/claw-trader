@@ -6,17 +6,18 @@
 
 ## 특징
 
-- **AI 신호 생성** — Claude 기반 momentum breakout 신호 (catalyst quality filter)
-- **동적 워치리스트** — KR: Universe → 상위 12종목 자동 선정 / COIN: 거래대금 상위 15개 (1시간 갱신)
+- **AI 신호 생성** — Claude 기반 momentum breakout 신호 (runtime: `claude_only`)
+- **동적 워치리스트** — KR: Universe → 상위 12종목 자동 선정 / COIN: 거래대금 상위 30개 + 급등 종목 추가 (10분 갱신)
 - **뉴스 인텔리전스** — DART/Google News/Yahoo Finance RSS 수집 → AI 프롬프트 자동 주입
-- **신호 품질 필터** — ret_5m > +1% prefilter / range_5m / volume surge(×1.5) / live mark_hist 실시간 검증
-- **Trailing Stop** — HWM 기반 trailing + R:R (stop 2.5%, take 5%)
-- **Time Limit** — 30분 보유, 수익 중 최대 1시간 연장
+- **신호 품질 필터** — ret_5m / range_5m / volume surge(×1.5) / live mark_hist 실시간 검증
+- **KR Exit Profile** — HWM 기반 trailing + scalp R:R (기본 `1.5% / 3.0% / 1.5%`)
+- **COIN Exit Profile** — Big mover ride (`3.0% / 15.0% / 4.0%`, +5% 이후 tight trail)
+- **Time Limit** — KR 15분 기본 / COIN 1시간 기본, 수익 중 연장
 - **Regime Filter** — 3방향(bearish/neutral/bullish), bearish 시 모든 LONG 억제
 - **자동 파라미터 튜닝** — 5거래일 성과 기반 stop/size 자동 조정 (KST 15:40 후)
 - **streak 자본 조정** — 3연속 수익 → size +5%, 3연속 손실 → size −10%
 - **Fill Detection + PnL** — 잔고 diff 기반 체결 감지 → realized/unrealized PnL 자동 기록
-- **TG 일일 리포트** — win rate / profit factor / avg R:R / max drawdown 자동 발송
+- **TG 일일 리포트** — KR 15:40, COIN 자정 기준 전일 리포트 자동 발송
 - **백테스트 프레임워크** — stop/take/trail_pct 그리드 스윕, 매일 KST 16:10 자동 실행
 - **3중 시장** — KR (KIS API) / US (IBKR TWS API) / COIN (Upbit API) 동시 운영
 - **현금 전용 리스크 모델** — 마진/레버리지/파생 거래 없음
@@ -27,13 +28,13 @@
 ## 아키텍처
 
 ```
-Watchlist Selector (KR: Universe → 상위 12종목 / COIN: 거래대금 상위 15개, 1시간 갱신)
+Watchlist Selector (KR: Universe → 상위 12종목 / COIN: 거래대금 상위 30개 + 급등 추가, 10분 갱신)
        ↓
 News Runner (DART / Google RSS / Yahoo Finance)
        ↓
 News Classifier → Redis (news:{symbol} / news:macro)
        ↓
-AI Dual Eval Runner (Claude) ← ret_5m > +1% prefilter / 뉴스 컨텍스트 주입
+AI Dual Eval Runner (Claude) ← ret_5m prefilter / 뉴스 컨텍스트 주입
        ↓
 Consensus Signal Runner (live mark_hist ret_5m 재검증 + volume surge + Regime Filter → Signal → queue)
        ↓
@@ -47,7 +48,9 @@ KIS / IBKR / Upbit Order API
        ↓
 Order Watcher (TTL 기반 미체결 취소)
        ↓
-Position Exit Runner (trailing stop / time_limit 30분 / take_profit 5%)
+Position Exit Runner (KR primary / COIN fallback)
+       ↓
+Upbit WS Exit Monitor (COIN primary real-time exit)
        ↓
 Position Engine (Fill Detection → Portfolio / PnL / streak 조정)
        ↓
@@ -97,7 +100,7 @@ docker run -d --name claw-redis --restart always \
 # 4. 환경변수 로드
 set -a && source .env && source config/phase10_kr_micro.env && set +a
 
-# 5. supervisord 기동 (15개 프로세스 자동 관리)
+# 5. supervisord 기동 (runtime truth)
 supervisord -c config/supervisord.conf
 supervisorctl status   # 상태 확인
 supervisorctl tail -f runner   # 로그 실시간 확인
@@ -136,15 +139,22 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner
 - `GEN_WATCHLIST_KR` / `GEN_WATCHLIST_US` — 기본 워치리스트 (동적 선정 없을 때 fallback)
 - `GEN_UNIVERSE_KR` / `GEN_UNIVERSE_US` — 동적 워치리스트 Universe 종목 풀
 
-`config/phase10_kr_micro.env` 추가 설정:
+`config/supervisord.conf`가 실제 운영 source of truth이고, `config/phase10_kr_micro.env`는 로컬 기본값입니다.
+
+`config/phase10_kr_micro.env` 기본 설정:
 
 ```bash
-EXIT_STOP_LOSS_PCT=0.025       # -2.5% 손절
-EXIT_TAKE_PROFIT_PCT=0.05      # +5.0% 익절
-EXIT_TRAIL_STOP_PCT=0.020      # trailing stop
-EXIT_TIME_LIMIT_SEC=1800       # 30분 보유 제한
-EXIT_TIME_LIMIT_MAX_SEC=3600   # 수익 중 최대 1시간
-MB_MIN_SURGE_5M=0.010          # 5분 급등 최소 1%
+EXIT_STOP_LOSS_PCT=0.015       # KR -1.5% 손절
+EXIT_TAKE_PROFIT_PCT=0.030     # KR +3.0% 익절
+EXIT_TRAIL_STOP_PCT=0.015      # KR trailing stop
+EXIT_TIME_LIMIT_SEC=900        # KR 15분 보유 제한
+KR_TRAIL_ONLY_TRIGGER_PCT=0.020
+COIN_EXIT_STOP_LOSS_PCT=0.030
+COIN_EXIT_TAKE_PROFIT_PCT=0.150
+COIN_EXIT_TRAIL_STOP_PCT=0.040
+COIN_EARLY_EXIT_SEC=600
+COIN_EARLY_EXIT_PCT=0.010
+MB_MIN_SURGE_5M_KR=0.020
 RISK_KR_MAX_CONCURRENT=3
 UNIVERSE_SELECT_COUNT=12
 ```

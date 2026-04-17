@@ -26,6 +26,12 @@ class PerformanceReporter:
     def __init__(self, r: Redis):
         self.r = r
 
+    def _currency_label(self, market: str) -> str:
+        return "원" if market in ("KR", "COIN") else "USD"
+
+    def _currency_code(self, market: str) -> str:
+        return "KRW" if market in ("KR", "COIN") else "USD"
+
     def _decode(self, v) -> str:
         if isinstance(v, bytes):
             return v.decode()
@@ -170,9 +176,28 @@ class PerformanceReporter:
         self.save_daily_stats(market, date_str, stats)
         return stats
 
+    def sync_realized_pnl(self, market: str, date_str: str) -> dict:
+        """trade history 기준 일별 realized_pnl을 pnl:{market}에 재동기화."""
+        stats = self.compute_and_save(market, date_str)
+        key = f"pnl:{market}"
+        raw = self.r.hgetall(key) or {}
+        decoded = {self._decode(k): self._decode(v) for k, v in raw.items()}
+        unrealized = decoded.get("unrealized_pnl", "0") or "0"
+        now_ms = str(int(time.time() * 1000))
+        self.r.hset(
+            key,
+            mapping={
+                "realized_pnl": stats.get("net_pnl", "0"),
+                "unrealized_pnl": unrealized,
+                "currency": decoded.get("currency") or self._currency_code(market),
+                "updated_ts": now_ms,
+            },
+        )
+        return stats
+
     def format_report(self, market: str, stats: dict) -> str:
         """TG 발송용 리포트 문자열 생성."""
-        currency = "원" if market == "KR" else "USD"
+        currency = self._currency_label(market)
         date = stats.get("date", "")
         count = stats.get("trade_count", "0")
         win = stats.get("win_count", "0")

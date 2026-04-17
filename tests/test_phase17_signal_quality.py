@@ -84,16 +84,16 @@ class TestHasVolumeSurge:
         with patch("app.consensus_signal_runner.today_kst", return_value=today):
             assert _has_volume_surge(r, "KR", "005930") is False
 
-    def test_insufficient_history_returns_true(self):
-        """과거 데이터 3개 미만이면 통과."""
+    def test_insufficient_history_returns_false(self):
+        """과거 데이터 3개 미만이면 거래량 검증 불가로 reject."""
         r = fakeredis.FakeRedis()
         today = "20260318"
         self._set_vol(r, "KR", "005930", today, 500000)
         self._set_vol(r, "KR", "005930", "20260317", 1000000)
         self._set_vol(r, "KR", "005930", "20260316", 1000000)
-        # 과거 2개만 → 3개 미만 → True
+        # 과거 2개만 → 3개 미만 → False
         with patch("app.consensus_signal_runner.today_kst", return_value=today):
-            assert _has_volume_surge(r, "KR", "005930") is True
+            assert _has_volume_surge(r, "KR", "005930") is False
 
 
 class TestRet15mFeature:

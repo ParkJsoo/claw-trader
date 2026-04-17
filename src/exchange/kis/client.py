@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import redis
 import requests
+import time
 from decimal import Decimal
 
 from exchange.base import ExchangeClient
@@ -19,6 +20,10 @@ _REDIS_TOKEN_KEY = "kis:access_token"
 _REDIS_TOKEN_TTL = 23 * 3600  # 23시간 (KIS 토큰 유효기간 24시간)
 _REDIS_TOKEN_BLOCKED_KEY = "kis:token_refresh_blocked"
 _REDIS_TOKEN_BLOCKED_TTL = 3600  # 403 발생 시 1시간 재시도 차단
+_REDIS_TOKEN_RETRY_KEY = "kis:token_refresh_retry_after"
+_REDIS_TOKEN_RETRY_TTL = 30  # 일시적 5xx/네트워크 실패 시 30초 재시도 지연
+_REQUEST_RETRY_ATTEMPTS = 3
+_REQUEST_RETRY_BASE_SEC = 0.3
 
 
 def _kr_tick_size(price: int) -> int:
@@ -90,6 +95,14 @@ class KisClient(ExchangeClient):
                 raise
             except Exception:
                 pass
+            try:
+                retry_ttl = self._redis.ttl(_REDIS_TOKEN_RETRY_KEY)
+                if retry_ttl > 0:
+                    raise RuntimeError(f"KIS token refresh deferred (retry in {retry_ttl}s)")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
         self._refresh_token()
 
     def _refresh_token(self):
@@ -125,6 +138,11 @@ class KisClient(ExchangeClient):
         except RuntimeError:
             raise
         except Exception as e:
+            if self._redis:
+                try:
+                    self._redis.set(_REDIS_TOKEN_RETRY_KEY, "1", ex=_REDIS_TOKEN_RETRY_TTL, nx=True)
+                except Exception:
+                    pass
             raise RuntimeError(f"KIS token refresh failed: {type(e).__name__}") from None
 
         data = resp.json()
@@ -138,6 +156,7 @@ class KisClient(ExchangeClient):
         if self._redis:
             try:
                 self._redis.set(_REDIS_TOKEN_KEY, self.access_token, ex=_REDIS_TOKEN_TTL)
+                self._redis.delete(_REDIS_TOKEN_RETRY_KEY)
             except Exception:
                 pass
 
@@ -153,35 +172,46 @@ class KisClient(ExchangeClient):
         }
 
     def _request_with_retry(self, method: str, url: str, headers: dict, **kwargs):
-        """API 호출 + 401 시 토큰 갱신 후 1회 재시도. 예외 시 시크릿 마스킹."""
-        try:
-            resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
-        except Exception as e:
-            raise RuntimeError(f"KIS API {method.upper()} request failed: {type(e).__name__}") from None
-        if resp.status_code == 401:
-            # 401: 명시적 인증 실패 → 토큰 갱신 후 1회 재시도
-            self.access_token = None
-            self._token_fetched_at = 0.0
-            if self._redis:
-                try:
-                    self._redis.delete(_REDIS_TOKEN_KEY)
-                except Exception:
-                    pass
+        """API 호출 + 인증 갱신 + 일시적 5xx 재시도."""
+        auth_refreshed = False
+        req_headers = dict(headers)
+        last_error: str | None = None
+
+        for attempt in range(1, _REQUEST_RETRY_ATTEMPTS + 1):
             try:
-                self._refresh_token()
-            except Exception:
-                resp.raise_for_status()
-                return resp
-            headers["authorization"] = f"Bearer {self.access_token}"
-            try:
-                resp = getattr(self.session, method)(url, headers=headers, timeout=10, **kwargs)
+                resp = getattr(self.session, method)(url, headers=req_headers, timeout=10, **kwargs)
             except Exception as e:
-                raise RuntimeError(f"KIS API {method.upper()} retry failed: {type(e).__name__}") from None
-        try:
-            resp.raise_for_status()
-        except Exception as e:
-            raise RuntimeError(f"KIS API {method.upper()} status={resp.status_code}: {type(e).__name__}") from None
-        return resp
+                last_error = f"KIS API {method.upper()} request failed: {type(e).__name__}"
+                if attempt < _REQUEST_RETRY_ATTEMPTS:
+                    time.sleep(_REQUEST_RETRY_BASE_SEC * attempt)
+                    continue
+                raise RuntimeError(last_error) from None
+
+            if resp.status_code in (401, 403) and not auth_refreshed:
+                self.access_token = None
+                self._token_fetched_at = 0.0
+                if self._redis:
+                    try:
+                        self._redis.delete(_REDIS_TOKEN_KEY)
+                    except Exception:
+                        pass
+                self._refresh_token()
+                req_headers["authorization"] = f"Bearer {self.access_token}"
+                auth_refreshed = True
+                continue
+
+            if resp.status_code >= 500 and attempt < _REQUEST_RETRY_ATTEMPTS:
+                time.sleep(_REQUEST_RETRY_BASE_SEC * attempt)
+                continue
+
+            try:
+                resp.raise_for_status()
+            except Exception as e:
+                last_error = f"KIS API {method.upper()} status={resp.status_code}: {type(e).__name__}"
+                raise RuntimeError(last_error) from None
+            return resp
+
+        raise RuntimeError(last_error or f"KIS API {method.upper()} request failed")
 
     def ping(self) -> bool:
         try:

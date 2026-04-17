@@ -2,6 +2,17 @@
 
 ---
 
+## Runtime Reality (2026-04-17)
+
+- 실제 운영 source of truth는 `config/supervisord.conf`
+- 현재 실행 모드는 `EXECUTION_MODE=claude_only`
+- KR 기본 exit는 `1.5% / 3.0% / 1.5%`, `KR_TRAIL_ONLY_TRIGGER_PCT=0.020`
+- COIN 기본 exit는 `3.0% / 15.0% / 4.0%`, `COIN_EARLY_EXIT_SEC=600`, `COIN_EARLY_EXIT_PCT=0.010`
+- COIN 실시간 exit primary는 `upbit_ws_exit_monitor`, `position_exit_runner`는 fallback 성격
+- `daily_report_runner`는 COIN `perf:daily` 저장과 intraday `pnl:COIN` 동기화를 수행
+
+---
+
 ## 🎯 Project Goal
 - Objective: **Real profit generation**
 - Mode: **Fully automated trading**

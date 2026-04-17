@@ -2,7 +2,7 @@
 
 - trailing stop (HWM 기반)
 - time_limit 수익 연장
-- partial consensus (Claude EMIT + positive news)
+- claude_only consensus + news boost
 - market regime filter
 """
 from __future__ import annotations
@@ -91,11 +91,11 @@ class TestTimeLimitExtension:
         assert "time_limit" in result
 
     def test_time_limit_extended_when_profitable(self):
-        """수익 중이면 TIME_LIMIT_SEC 초과해도 연장 (하드 max 미도달)."""
+        """한 번이라도 수익권(HWM>avg)에 진입한 포지션만 TIME_LIMIT 연장."""
         avg = Decimal("100000")
         mark = Decimal("101000")  # 수익
         opened_ts = self._old_ts(_TIME_LIMIT_SEC + 10)  # 기본 time_limit 초과
-        result = _check_exit(avg, mark, opened_ts)
+        result = _check_exit(avg, mark, opened_ts, hwm_price=Decimal("101500"))
         # 수익 중이고 TIME_LIMIT_MAX_SEC 미도달 → exit 없음
         assert result is None
 
@@ -169,42 +169,51 @@ def _make_dual_eval_data(r, market, symbol, c_emit, q_emit, c_dir="LONG", q_dir=
     })
 
 
-class TestPartialConsensus:
-    def test_claude_only_emit_no_news_rejected(self):
-        """Claude EMIT + Qwen HOLD + 뉴스 없음 → reject."""
+def _set_live_mark_hist(r, market, symbol, latest_price="50000", past_price="48350"):
+    now_ms = int(time.time() * 1000)
+    latest_ts = now_ms - 1000
+    past_ts = now_ms - (5 * 60 * 1000) - 1000
+    key = f"mark_hist:{market}:{symbol}"
+    r.delete(key)
+    r.rpush(key, f"{latest_ts}:{latest_price}", f"{past_ts}:{past_price}")
+
+
+class TestClaudeOnlyConsensus:
+    def test_claude_emit_qwen_hold_still_allows_in_claude_only_mode(self):
+        """Qwen HOLD는 현재 claude_only 실행 모드에서 진입 차단 사유가 아니다."""
         r = fakeredis.FakeRedis()
         _make_dual_eval_data(r, "KR", "005930", c_emit=True, q_emit=False)
+        _set_live_mark_hist(r, "KR", "005930")
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"), \
              patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("50000")):
             result = run_once("KR", "005930", r)
-        assert result is None
+        assert result is not None
 
-    def test_claude_only_emit_with_positive_news_allowed(self):
-        """Claude EMIT + Qwen HOLD + positive 뉴스 → signal 생성 (partial)."""
+    def test_positive_high_news_boosts_size_cash(self):
+        """KR positive+high 뉴스는 현재 size_cash 1.5배 boost를 건다."""
         r = fakeredis.FakeRedis()
         _make_dual_eval_data(r, "KR", "005930", c_emit=True, q_emit=False)
+        _set_live_mark_hist(r, "KR", "005930")
         r.lpush("news:symbol:KR:005930:20260318",
                 json.dumps({"sentiment": "positive", "impact": "high"}))
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"), \
              patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("100000")):
             result = run_once("KR", "005930", r)
         assert result is not None
-        assert result.get("partial_consensus") is True
-        # size_cash = 100000 / 2 = 50000
-        assert Decimal(result["entry"]["size_cash"]) == Decimal("50000")
+        assert "partial_consensus" not in result
+        assert Decimal(result["entry"]["size_cash"]) == Decimal("150000.0")
 
-    def test_full_consensus_not_affected(self):
-        """Claude+Qwen 모두 EMIT이면 full consensus — 뉴스/confidence 가중 적용.
-        뉴스 없음(0.8) × confidence 0.7(1.0배) = 0.8배 → 80000."""
+    def test_full_consensus_has_no_extra_news_penalty(self):
+        """현재 full consensus에서도 뉴스 없음 감산은 없다."""
         r = fakeredis.FakeRedis()
         _make_dual_eval_data(r, "KR", "005930", c_emit=True, q_emit=True)
+        _set_live_mark_hist(r, "KR", "005930")
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"), \
              patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("100000")):
             result = run_once("KR", "005930", r)
         assert result is not None
-        assert result.get("partial_consensus") is False
-        # 뉴스 없음 → news_mult=0.8, conf=0.7 → conf_mult=1.0 → 100000 * 0.8 = 80000
-        assert Decimal(result["entry"]["size_cash"]) == Decimal("80000.00")
+        assert "partial_consensus" not in result
+        assert Decimal(result["entry"]["size_cash"]) == Decimal("100000.0")
 
 
 # ---------------------------------------------------------------------------
@@ -215,22 +224,28 @@ from app.consensus_signal_runner import _is_bearish_regime
 
 
 class TestBearishRegimeFilter:
-    def _set_features(self, r, market, symbol, ret_5m):
-        r.hset(f"ai:dual:last:claude:{market}:{symbol}", mapping={
-            "features_json": json.dumps({"ret_5m": str(ret_5m), "current_price": "50000"}),
-        })
+    def _set_mark_hist(self, r, market, symbol, ret_5m):
+        latest_price = Decimal("50000")
+        past_price = latest_price / (Decimal("1") + Decimal(str(ret_5m)))
+        _set_live_mark_hist(
+            r,
+            market,
+            symbol,
+            latest_price=str(latest_price),
+            past_price=str(past_price.quantize(Decimal("0.0001"))),
+        )
 
     def test_majority_bearish_returns_true(self):
         r = fakeredis.FakeRedis()
         for sym, ret in [("A", -0.01), ("B", -0.005), ("C", -0.003), ("D", 0.002), ("E", -0.004)]:
-            self._set_features(r, "KR", sym, ret)
+            self._set_mark_hist(r, "KR", sym, ret)
         # 4/5 = 80% bearish → True
         assert _is_bearish_regime(r, "KR", ["A", "B", "C", "D", "E"]) is True
 
     def test_majority_bullish_returns_false(self):
         r = fakeredis.FakeRedis()
         for sym, ret in [("A", 0.01), ("B", 0.005), ("C", -0.003), ("D", 0.002), ("E", 0.004)]:
-            self._set_features(r, "KR", sym, ret)
+            self._set_mark_hist(r, "KR", sym, ret)
         # 1/5 = 20% bearish → False
         assert _is_bearish_regime(r, "KR", ["A", "B", "C", "D", "E"]) is False
 
@@ -238,15 +253,15 @@ class TestBearishRegimeFilter:
         """60% 이하면 False (> 0.6 조건이므로 정확히 60% = False)."""
         r = fakeredis.FakeRedis()
         for sym, ret in [("A", -0.01), ("B", -0.005), ("C", -0.003), ("D", 0.002), ("E", 0.004)]:
-            self._set_features(r, "KR", sym, ret)
+            self._set_mark_hist(r, "KR", sym, ret)
         # 3/5 = 60% → > 0.6이 아님 → False
         assert _is_bearish_regime(r, "KR", ["A", "B", "C", "D", "E"]) is False
 
     def test_insufficient_data_returns_false(self):
         """데이터 있는 종목이 3개 미만이면 False."""
         r = fakeredis.FakeRedis()
-        self._set_features(r, "KR", "A", -0.01)
-        self._set_features(r, "KR", "B", -0.005)
+        self._set_mark_hist(r, "KR", "A", -0.01)
+        self._set_mark_hist(r, "KR", "B", -0.005)
         assert _is_bearish_regime(r, "KR", ["A", "B"]) is False
 
     def test_empty_watchlist_returns_false(self):

@@ -62,7 +62,8 @@ class TestBuildDualPromptWithNews:
         }
         prompt = build_dual_prompt("KR", "005930", features)
 
-        assert "Consider news sentiment" in prompt
+        assert "최근 뉴스" in prompt
+        assert "Your role: BAD NEWS FILTER" in prompt
 
     def test_us_market_with_news(self):
         features = {

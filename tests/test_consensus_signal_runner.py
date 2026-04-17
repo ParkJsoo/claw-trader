@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
+import time
 from decimal import Decimal
+from unittest.mock import patch
 
 import fakeredis
 import pytest
 
-from app.consensus_signal_runner import normalize_kr_price_tick, run_once
+from app.consensus_signal_runner import _classify_claude_veto, normalize_kr_price_tick, run_once
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,17 @@ def _set_dual(r, market: str, symbol: str,
     r.hset(f"ai:dual:last:qwen:{market}:{symbol}", mapping={
         "emit": q_emit, "direction": q_dir, "features_json": fj,
     })
+
+
+def _set_live_mark_hist(r, market: str, symbol: str,
+                        latest_price: str = "70000",
+                        past_price: str = "67700"):
+    now_ms = int(time.time() * 1000)
+    latest_ts = now_ms - 1000
+    past_ts = now_ms - (5 * 60 * 1000) - 1000
+    key = f"mark_hist:{market}:{symbol}"
+    r.delete(key)
+    r.rpush(key, f"{latest_ts}:{latest_price}", f"{past_ts}:{past_price}")
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +88,10 @@ class TestRunOnceHappyPath:
     def test_candidate_created_and_queued(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930")
+        _set_live_mark_hist(r, "KR", "005930")
 
-        result = run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result = run_once("KR", "005930", r)
 
         assert result is not None
         assert result["status"] == "candidate"
@@ -85,7 +100,6 @@ class TestRunOnceHappyPath:
         assert result["market"] == "KR"
         assert result["direction"] == "LONG"
         assert result["claude_emit"] == 1
-        assert result["qwen_emit"] == 1
 
         # queue에 push 됐는지
         raw = r.rpop("claw:signal:queue")
@@ -96,28 +110,34 @@ class TestRunOnceHappyPath:
     def test_entry_price_equals_current_price(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", features_json=_make_features(current_price="70000"))
+        _set_live_mark_hist(r, "KR", "005930", latest_price="70000", past_price="67700")
 
-        result = run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result = run_once("KR", "005930", r)
 
-        assert result["entry"]["price"] == "70000"
+        assert Decimal(result["entry"]["price"]) == Decimal("70000")
         # 1주: size_cash == price
-        assert result["entry"]["size_cash"] == "70000"
+        assert Decimal(result["entry"]["size_cash"]) == Decimal("70000")
 
     def test_stop_price_is_normalized(self):
         r = fakeredis.FakeRedis()
         # range_5m=0.005 → stop_pct=max(0.015, 0.005*1.2)=0.015
         # stop_raw = 70000 * 0.985 = 68950 → tick=100 → 68900
         _set_dual(r, "KR", "005930", features_json=_make_features(current_price="70000"))
+        _set_live_mark_hist(r, "KR", "005930", latest_price="70000", past_price="67700")
 
-        result = run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result = run_once("KR", "005930", r)
 
         assert result["stop"]["price"] == "68900"
 
     def test_audit_saved(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930")
+        _set_live_mark_hist(r, "KR", "005930")
 
-        result = run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result = run_once("KR", "005930", r)
 
         audit_keys = r.keys("consensus:audit:KR:*")
         assert len(audit_keys) == 1
@@ -125,8 +145,10 @@ class TestRunOnceHappyPath:
     def test_stats_incremented(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930")
+        _set_live_mark_hist(r, "KR", "005930")
 
-        run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            run_once("KR", "005930", r)
 
         from utils.redis_helpers import today_kst
         stats = r.hgetall(f"consensus:stats:KR:{today_kst()}")
@@ -142,15 +164,13 @@ class TestRunOnceReject:
         r = fakeredis.FakeRedis()
         assert run_once("KR", "005930", r) is None
 
-    def test_consensus_failed_qwen_no_emit(self):
+    def test_qwen_no_emit_does_not_block_claude_only_mode(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", q_emit="0")
+        _set_live_mark_hist(r, "KR", "005930")
 
-        assert run_once("KR", "005930", r) is None
-
-        from utils.redis_helpers import today_kst
-        stats = r.hgetall(f"consensus:stats:KR:{today_kst()}")
-        assert b"reject_consensus_failed" in stats
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            assert run_once("KR", "005930", r) is not None
 
     def test_consensus_failed_claude_no_emit(self):
         r = fakeredis.FakeRedis()
@@ -158,15 +178,13 @@ class TestRunOnceReject:
 
         assert run_once("KR", "005930", r) is None
 
-    def test_direction_mismatch(self):
+    def test_qwen_direction_mismatch_does_not_block_claude_only_mode(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", c_dir="LONG", q_dir="EXIT")
+        _set_live_mark_hist(r, "KR", "005930")
 
-        assert run_once("KR", "005930", r) is None
-
-        from utils.redis_helpers import today_kst
-        stats = r.hgetall(f"consensus:stats:KR:{today_kst()}")
-        assert b"reject_direction_mismatch" in stats
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            assert run_once("KR", "005930", r) is not None
 
     def test_direction_not_long_rejected(self):
         r = fakeredis.FakeRedis()
@@ -177,6 +195,7 @@ class TestRunOnceReject:
     def test_prefilter_ret_5m_zero(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", features_json=_make_features(ret_5m=0.0))
+        _set_live_mark_hist(r, "KR", "005930", latest_price="70000", past_price="70000")
 
         assert run_once("KR", "005930", r) is None
 
@@ -187,12 +206,14 @@ class TestRunOnceReject:
     def test_prefilter_ret_5m_negative(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", features_json=_make_features(ret_5m=-0.001))
+        _set_live_mark_hist(r, "KR", "005930", latest_price="69000", past_price="70000")
 
         assert run_once("KR", "005930", r) is None
 
     def test_prefilter_range_5m_too_small(self):
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", features_json=_make_features(range_5m=0.003))
+        _set_live_mark_hist(r, "KR", "005930")
 
         assert run_once("KR", "005930", r) is None
 
@@ -204,6 +225,7 @@ class TestRunOnceReject:
         # > 0.004 이어야 하므로 정확히 0.004는 거부
         r = fakeredis.FakeRedis()
         _set_dual(r, "KR", "005930", features_json=_make_features(range_5m=0.004))
+        _set_live_mark_hist(r, "KR", "005930")
 
         assert run_once("KR", "005930", r) is None
 
@@ -242,6 +264,7 @@ class TestRunOnceDedup:
     def test_same_eval_result_not_pushed_twice(self):
         """동일 ts_ms로 두 번 poll 시 두 번째는 skip."""
         r = fakeredis.FakeRedis()
+        _set_live_mark_hist(r, "KR", "005930")
         # ts_ms 고정
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
@@ -254,8 +277,9 @@ class TestRunOnceDedup:
             "features_json": _make_features(),
         })
 
-        result1 = run_once("KR", "005930", r)
-        result2 = run_once("KR", "005930", r)  # 동일 ts_ms → skip
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result1 = run_once("KR", "005930", r)
+            result2 = run_once("KR", "005930", r)  # 동일 ts_ms → skip
 
         assert result1 is not None
         assert result2 is None
@@ -264,6 +288,7 @@ class TestRunOnceDedup:
     def test_new_eval_result_is_pushed(self):
         """ts_ms가 바뀌면 새 신호 push."""
         r = fakeredis.FakeRedis()
+        _set_live_mark_hist(r, "KR", "005930")
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
             "ts_ms": "1700000000000",
@@ -275,7 +300,8 @@ class TestRunOnceDedup:
             "features_json": _make_features(),
         })
 
-        run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            run_once("KR", "005930", r)
 
         # symbol cooldown 해제 (Phase 11: cooldown 내에서는 재emit 차단)
         r.delete("consensus:symbol_cooldown:KR:005930")
@@ -292,7 +318,30 @@ class TestRunOnceDedup:
             "features_json": _make_features(),
         })
 
-        result2 = run_once("KR", "005930", r)
+        with patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("70000")):
+            result2 = run_once("KR", "005930", r)
 
         assert result2 is not None
         assert r.llen("claw:signal:queue") == 2  # 2건 push
+
+
+class TestClaudeVetoClassification:
+    def test_market_close_reason(self):
+        code, label = _classify_claude_veto("Market closed soon, skip entry.")
+        assert code == "reject_market_close"
+        assert label == "market_close"
+
+    def test_late_entry_reason(self):
+        code, label = _classify_claude_veto("Too late entry after breakout.")
+        assert code == "reject_late_entry"
+        assert label == "late_entry"
+
+    def test_momentum_decay_reason(self):
+        code, label = _classify_claude_veto("Momentum decay already visible.")
+        assert code == "reject_momentum_decay"
+        assert label == "momentum_decay"
+
+    def test_generic_reason_falls_back(self):
+        code, label = _classify_claude_veto("Risk reward no longer attractive.")
+        assert code == "reject_claude_veto"
+        assert label == "claude_veto"

@@ -20,7 +20,7 @@ class PositionEngine:
         self.repo = repo
 
     def _currency(self, market: str) -> str:
-        return "KRW" if market == "KR" else "USD"
+        return "KRW" if market in ("KR", "COIN") else "USD"
 
     def apply_fill(self, fill: FillEvent) -> Optional[Decimal]:
         """
@@ -32,6 +32,10 @@ class PositionEngine:
         market = fill.market
         symbol = fill.symbol
         currency = self._currency(market)
+
+        # duplicate SELL가 포지션 청산 후 들어와도 DLQ로 보내지 않도록 선제 멱등 체크
+        if self.repo.trade_exists(market, trade_id):
+            return None
 
         # 포지션 1회 읽기 (TOCTOU 방지: record_trade 전후 동일 스냅샷 사용)
         pos = self.repo.get_position(market, symbol)

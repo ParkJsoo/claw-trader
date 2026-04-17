@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from decimal import Decimal
 from typing import Optional
+
+# eventkit/ib_insync import 시 Python 3.12에서 current loop 경고를 내지 않도록
+# 기본 이벤트 루프를 먼저 보장한다.
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
 
 from ib_insync import IB, Stock
 
