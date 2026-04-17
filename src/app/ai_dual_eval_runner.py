@@ -104,9 +104,27 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
         return
 
     now_ms = int(time.time() * 1000)
+
+    # tick freshness 체크: 최신 tick이 5분 이상 오래됐으면 skip (거래 없는 stale 심볼)
+    _TICK_FRESH_MS = 300_000
+    try:
+        latest_ts = int(entries[0].split(":")[0])
+        if (now_ms - latest_ts) > _TICK_FRESH_MS:
+            r.hincrby(f"ai:dual_stats:consensus:{market}:{today}", "skip_stale_tick", 1)
+            r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
+            return
+    except (IndexError, ValueError):
+        pass
+
     features = gen._compute_features(entries, now_ms)
     if not features:
         r.hincrby(f"ai:dual_stats:consensus:{market}:{today}", "skip_feature_error", 1)
+        r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
+        return
+
+    # ret_5m None이면 tick 히스토리 부족 — Claude 호출해도 "Missing" HOLD만 반환
+    if features.get("ret_5m") is None:
+        r.hincrby(f"ai:dual_stats:consensus:{market}:{today}", "skip_no_momentum_data", 1)
         r.expire(f"ai:dual_stats:consensus:{market}:{today}", _DUAL_TTL)
         return
 
