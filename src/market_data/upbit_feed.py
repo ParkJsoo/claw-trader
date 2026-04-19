@@ -6,6 +6,7 @@ vol:COIN:{symbol}:{date} 에 24h 거래대금(원) 저장.
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -13,7 +14,7 @@ from typing import Optional
 
 import redis
 
-_MARK_HIST_MAX = 300
+_MARK_HIST_MAX = int(os.getenv("UPBIT_MARK_HIST_MAX", "720"))
 _KST_OFFSET = 9 * 3600
 
 

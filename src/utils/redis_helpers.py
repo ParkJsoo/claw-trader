@@ -73,13 +73,24 @@ def get_config(r, market: str, key: str, default: float) -> float:
     return default
 
 
+def _is_truthy_redis_value(val) -> bool:
+    if val is None:
+        return False
+    s = val.decode() if isinstance(val, bytes) else str(val)
+    return s.lower() in ("true", "1", "yes")
+
+
 def is_paused(r) -> bool:
     """claw:pause:global 상태 확인 (true/1/yes 모두 처리)."""
     try:
-        val = r.get("claw:pause:global")
-        if val is None:
-            return False
-        s = val.decode() if isinstance(val, bytes) else val
-        return s.lower() in ("true", "1", "yes")
+        return _is_truthy_redis_value(r.get("claw:pause:global"))
+    except Exception:
+        return False
+
+
+def is_market_paused(r, market: str) -> bool:
+    """시장별 pause 상태 확인. 예: claw:pause:COIN=true."""
+    try:
+        return _is_truthy_redis_value(r.get(f"claw:pause:{market}"))
     except Exception:
         return False

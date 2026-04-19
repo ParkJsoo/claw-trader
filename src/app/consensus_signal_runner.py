@@ -44,6 +44,7 @@ def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
 
 import redis
 
+from app.coin_research import save_signal_snapshot
 from domain.models import Signal, SignalEntry, SignalStop
 from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours, is_paused
 
@@ -89,9 +90,13 @@ _BULLISH_THRESHOLD = float(os.getenv("REGIME_BULLISH_THRESHOLD", "0.30"))  # bea
 _TYPE_B_POLL_SEC = float(os.getenv("TYPE_B_POLL_SEC", "300"))           # 5분마다 체크
 _TYPE_B_COOLDOWN_SEC = int(os.getenv("TYPE_B_COOLDOWN_SEC", "14400"))   # 4시간 쿨다운
 _TYPE_B_MIN_CHANGE_RATE = float(os.getenv("TYPE_B_MIN_CHANGE_RATE", "0.05"))   # 전일대비 +5%
+_TYPE_B_MAX_CHANGE_RATE = float(os.getenv("TYPE_B_MAX_CHANGE_RATE", "0.12"))   # 전일대비 +12% 초과 late-chase 차단
 _TYPE_B_MIN_VOL_KRW = float(os.getenv("TYPE_B_MIN_VOL_KRW", "10000000000"))    # 24h 거래대금 100억
 _TYPE_B_NEAR_HIGH_RATIO = float(os.getenv("TYPE_B_NEAR_HIGH_RATIO", "0.97"))   # 당일 고점 -3% 이내
 _TYPE_B_MIN_RET_5M = float(os.getenv("TYPE_B_MIN_RET_5M", "0.005"))            # 5분 ret 0.5% 이상
+_TYPE_B_MAX_RET_5M = float(os.getenv("TYPE_B_MAX_RET_5M", "0.025"))            # 5분 ret 2.5% 초과 late-chase 차단
+_TYPE_B_REQUIRE_OB_RATIO = os.getenv("TYPE_B_REQUIRE_OB_RATIO", "true").lower() in ("1", "true", "yes", "on")
+_TYPE_B_MIN_OB_RATIO = float(os.getenv("TYPE_B_MIN_OB_RATIO", "1.05"))         # 매수 우위 오더북 확인
 
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
@@ -630,6 +635,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
 
+    ret_1m = None
     # 5-a2. ret_1m 최소 기준 프리필터
     try:
         ret_1m_raw = c_features.get("ret_1m")
@@ -745,9 +751,20 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "claude_conf": str(c_conf),
         "ret_5m": ret_5m,
         "range_5m": range_5m,
+        "ret_1m": ret_1m,
+        "vol_24h": vol_24h if market == "COIN" else None,
+        "ob_ratio": None,
+        "news_score": _get_news_score(r, market, symbol) if market == "KR" else None,
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
     }
+    if market == "COIN":
+        ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
+        if ob_raw is not None:
+            try:
+                payload["ob_ratio"] = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
+            except (TypeError, ValueError):
+                payload["ob_ratio"] = None
 
     # cooldown SET: consensus 성공 + prefilter 통과 후, signal push 직전에만 설정
     r.set(cooldown_key, "1", ex=_SYMBOL_COOLDOWN_SEC)
@@ -758,6 +775,8 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _log("runner.error.publish_failed", symbol=symbol, signal_id=signal_id, error=str(e))
         r.delete(cooldown_key)  # lpush 실패 시 cooldown 롤백
         return None
+    if market == "COIN":
+        save_signal_snapshot(r, payload)
 
     # 종목별 일일 진입 카운트 증가
     r.incr(symbol_daily_key)
@@ -866,6 +885,10 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     # 조건 ①: 전일대비 +5% 이상
     if change_rate < _TYPE_B_MIN_CHANGE_RATE:
         return None
+    if change_rate > _TYPE_B_MAX_CHANGE_RATE:
+        _log("type_b.reject.change_rate_overextended", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%")
+        return None
 
     # 조건 ②: 당일 고점 -3% 이내 (추세 유지 확인)
     near_high = trade_price / high_price
@@ -887,6 +910,10 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         _log("type_b.reject.ret_5m_weak", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
         return None
+    if ret_5m > _TYPE_B_MAX_RET_5M:
+        _log("type_b.reject.ret_5m_overextended", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        return None
 
     current_price = Decimal(str(live_price_float))
 
@@ -898,6 +925,14 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
             _ob_ratio = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
         except (TypeError, ValueError):
             pass
+    if _TYPE_B_REQUIRE_OB_RATIO and _ob_ratio is None:
+        _log("type_b.reject.ob_ratio_missing", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%")
+        return None
+    if _ob_ratio is not None and _ob_ratio < _TYPE_B_MIN_OB_RATIO:
+        _log("type_b.reject.ob_ratio_weak", symbol=symbol,
+             change_rate=f"{change_rate*100:.1f}%", ob_ratio=f"{_ob_ratio:.3f}")
+        return None
 
     # Claude 평가 (Type B 전용 프롬프트)
     try:
@@ -962,6 +997,9 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         "claude_conf": str(confidence),
         "ret_5m": ret_5m,
         "change_rate_daily": change_rate,
+        "vol_24h": vol_krw,
+        "ob_ratio": _ob_ratio,
+        "signal_family": "type_b",
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
     }
@@ -972,6 +1010,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         _log("type_b.publish_failed", symbol=symbol, error=str(e))
         r.delete(tb_cooldown_key)
         return None
+    save_signal_snapshot(r, payload)
 
     # 종목별 일일 진입 카운터 증가 (Type A와 공유)
     r.incr(symbol_daily_key)

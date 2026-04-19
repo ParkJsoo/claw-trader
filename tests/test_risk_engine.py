@@ -100,6 +100,17 @@ class TestRule0GlobalPause:
         d = eng.check(_make_signal())
         assert d.allow is True
 
+    def test_market_pause_blocks_matching_market_only(self):
+        r = fakeredis.FakeRedis()
+        r.set("claw:pause:COIN", "true")
+        eng = _make_engine(r)
+        d_coin = eng.check(_make_signal(market="COIN", symbol="KRW-BTC"))
+        d_kr = eng.check(_make_signal(market="KR", symbol="005930"))
+        assert d_coin.allow is False
+        assert d_coin.reason == "PAUSED"
+        assert d_coin.meta["key"] == "claw:pause:COIN"
+        assert d_kr.allow is True
+
 
 # ---------------------------------------------------------------------------
 # Rule 1: duplicate position

@@ -121,7 +121,11 @@ def main():
         f"kr_cooldown={strategy_cfg.kr.cooldown_sec}s "
         f"kr_daily_cap={strategy_cfg.kr.daily_cap} "
         f"kr_max_concurrent={risk_cfg.kr.max_concurrent_positions} "
-        f"kr_daily_loss_limit={risk_cfg.kr.daily_loss_limit}",
+        f"kr_daily_loss_limit={risk_cfg.kr.daily_loss_limit} "
+        f"coin_daily_cap={strategy_cfg.coin.daily_cap} "
+        f"coin_max_concurrent={risk_cfg.coin.max_concurrent_positions} "
+        f"coin_daily_loss_limit={risk_cfg.coin.daily_loss_limit} "
+        f"coin_alloc_cap={risk_cfg.coin.allocation_cap_pct}",
         flush=True,
     )
     ex_us = Executor(ibkr, r, "US", risk=RiskEngine(r, risk_cfg, ibkr)) if ibkr else None

@@ -6,6 +6,11 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from app.coin_research import (
+    bind_position_signal_context,
+    hydrate_fill_signal_id,
+    record_closed_trade,
+)
 from domain.models import FillEvent, OrderSide
 from portfolio.redis_repo import RedisPositionRepository
 
@@ -32,6 +37,10 @@ class PositionEngine:
         market = fill.market
         symbol = fill.symbol
         currency = self._currency(market)
+        position_ctx = self.repo.get_position_context(market, symbol)
+
+        if market == "COIN" and not fill.signal_id:
+            hydrate_fill_signal_id(self.repo.r, fill, position_ctx)
 
         # duplicate SELL가 포지션 청산 후 들어와도 DLQ로 보내지 않도록 선제 멱등 체크
         if self.repo.trade_exists(market, trade_id):
@@ -60,9 +69,13 @@ class PositionEngine:
 
         if fill.side == OrderSide.BUY:
             self._apply_buy(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized)
+            if market == "COIN" and fill.signal_id:
+                bind_position_signal_context(self.repo.r, symbol, fill.signal_id)
         else:
             # realized_delta는 위에서 1회 계산한 값을 전달 (이중 계산 방지)
             self._apply_sell(fill, market, symbol, currency, prev_qty, prev_avg, prev_realized, realized_delta)
+            if market == "COIN" and realized_delta is not None:
+                record_closed_trade(self.repo.r, fill, realized_delta, position_ctx)
 
         self.repo.set_mark_price(fill.market, fill.symbol, fill.price)
         self.repo.recalc_unrealized(fill.market)

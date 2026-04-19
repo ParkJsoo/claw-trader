@@ -19,6 +19,19 @@ from redis import Redis
 from domain.models import FillEvent, PositionState, OrderSide, Market
 
 
+def _decode(v) -> str:
+    if isinstance(v, bytes):
+        return v.decode()
+    return str(v) if v is not None else ""
+
+
+def _hgetall_str(r: Redis, key: str) -> dict[str, str]:
+    raw = r.hgetall(key)
+    if not raw:
+        return {}
+    return {_decode(k): _decode(v) for k, v in raw.items()}
+
+
 def _to_ts_ms(ts: str) -> str:
     """
     fill.ts를 ms 문자열로 정규화.
@@ -108,6 +121,10 @@ class RedisPositionRepository:
             currency=d("currency") or ("KRW" if market in ("KR", "COIN") else "USD"),
         )
 
+    def get_position_context(self, market: str, symbol: str) -> dict[str, str]:
+        """포지션 hash 원문(str:str) 조회. 연구/보조 메타 연결용."""
+        return _hgetall_str(self.r, self._position_key(market, symbol))
+
     def save_position(
         self,
         market: str,
@@ -116,6 +133,7 @@ class RedisPositionRepository:
         avg_price: Decimal,
         realized_pnl: Decimal,
         currency: str,
+        meta: Optional[dict[str, str]] = None,
     ) -> None:
         key = self._position_key(market, symbol)
         idx_key = self._position_index_key(market)
@@ -128,17 +146,23 @@ class RedisPositionRepository:
         is_new_position = not self.r.exists(key)
 
         now_ms = str(int(time.time() * 1000))
-        self.r.hset(
-            key,
-            mapping={
-                "qty": str(qty),
-                "avg_price": str(avg_price),
-                "realized_pnl": str(realized_pnl),
-                "updated_ts": now_ms,
-                "currency": currency,
-                "side": "BUY",
-            },
-        )
+        existing_opened = _hgetall_str(self.r, key).get("opened_ts", "")
+        opened_ts = existing_opened or now_ms
+        mapping = {
+            "qty": str(qty),
+            "avg_price": str(avg_price),
+            "realized_pnl": str(realized_pnl),
+            "updated_ts": now_ms,
+            "opened_ts": opened_ts,
+            "currency": currency,
+            "side": "BUY",
+        }
+        if meta:
+            for k, v in meta.items():
+                if v is None:
+                    continue
+                mapping[k] = str(v)
+        self.r.hset(key, mapping=mapping)
         self.r.expire(key, self.POSITION_TTL)
         self.r.sadd(idx_key, symbol)
         self.r.expire(idx_key, self.POSITION_TTL)

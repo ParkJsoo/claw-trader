@@ -224,6 +224,12 @@ def handle_status(r) -> str:
     except Exception:
         pause = "(error)"
     lines.append(f"pause: {'PAUSED [OK]' if pause == 'true' else 'LIVE [!]'}")
+    try:
+        coin_pause_val = r.get("claw:pause:COIN")
+        coin_pause = (coin_pause_val.decode() if isinstance(coin_pause_val, bytes) else coin_pause_val) if coin_pause_val else "false"
+    except Exception:
+        coin_pause = "(error)"
+    lines.append(f"coin_pause: {'PAUSED [OK]' if coin_pause == 'true' else 'LIVE'}")
 
     # MD age
     kr_age = _md_age_sec(r, "KR")
@@ -335,6 +341,12 @@ def handle_ai_status(r) -> str:
         pause = "(error)"
     pause_label = "PAUSED [OK]" if pause == "true" else "LIVE [!]"
     lines.append(f"\npause: {pause_label}")
+    try:
+        coin_pause_val = r.get("claw:pause:COIN")
+        coin_pause = (coin_pause_val.decode() if isinstance(coin_pause_val, bytes) else coin_pause_val) if coin_pause_val else "false"
+    except Exception:
+        coin_pause = "(error)"
+    lines.append(f"coin_pause: {'PAUSED [OK]' if coin_pause == 'true' else 'LIVE'}")
 
     return "\n".join(lines)
 

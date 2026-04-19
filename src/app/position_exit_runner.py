@@ -421,7 +421,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
                 early_exit_sec: int = None, early_exit_pct: Decimal = None,
                 trail_tight_pct: Decimal = None, trail_tight_trigger: Decimal = None,
                 trail_only_trigger: Decimal = None,
-                stagnant_exit: bool = True):
+                stagnant_exit: bool = True,
+                now_ts_ms: int | None = None):
     """Exit 조건 확인. 조건 충족 시 reason 문자열 반환, 없으면 None.
 
     pos: position hash dict (str:str). stop_pct/take_pct가 있으면 동적 값 사용, 없으면 전역 fallback.
@@ -470,11 +471,11 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
 
     take_price = avg_price * (1 + _eff_take)
     # H2: opened_ts 호환 — >1e12이면 밀리초, 아니면 초
-    now_ms = int(time.time() * 1000)
+    now_ms = now_ts_ms if now_ts_ms is not None else int(time.time() * 1000)
     if opened_ts > 1_000_000_000_000:
         held_sec = (now_ms - opened_ts) // 1000
     else:
-        held_sec = int(time.time()) - opened_ts
+        held_sec = (now_ms // 1000) - opened_ts
 
     if mark_price <= stop_price:
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"

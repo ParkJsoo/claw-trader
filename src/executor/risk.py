@@ -62,11 +62,14 @@ class RiskEngine:
         """Redis 값이 pause 활성화 상태인지 판정. 대소문자/다양한 표현 방어."""
         return v is not None and v.decode(errors="replace").strip().lower() in ("true", "1", "yes")
 
-    def _rule0_global_pause(self) -> Optional[RiskDecision]:
+    def _rule0_global_pause(self, signal: Signal) -> Optional[RiskDecision]:
         if self._is_truthy(self.redis.get(self.PAUSE_KEY_PRIMARY)):
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": self.PAUSE_KEY_PRIMARY})
         if self._is_truthy(self.redis.get(self.PAUSE_KEY_COMPAT)):
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": self.PAUSE_KEY_COMPAT})
+        market_key = f"claw:pause:{signal.market}"
+        if self._is_truthy(self.redis.get(market_key)):
+            return RiskDecision(allow=False, reason="PAUSED", meta={"key": market_key, "market": signal.market})
         return None
 
     def _rule1_duplicate_position(self, signal: Signal, cfg: MarketRiskConfig) -> Optional[RiskDecision]:
@@ -190,7 +193,7 @@ class RiskEngine:
     def check(self, signal: Signal) -> RiskDecision:
         cfg = self.cfg.for_market(signal.market)
         rules = [
-            self._rule0_global_pause,
+            lambda: self._rule0_global_pause(signal),
             lambda: self._rule1_duplicate_position(signal, cfg),
             lambda: self._rule2_max_concurrent(signal, cfg),
             lambda: self._rule3_killswitch_pnl(signal, cfg),
