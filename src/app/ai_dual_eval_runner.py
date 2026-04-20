@@ -131,7 +131,9 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
     # 2. momentum breakout prefilter: 급등 + 변동성 확인 (AI call 절감)
     stats_key = f"ai:dual_stats:consensus:{market}:{today}"
 
-    # 직전 eval이 emit=0이고 30분 이상 지났으면 prefilter 우회 (stale HOLD 재평가)
+    # 직전 eval이 emit=0이고 30분 이상 지났으면 재평가 허용.
+    # 다만 consensus와 동일한 momentum prefilter는 그대로 유지해
+    # stale HOLD가 약한 셋업을 emit=1로 뒤집는 경로를 막는다.
     _stale_reeval_sec = int(os.getenv("EVAL_STALE_SEC", "1800"))
     last_eval_raw = r.hgetall(f"ai:dual:last:claude:{market}:{symbol}")
     _force_reeval = False
@@ -145,23 +147,25 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
         ret_5m_val = features.get("ret_5m")
         range_5m_val = features.get("range_5m")
         if _force_reeval:
-            # stale HOLD 재평가: 폭락 중인 종목은 재평가 불필요 (call_cap 절감)
+            # stale HOLD 재평가라도 현재 셋업이 약하면 AI 호출 불필요.
             if ret_5m_val is not None and float(ret_5m_val) < -0.005:
                 r.hincrby(stats_key, "skip_prefilter_stale_falling", 1)
                 r.expire(stats_key, _DUAL_TTL)
                 return
-        else:
-            # 5분 상승폭이 충분하지 않으면 skip (momentum breakout 셋업 아님)
-            _surge_threshold = _MB_SURGE_5M_KR if market == "KR" else _MB_SURGE_5M
-            if ret_5m_val is not None and float(ret_5m_val) <= _surge_threshold:
-                r.hincrby(stats_key, "skip_prefilter_ret5m", 1)
-                r.expire(stats_key, _DUAL_TTL)
-                return
-            # 변동성 없으면 skip
-            if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
-                r.hincrby(stats_key, "skip_prefilter_range5m", 1)
-                r.expire(stats_key, _DUAL_TTL)
-                return
+
+        # 5분 상승폭이 충분하지 않으면 skip (momentum breakout 셋업 아님)
+        _surge_threshold = _MB_SURGE_5M_KR if market == "KR" else _MB_SURGE_5M
+        if ret_5m_val is not None and float(ret_5m_val) <= _surge_threshold:
+            counter = "skip_prefilter_stale_ret5m" if _force_reeval else "skip_prefilter_ret5m"
+            r.hincrby(stats_key, counter, 1)
+            r.expire(stats_key, _DUAL_TTL)
+            return
+        # 변동성 없으면 skip
+        if range_5m_val is not None and float(range_5m_val) <= _DUAL_MIN_RANGE_5M:
+            counter = "skip_prefilter_stale_range5m" if _force_reeval else "skip_prefilter_range5m"
+            r.hincrby(stats_key, counter, 1)
+            r.expire(stats_key, _DUAL_TTL)
+            return
     except (TypeError, ValueError):
         pass
 
@@ -247,7 +251,9 @@ def main():
     print(
         f"eval: started poll_sec={_DUAL_POLL_SEC} "
         f"call_cap={_DUAL_DAILY_CALL_CAP}/market/day "
-        f"model={claude.model} strategy=momentum_breakout surge_threshold={_MB_SURGE_5M} "
+        f"model={claude.model} strategy=momentum_breakout "
+        f"surge_threshold_coin_us={_MB_SURGE_5M} "
+        f"surge_threshold_kr={_MB_SURGE_5M_KR} "
         f"kr={watchlist_kr} us={watchlist_us}",
         flush=True,
     )

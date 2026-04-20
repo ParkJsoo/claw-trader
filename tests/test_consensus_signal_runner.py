@@ -31,13 +31,15 @@ def _make_features(
 def _set_dual(r, market: str, symbol: str,
               c_emit="1", q_emit="1",
               c_dir="LONG", q_dir="LONG",
-              features_json: str | None = None):
+              features_json: str | None = None,
+              ts_ms: str | None = None):
     fj = features_json or _make_features()
+    ts_ms = ts_ms or str(int(time.time() * 1000))
     r.hset(f"ai:dual:last:claude:{market}:{symbol}", mapping={
-        "emit": c_emit, "direction": c_dir, "features_json": fj,
+        "emit": c_emit, "direction": c_dir, "features_json": fj, "ts_ms": ts_ms,
     })
     r.hset(f"ai:dual:last:qwen:{market}:{symbol}", mapping={
-        "emit": q_emit, "direction": q_dir, "features_json": fj,
+        "emit": q_emit, "direction": q_dir, "features_json": fj, "ts_ms": ts_ms,
     })
 
 
@@ -300,15 +302,16 @@ class TestRunOnceDedup:
         """동일 ts_ms로 두 번 poll 시 두 번째는 skip."""
         r = fakeredis.FakeRedis()
         _set_live_mark_hist(r, "KR", "005930")
+        fresh_ts_ms = str(int(time.time() * 1000))
         # ts_ms 고정
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000000000",
+            "ts_ms": fresh_ts_ms,
             "features_json": _make_features(),
         })
         r.hset("ai:dual:last:qwen:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000000000",
+            "ts_ms": fresh_ts_ms,
             "features_json": _make_features(),
         })
 
@@ -324,14 +327,16 @@ class TestRunOnceDedup:
         """ts_ms가 바뀌면 새 신호 push."""
         r = fakeredis.FakeRedis()
         _set_live_mark_hist(r, "KR", "005930")
+        first_ts_ms = str(int(time.time() * 1000))
+        second_ts_ms = str(int(time.time() * 1000) + 120000)
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000000000",
+            "ts_ms": first_ts_ms,
             "features_json": _make_features(),
         })
         r.hset("ai:dual:last:qwen:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000000000",
+            "ts_ms": first_ts_ms,
             "features_json": _make_features(),
         })
 
@@ -344,12 +349,12 @@ class TestRunOnceDedup:
         # ts_ms 갱신 (새 eval 결과) + cooldown 해제 → push 가능
         r.hset("ai:dual:last:claude:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000120000",
+            "ts_ms": second_ts_ms,
             "features_json": _make_features(),
         })
         r.hset("ai:dual:last:qwen:KR:005930", mapping={
             "emit": "1", "direction": "LONG",
-            "ts_ms": "1700000120000",
+            "ts_ms": second_ts_ms,
             "features_json": _make_features(),
         })
 

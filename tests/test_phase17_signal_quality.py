@@ -11,7 +11,7 @@ import fakeredis
 import pytest
 
 from app.consensus_signal_runner import (
-    _get_news_score, _has_volume_surge,
+    _get_news_score, _get_volume_surge_status,
 )
 
 
@@ -52,15 +52,17 @@ class TestGetNewsScore:
             assert _get_news_score(r, "KR", "005930") == "none"
 
 
-class TestHasVolumeSurge:
+class TestGetVolumeSurgeStatus:
     def _set_vol(self, r, market, symbol, date_str, vol):
         r.set(f"vol:{market}:{symbol}:{date_str}", str(vol))
 
-    def test_no_data_returns_true(self):
-        """데이터 없으면 통과 (permissive)."""
+    def test_no_today_volume_returns_true_with_reason(self):
+        """오늘 거래량이 없으면 permissive pass."""
         r = fakeredis.FakeRedis()
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"):
-            assert _has_volume_surge(r, "KR", "005930") is True
+            passed, diag = _get_volume_surge_status(r, "KR", "005930")
+        assert passed is True
+        assert diag["reason"] == "today_volume_missing"
 
     def test_surge_detected(self):
         """오늘 거래량이 평균의 1.5배 이상이면 True."""
@@ -71,7 +73,10 @@ class TestHasVolumeSurge:
             dt = datetime(2026, 3, 18) - timedelta(days=i)
             self._set_vol(r, "KR", "005930", dt.strftime("%Y%m%d"), 1000000)
         with patch("app.consensus_signal_runner.today_kst", return_value=today):
-            assert _has_volume_surge(r, "KR", "005930") is True
+            passed, diag = _get_volume_surge_status(r, "KR", "005930")
+        assert passed is True
+        assert diag["ratio"] == 1.5
+        assert diag["threshold"] == 1.2
 
     def test_no_surge(self):
         """오늘 거래량이 평균의 1.5배 미만이면 False."""
@@ -82,18 +87,32 @@ class TestHasVolumeSurge:
             dt = datetime(2026, 3, 18) - timedelta(days=i)
             self._set_vol(r, "KR", "005930", dt.strftime("%Y%m%d"), 1000000)
         with patch("app.consensus_signal_runner.today_kst", return_value=today):
-            assert _has_volume_surge(r, "KR", "005930") is False
+            passed, diag = _get_volume_surge_status(r, "KR", "005930")
+        assert passed is False
+        assert diag["reason"] == "ratio_below_threshold"
 
-    def test_insufficient_history_returns_false(self):
-        """과거 데이터 3개 미만이면 거래량 검증 불가로 reject."""
+    def test_kr_missing_history_returns_true(self):
+        """KR은 과거 거래량이 아예 없으면 permissive pass."""
         r = fakeredis.FakeRedis()
         today = "20260318"
         self._set_vol(r, "KR", "005930", today, 500000)
-        self._set_vol(r, "KR", "005930", "20260317", 1000000)
-        self._set_vol(r, "KR", "005930", "20260316", 1000000)
-        # 과거 2개만 → 3개 미만 → False
         with patch("app.consensus_signal_runner.today_kst", return_value=today):
-            assert _has_volume_surge(r, "KR", "005930") is False
+            passed, diag = _get_volume_surge_status(r, "KR", "005930")
+        assert passed is True
+        assert diag["reason"] == "history_missing_allow"
+
+    def test_coin_insufficient_history_returns_false(self):
+        """COIN은 최소 샘플 미만이면 reject."""
+        r = fakeredis.FakeRedis()
+        today = "20260318"
+        self._set_vol(r, "COIN", "BTC", today, 500000)
+        self._set_vol(r, "COIN", "BTC", "20260317", 1000000)
+        self._set_vol(r, "COIN", "BTC", "20260316", 1000000)
+        with patch("app.consensus_signal_runner.today_kst", return_value=today):
+            passed, diag = _get_volume_surge_status(r, "COIN", "BTC")
+        assert passed is False
+        assert diag["reason"] == "insufficient_history"
+        assert diag["history_samples"] == 2
 
 
 class TestRet15mFeature:

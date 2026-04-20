@@ -52,23 +52,18 @@ def main():
         watchlist["US"] = load_watchlist(r, "US", "GEN_WATCHLIST_US")
     print(f"md_runner: started poll_interval={POLL_INTERVAL}s watchlist={watchlist}", flush=True)
 
-    _wl_refresh_counter = 0
-    _WL_REFRESH_EVERY = 20  # 매 20 폴링(~60초)마다 워치리스트 갱신
-
     try:
         while True:
             r.expire(_MD_LOCK_KEY, _MD_LOCK_TTL)
 
-            # 주기적 동적 워치리스트 갱신
-            _wl_refresh_counter += 1
-            if _wl_refresh_counter >= _WL_REFRESH_EVERY:
-                _wl_refresh_counter = 0
-                new_wl: dict = {"KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR")}
-                if ibkr_feed:
-                    new_wl["US"] = load_watchlist(r, "US", "GEN_WATCHLIST_US")
-                if new_wl != watchlist:
-                    print(f"md_runner: watchlist updated {watchlist} -> {new_wl}", flush=True)
-                    watchlist = new_wl
+            # 동적 워치리스트는 consensus와 가능한 한 같은 주기로 반영한다.
+            # Redis 조회 비용이 작아 매 폴링마다 갱신해도 부담이 낮다.
+            new_wl: dict = {"KR": load_watchlist(r, "KR", "GEN_WATCHLIST_KR")}
+            if ibkr_feed:
+                new_wl["US"] = load_watchlist(r, "US", "GEN_WATCHLIST_US")
+            if new_wl != watchlist:
+                print(f"md_runner: watchlist updated {watchlist} -> {new_wl}", flush=True)
+                watchlist = new_wl
 
             try:
                 updater.run_once(watchlist)

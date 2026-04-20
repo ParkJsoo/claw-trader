@@ -106,12 +106,31 @@ def _get_dates(today: str) -> list[str]:
 _KR_MAX_PRICE = int(os.getenv("WATCHLIST_KR_MAX_PRICE", "150000"))  # KR 최대 매수 가능 가격 (원)
 
 
+def _get_runtime_blacklist(r, market: str) -> set[str]:
+    """하드코딩 블랙리스트 + Redis 운영 제외 심볼을 합쳐 반환."""
+    blocked = set(_SYMBOL_BLACKLIST)
+    redis_key = f"watchlist:exclude:{market}"
+    try:
+        members = r.smembers(redis_key)
+        blocked.update(
+            m.decode() if isinstance(m, bytes) else str(m)
+            for m in members
+            if m
+        )
+    except Exception:
+        pass
+    return blocked
+
+
 def select_watchlist(r, market: str, universe: list[str], count: int) -> list[str]:
     """유니버스에서 상위 N 종목 선정. KR은 가격 필터 적용."""
     today = today_kst()
+    blocked = _get_runtime_blacklist(r, market)
 
     scored = []
     for symbol in universe:
+        if symbol in blocked:
+            continue
         # KR: mark price 기준 가격 필터 (잔고로 매수 불가한 고가주 및 mark 없는 종목 제외)
         if market == "KR":
             price_raw = r.get(f"mark:KR:{symbol}")
@@ -183,12 +202,13 @@ def select_watchlist_dynamic(r, count: int, kis_client=None) -> list[str] | None
         print(f"watchlist_selector: KIS rank API error ({e}) — skipping dynamic", flush=True)
         return None
 
+    blocked = _get_runtime_blacklist(r, "KR")
     vol_symbols = [item["symbol"] for item in vol_items[:_DYNAMIC_VOLUME_TOP_N]]
     flu_symbols = [item["symbol"] for item in flu_items[:_DYNAMIC_FLUCT_TOP_N]]
 
-    vol_set = set(vol_symbols) - _SYMBOL_BLACKLIST
-    flu_set = set(flu_symbols) - _SYMBOL_BLACKLIST
-    vol_symbols = [s for s in vol_symbols if s not in _SYMBOL_BLACKLIST]
+    vol_set = set(vol_symbols) - blocked
+    flu_set = set(flu_symbols) - blocked
+    vol_symbols = [s for s in vol_symbols if s not in blocked]
     intersection = [s for s in vol_symbols if s in flu_set]  # vol 순서 유지
 
     if intersection:

@@ -80,7 +80,10 @@ _MIN_RET_1M = float(os.getenv("MB_MIN_RET_1M", "0.002"))  # 0.2%
 
 # Phase 17: 신호 품질 강화
 _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
-_VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # 거래량 배수
+_VOLUME_SURGE_RATIO = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO", "1.5"))  # COIN/US 거래량 배수
+_VOLUME_SURGE_RATIO_KR = float(os.getenv("CONSENSUS_VOLUME_SURGE_RATIO_KR", "1.2"))  # KR 거래량 배수
+_VOLUME_SURGE_MIN_SAMPLES = int(os.getenv("CONSENSUS_VOLUME_SURGE_MIN_SAMPLES", "3"))
+_VOLUME_SURGE_MIN_SAMPLES_KR = int(os.getenv("CONSENSUS_VOLUME_SURGE_MIN_SAMPLES_KR", "0"))
 _VOLUME_LOOKBACK_DAYS = int(os.getenv("VOLUME_LOOKBACK_DAYS", "7"))  # 5 → 7 (주말 포함)
 _CLAUDE_ONLY = os.getenv("EXECUTION_MODE", "dual").lower() == "claude_only"  # Qwen 무시
 
@@ -382,17 +385,35 @@ def _get_news_score(r, market: str, symbol: str) -> str:
     return "none"
 
 
-def _has_volume_surge(r, market: str, symbol: str) -> bool:
-    """오늘 거래량이 최근 LOOKBACK일 평균 대비 SURGE_RATIO 이상이면 True.
-    데이터 부족 시 True 반환 (permissive default)."""
+def _get_volume_surge_status(r, market: str, symbol: str) -> tuple[bool, dict]:
+    """오늘 거래량이 최근 평균 대비 충분한지 평가.
+
+    KR은 장중 데이터 부족 때문에 과거 거래량 히스토리 0건이면 permissive pass.
+    """
+    ratio_threshold = _VOLUME_SURGE_RATIO_KR if market == "KR" else _VOLUME_SURGE_RATIO
+    min_samples = _VOLUME_SURGE_MIN_SAMPLES_KR if market == "KR" else _VOLUME_SURGE_MIN_SAMPLES
     today = today_kst()
     today_raw = r.get(f"vol:{market}:{symbol}:{today}")
     if not today_raw:
-        return True  # 데이터 없으면 통과 (현재 장 초반 등)
+        return True, {
+            "today_vol": None,
+            "avg_vol": None,
+            "ratio": None,
+            "threshold": ratio_threshold,
+            "history_samples": 0,
+            "reason": "today_volume_missing",
+        }
     try:
         today_vol = int(today_raw.decode() if isinstance(today_raw, bytes) else today_raw)
     except (ValueError, TypeError):
-        return True
+        return True, {
+            "today_vol": None,
+            "avg_vol": None,
+            "ratio": None,
+            "threshold": ratio_threshold,
+            "history_samples": 0,
+            "reason": "today_volume_invalid",
+        }
 
     vols = []
     for i in range(1, _VOLUME_LOOKBACK_DAYS + 1):
@@ -407,10 +428,38 @@ def _has_volume_surge(r, market: str, symbol: str) -> bool:
         except Exception:
             continue
 
-    if len(vols) < 3:
-        return False  # 과거 데이터 부족 → 거래량 검증 불가, 진입 차단
+    if not vols:
+        allow = market == "KR"
+        return allow, {
+            "today_vol": today_vol,
+            "avg_vol": None,
+            "ratio": None,
+            "threshold": ratio_threshold,
+            "history_samples": 0,
+            "reason": "history_missing_allow" if allow else "history_missing_reject",
+        }
+
+    if len(vols) < min_samples:
+        return False, {
+            "today_vol": today_vol,
+            "avg_vol": None,
+            "ratio": None,
+            "threshold": ratio_threshold,
+            "history_samples": len(vols),
+            "reason": "insufficient_history",
+        }
+
     avg_vol = sum(vols) / len(vols)
-    return today_vol >= avg_vol * _VOLUME_SURGE_RATIO
+    ratio = today_vol / avg_vol if avg_vol > 0 else None
+    passed = bool(avg_vol > 0 and ratio is not None and today_vol >= avg_vol * ratio_threshold)
+    return passed, {
+        "today_vol": today_vol,
+        "avg_vol": round(avg_vol, 2),
+        "ratio": round(ratio, 4) if ratio is not None else None,
+        "threshold": ratio_threshold,
+        "history_samples": len(vols),
+        "reason": "ratio_ok" if passed else "ratio_below_threshold",
+    }
 
 
 def _get_regime(r, market: str, watchlist: list) -> str:
@@ -524,13 +573,31 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if not claude:
         return None  # Claude 결과 없음 — cold start
 
-    # 1-b. stale emit=0 eval 무시: 30분 넘은 HOLD는 재평가 대기 (영구 차단 방지)
-    _eval_stale_sec = int(os.getenv("EVAL_STALE_SEC", "1800"))
+    # 1-b. stale eval 무시:
+    # - HOLD는 30분 넘으면 재평가 대기
+    # - emit=1도 5분 넘으면 무시 (과거 강세 신호 재처리 방지)
+    _hold_eval_stale_sec = int(os.getenv("EVAL_STALE_SEC", "1800"))
+    _emit_eval_stale_sec = int(os.getenv("EMIT_STALE_SEC", "300"))
     c_ts_ms_raw = claude.get("ts_ms", "0")
-    if claude.get("emit") != "1" and c_ts_ms_raw:
+    if c_ts_ms_raw:
         eval_age_ms = int(time.time() * 1000) - int(c_ts_ms_raw)
-        if eval_age_ms > _eval_stale_sec * 1000:
-            return None  # stale HOLD — 새 eval 대기
+        eval_is_emit = claude.get("emit") == "1"
+        max_eval_age_sec = _emit_eval_stale_sec if eval_is_emit else _hold_eval_stale_sec
+        if eval_age_ms > max_eval_age_sec * 1000:
+            if eval_is_emit:
+                try:
+                    # 오래된 emit=1 캐시는 즉시 폐기해 반복 stale skip/log를 막는다.
+                    r.delete(f"ai:dual:last:claude:{market}:{symbol}")
+                except Exception:
+                    pass
+            _log(
+                "runner.skip.stale_eval",
+                symbol=symbol,
+                emit=claude.get("emit", ""),
+                age_sec=int(eval_age_ms / 1000),
+                max_age_sec=max_eval_age_sec,
+            )
+            return None
 
     # 2. dedup: 이미 이 ts_ms로 처리한 결과면 스킵 (중복 push 방지)
     c_ts_ms = claude.get("ts_ms", "")
@@ -684,10 +751,21 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         pass  # ret_1m 없거나 파싱 실패 → 통과 (permissive)
 
     # 5-b. Volume surge 필터 (KR + COIN — US는 데이터 없음)
-    if market in ("KR", "COIN") and not _has_volume_surge(r, market, symbol):
-        _log("runner.reject.volume_no_surge", symbol=symbol)
-        _record_reject(r, market, "reject_volume_no_surge")
-        return None
+    if market in ("KR", "COIN"):
+        volume_ok, volume_diag = _get_volume_surge_status(r, market, symbol)
+        if not volume_ok:
+            _log(
+                "runner.reject.volume_no_surge",
+                symbol=symbol,
+                today_vol=volume_diag["today_vol"],
+                avg_vol=volume_diag["avg_vol"],
+                ratio=volume_diag["ratio"],
+                threshold=volume_diag["threshold"],
+                history_samples=volume_diag["history_samples"],
+                reason=volume_diag["reason"],
+            )
+            _record_reject(r, market, "reject_volume_no_surge")
+            return None
 
     # 6. current_price: live_price 우선, fallback features_json
     if live_price is not None:
@@ -1097,7 +1175,13 @@ def main():
 
     print(
         f"consensus: started poll_sec={_POLL_SEC} strategy=momentum_breakout "
-        f"prefilter=ret_5m>{_MIN_SURGE_5M} range_5m>{_MIN_RANGE_5M} "
+        f"prefilter_coin_us=ret_5m>{_MIN_SURGE_5M} "
+        f"prefilter_kr=ret_5m>{_MIN_SURGE_5M_KR} "
+        f"range_5m>{_MIN_RANGE_5M} "
+        f"volume_ratio_coin={_VOLUME_SURGE_RATIO} "
+        f"volume_ratio_kr={_VOLUME_SURGE_RATIO_KR} "
+        f"volume_min_samples_coin={_VOLUME_SURGE_MIN_SAMPLES} "
+        f"volume_min_samples_kr={_VOLUME_SURGE_MIN_SAMPLES_KR} "
         f"kr_stop_pct={os.getenv('EXIT_STOP_LOSS_PCT', '0.015')} "
         f"kr_take_pct={os.getenv('EXIT_TAKE_PROFIT_PCT', '0.030')} "
         f"coin_stop_pct={os.getenv('COIN_EXIT_STOP_LOSS_PCT', '0.030')} "
