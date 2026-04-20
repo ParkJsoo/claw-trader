@@ -9,7 +9,7 @@ from unittest.mock import patch
 import fakeredis
 import pytest
 
-from app.consensus_signal_runner import _classify_claude_veto, normalize_kr_price_tick, run_once
+from app.consensus_signal_runner import _classify_claude_veto, _get_live_ret_5m, normalize_kr_price_tick, run_once
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,30 @@ def _set_live_mark_hist(r, market: str, symbol: str,
     key = f"mark_hist:{market}:{symbol}"
     r.delete(key)
     r.rpush(key, f"{latest_ts}:{latest_price}", f"{past_ts}:{past_price}")
+
+
+def _set_dense_mark_hist(
+    r,
+    market: str,
+    symbol: str,
+    *,
+    latest_price: str = "70000",
+    past_price: str = "67700",
+    step_sec: int = 4,
+    total_points: int = 100,
+):
+    """최근 30개로는 5분 전 가격이 보이지 않도록 조밀한 mark_hist 생성."""
+    now_ms = int(time.time() * 1000)
+    latest = Decimal(latest_price)
+    past = Decimal(past_price)
+    key = f"mark_hist:{market}:{symbol}"
+    r.delete(key)
+
+    for idx in range(total_points):
+        age_ms = 1000 + idx * step_sec * 1000
+        ts_ms = now_ms - age_ms
+        price = latest if age_ms < 5 * 60 * 1000 else past
+        r.rpush(key, f"{ts_ms}:{price}")
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +278,17 @@ class TestRunOnceReject:
         run_once("KR", "005930", r)
 
         assert r.llen("claw:signal:queue") == 0
+
+    def test_get_live_ret_5m_handles_dense_mark_hist(self):
+        r = fakeredis.FakeRedis()
+        _set_dense_mark_hist(r, "KR", "005930")
+
+        live = _get_live_ret_5m(r, "KR", "005930")
+
+        assert live is not None
+        ret_5m, latest_price = live
+        assert latest_price == 70000.0
+        assert ret_5m == pytest.approx((70000.0 - 67700.0) / 67700.0, rel=1e-4)
 
 
 # ---------------------------------------------------------------------------

@@ -100,6 +100,8 @@ _TYPE_B_MIN_OB_RATIO = float(os.getenv("TYPE_B_MIN_OB_RATIO", "1.05"))         #
 
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
+_MARK_HIST_SCAN_BATCH = int(os.getenv("MARK_HIST_SCAN_BATCH", "120"))
+_MARK_HIST_SCAN_MAX = int(os.getenv("MARK_HIST_SCAN_MAX", "600"))
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +226,49 @@ def _hgetall_str(r, key: str) -> dict:
     if not raw:
         return {}
     return {_decode(k): _decode(v) for k, v in raw.items()}
+
+
+def _parse_mark_hist_entry(entry) -> Optional[tuple[int, float]]:
+    try:
+        raw = _decode(entry)
+        ts_str, price_str = raw.split(":", 1)
+        return int(ts_str), float(price_str)
+    except Exception:
+        return None
+
+
+def _load_mark_hist_until(
+    r,
+    market: str,
+    symbol: str,
+    *,
+    target_ms: int,
+    batch_size: int = _MARK_HIST_SCAN_BATCH,
+    max_entries: int = _MARK_HIST_SCAN_MAX,
+) -> list[tuple[int, float]]:
+    """target 시점이 보일 때까지 mark_hist를 chunk 단위로 로드."""
+    parsed: list[tuple[int, float]] = []
+    start = 0
+
+    while start < max_entries:
+        end = min(start + batch_size - 1, max_entries - 1)
+        chunk = r.lrange(f"mark_hist:{market}:{symbol}", start, end)
+        if not chunk:
+            break
+
+        for entry in chunk:
+            item = _parse_mark_hist_entry(entry)
+            if item is not None:
+                parsed.append(item)
+
+        oldest = _parse_mark_hist_entry(chunk[-1])
+        if oldest is not None and oldest[0] <= target_ms:
+            break
+        if len(chunk) < batch_size:
+            break
+        start += batch_size
+
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -385,21 +430,19 @@ def _get_regime(r, market: str, watchlist: list) -> str:
     total = 0
     for symbol in watchlist:
         try:
-            entries = r.lrange(f"mark_hist:{market}:{symbol}", 0, 20)
+            entries = _load_mark_hist_until(r, market, symbol, target_ms=target_ms)
             if not entries:
                 continue
-            ts_str, price_str = entries[0].decode().split(":", 1)
-            latest_ts = int(ts_str)
-            latest_price = float(price_str)
+            latest_ts, latest_price = entries[0]
 
             if now_ms - latest_ts > stale_threshold_ms:
                 continue  # 시세 오래됨 — 무시
 
             past_price = None
             for entry in entries[1:]:
-                t, p = entry.decode().split(":", 1)
-                if int(t) <= target_ms:
-                    past_price = float(p)
+                t, p = entry
+                if t <= target_ms:
+                    past_price = p
                     break
 
             if past_price is None or past_price == 0:
@@ -442,28 +485,20 @@ def _get_live_ret_5m(r, market: str, symbol: str) -> Optional[tuple]:
     target_ms = now_ms - 5 * 60 * 1000  # 5분 전
     stale_threshold_ms = 2 * 60 * 1000  # 최신 시세 2분 초과 시 skip
 
-    entries = r.lrange(f"mark_hist:{market}:{symbol}", 0, 30)
+    entries = _load_mark_hist_until(r, market, symbol, target_ms=target_ms)
     if not entries:
         return None
-    try:
-        ts_str, price_str = entries[0].decode().split(":", 1)
-        latest_ts = int(ts_str)
-        latest_price = float(price_str)
-    except Exception:
-        return None
+    latest_ts, latest_price = entries[0]
 
     if now_ms - latest_ts > stale_threshold_ms:
         return None  # 시세 2분 이상 오래됨
 
     past_price = None
     for entry in entries[1:]:
-        try:
-            t, p = entry.decode().split(":", 1)
-            if int(t) <= target_ms:
-                past_price = float(p)
-                break
-        except Exception:
-            continue
+        t, p = entry
+        if t <= target_ms:
+            past_price = p
+            break
 
     if past_price is None or past_price == 0:
         return None

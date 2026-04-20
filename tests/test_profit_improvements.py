@@ -178,6 +178,19 @@ def _set_live_mark_hist(r, market, symbol, latest_price="50000", past_price="483
     r.rpush(key, f"{latest_ts}:{latest_price}", f"{past_ts}:{past_price}")
 
 
+def _set_dense_mark_hist(r, market, symbol, latest_price="50000", past_price="48350", step_sec=4, total_points=100):
+    now_ms = int(time.time() * 1000)
+    latest = Decimal(latest_price)
+    past = Decimal(past_price)
+    key = f"mark_hist:{market}:{symbol}"
+    r.delete(key)
+    for idx in range(total_points):
+        age_ms = 1000 + idx * step_sec * 1000
+        ts_ms = now_ms - age_ms
+        price = latest if age_ms < 5 * 60 * 1000 else past
+        r.rpush(key, f"{ts_ms}:{price}")
+
+
 class TestClaudeOnlyConsensus:
     def test_claude_emit_qwen_hold_still_allows_in_claude_only_mode(self):
         """Qwen HOLD는 현재 claude_only 실행 모드에서 진입 차단 사유가 아니다."""
@@ -267,3 +280,13 @@ class TestBearishRegimeFilter:
     def test_empty_watchlist_returns_false(self):
         r = fakeredis.FakeRedis()
         assert _is_bearish_regime(r, "KR", []) is False
+
+    def test_dense_mark_hist_still_detects_bearish_regime(self):
+        r = fakeredis.FakeRedis()
+        _set_dense_mark_hist(r, "KR", "A", latest_price="49000", past_price="50000")
+        _set_dense_mark_hist(r, "KR", "B", latest_price="49500", past_price="50000")
+        _set_dense_mark_hist(r, "KR", "C", latest_price="49250", past_price="50000")
+        _set_dense_mark_hist(r, "KR", "D", latest_price="50100", past_price="50000")
+        _set_dense_mark_hist(r, "KR", "E", latest_price="49800", past_price="50000")
+
+        assert _is_bearish_regime(r, "KR", ["A", "B", "C", "D", "E"]) is True
