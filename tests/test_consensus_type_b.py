@@ -87,3 +87,28 @@ def test_type_b_allows_when_not_overextended_and_orderbook_is_strong():
     assert result is not None
     assert result["signal_family"] == "type_b"
     assert result["symbol"] == "KRW-TEST"
+
+
+def test_type_b_shadow_saves_snapshot_without_queue():
+    r = fakeredis.FakeRedis()
+    r.hset("claw:signal_mode:COIN", mapping={"type_b": "shadow"})
+    r.hset("orderbook:COIN:KRW-TEST", mapping={"ob_ratio": "1.12"})
+    client = _FakeUpbitClient(
+        change_rate=0.08,
+        trade_price=100.0,
+        high_price=101.0,
+        vol_krw=20_000_000_000.0,
+    )
+
+    with patch("app.consensus_signal_runner._get_client", return_value=client), \
+         patch("app.consensus_signal_runner._get_live_ret_5m", return_value=(0.012, 100.0)), \
+         patch("app.consensus_signal_runner._get_anthropic_client", return_value=_FakeAnthropic()), \
+         patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("30000")), \
+         patch("ai.providers.base.build_type_b_prompt", return_value="prompt"), \
+         patch("ai.providers.base.parse_decision_response", return_value=(True, "LONG", 0.82, "trend intact")):
+        result = _run_type_b_coin("KRW-TEST", r, "20260420")
+
+    assert result is not None
+    assert result["status"] == "shadow_candidate"
+    assert r.llen("claw:signal:queue") == 0
+    assert r.exists(f"research:signal:COIN:{result['signal_id']}") == 1

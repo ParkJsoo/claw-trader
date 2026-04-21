@@ -310,7 +310,17 @@ def _load_mark_hist_until(
 # 감사 / 통계
 # ---------------------------------------------------------------------------
 
-def _save_audit(r, market: str, signal: Signal, ret_5m: float, range_5m: float) -> None:
+def _save_audit(
+    r,
+    market: str,
+    signal: Signal,
+    ret_5m: Optional[float],
+    range_5m: Optional[float],
+    *,
+    source: str = "consensus_signal_runner",
+    stats_field: str = "candidate",
+    increment_daily_count: bool = True,
+) -> None:
     today = today_kst()
     payload = {
         "signal_id": signal.signal_id,
@@ -320,22 +330,25 @@ def _save_audit(r, market: str, signal: Signal, ret_5m: float, range_5m: float) 
         "direction": signal.direction,
         "entry_price": str(signal.entry.price),
         "stop_price": str(signal.stop.price),
-        "ret_5m": str(ret_5m),
-        "range_5m": str(range_5m),
-        "source": "consensus_signal_runner",
+        "source": source,
     }
+    if ret_5m is not None:
+        payload["ret_5m"] = str(ret_5m)
+    if range_5m is not None:
+        payload["range_5m"] = str(range_5m)
     audit_key = f"consensus:audit:{market}:{signal.signal_id}"
     r.set(audit_key, json.dumps(payload), ex=_AUDIT_TTL)
 
     # 일별 통계 카운터
     stats_key = f"consensus:stats:{market}:{today}"
-    r.hincrby(stats_key, "candidate", 1)
+    r.hincrby(stats_key, stats_field, 1)
     r.expire(stats_key, _STATS_TTL)
 
     # 일별 candidate 생성 수
-    daily_key = f"consensus:daily_count:{market}:{today}"
-    r.incr(daily_key)
-    r.expire(daily_key, _STATS_TTL)
+    if increment_daily_count:
+        daily_key = f"consensus:daily_count:{market}:{today}"
+        r.incr(daily_key)
+        r.expire(daily_key, _STATS_TTL)
 
 
 def _record_reject(r, market: str, reason_code: str) -> None:
@@ -1148,6 +1161,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         "source": "consensus_signal_runner",
         "status": "candidate",
         "strategy": "momentum_breakout",
+        "signal_family": "type_a",
         "claude_emit": 1,
         "claude_conf": str(c_conf),
         "ret_5m": ret_5m,
@@ -1167,8 +1181,37 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
             except (TypeError, ValueError):
                 payload["ob_ratio"] = None
 
+    signal_mode = get_signal_family_mode(r, market, "type_a", strategy="momentum_breakout", source="consensus_signal_runner")
+    if market == "COIN" and signal_mode == "off":
+        _log("runner.skip.signal_mode_off", symbol=symbol, market=market, signal_family="type_a")
+        _record_reject(r, market, "reject_signal_mode_off")
+        return None
+
     # cooldown SET: consensus 성공 + prefilter 통과 후, signal push 직전에만 설정
     r.set(cooldown_key, "1", ex=_SYMBOL_COOLDOWN_SEC)
+
+    if market == "COIN" and signal_mode == "shadow":
+        payload["status"] = "shadow_candidate"
+        save_signal_snapshot(r, payload)
+        _save_audit(
+            r,
+            market,
+            signal,
+            ret_5m,
+            range_5m,
+            source="consensus_signal_runner_shadow",
+            stats_field="shadow_candidate",
+            increment_daily_count=False,
+        )
+        _log(
+            "runner.shadow_only.candidate_saved",
+            signal_id=signal_id,
+            symbol=symbol,
+            market=market,
+            signal_family="type_a",
+            mode=signal_mode,
+        )
+        return payload
 
     try:
         r.lpush("claw:signal:queue", json.dumps(payload))
@@ -1227,6 +1270,9 @@ def _get_anthropic_client():
 def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     """Type B 추세 탑승: 일간 +5% 이상 상승 중이며 현재도 고점 유지 중인 종목."""
     market = "COIN"
+    signal_mode = get_signal_family_mode(r, market, "type_b", strategy="trend_riding", source="consensus_signal_runner_type_b")
+    if signal_mode == "off":
+        return None
 
     # Type B 쿨다운 (4시간)
     tb_cooldown_key = f"consensus:type_b_cooldown:{market}:{symbol}"
@@ -1404,6 +1450,22 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
     }
+
+    if signal_mode == "shadow":
+        payload["status"] = "shadow_candidate"
+        save_signal_snapshot(r, payload)
+        _save_audit(
+            r,
+            market,
+            signal,
+            ret_5m,
+            None,
+            source="consensus_signal_runner_type_b_shadow",
+            stats_field="shadow_candidate",
+            increment_daily_count=False,
+        )
+        _log("type_b.shadow_only.candidate_saved", symbol=symbol, signal_id=signal_id, mode=signal_mode)
+        return payload
 
     try:
         r.lpush("claw:signal:queue", json.dumps(payload))

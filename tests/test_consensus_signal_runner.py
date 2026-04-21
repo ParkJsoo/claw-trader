@@ -181,6 +181,37 @@ class TestRunOnceHappyPath:
         stats = r.hgetall(f"consensus:stats:KR:{today_kst()}")
         assert int(stats[b"candidate"]) == 1
 
+    def test_coin_type_a_shadow_saves_snapshot_without_queue(self):
+        r = fakeredis.FakeRedis()
+        symbol = "KRW-BTC"
+        today = time.strftime("%Y%m%d")
+        r.hset("claw:signal_mode:COIN", mapping={"type_a": "shadow"})
+        _set_dual(
+            r,
+            "COIN",
+            symbol,
+            features_json=json.dumps({
+                "current_price": "70000",
+                "ret_5m": "0.008",
+                "range_5m": "0.010",
+                "ret_1m": "0.020",
+            }),
+        )
+        _set_live_mark_hist(r, "COIN", symbol, latest_price="70000", past_price="67700")
+        r.set(f"vol:COIN:{symbol}:{today}", "40000000000")
+
+        with patch("app.consensus_signal_runner._get_volume_surge_status", return_value=(True, {"reason": "ok"})), \
+             patch("app.consensus_signal_runner._calc_size_cash", return_value=Decimal("5000")):
+            result = run_once("COIN", symbol, r)
+
+        assert result is not None
+        assert result["status"] == "shadow_candidate"
+        assert r.llen("claw:signal:queue") == 0
+        assert r.exists(f"research:signal:COIN:{result['signal_id']}") == 1
+        stats = r.hgetall(f"consensus:stats:COIN:{today}")
+        assert stats[b"shadow_candidate"] == b"1"
+        assert b"candidate" not in stats
+
 
 # ---------------------------------------------------------------------------
 # run_once — reject cases
