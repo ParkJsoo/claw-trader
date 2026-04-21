@@ -289,7 +289,14 @@ class TestRunOnceReject:
             r,
             "COIN",
             "KRW-ETH",
-            features_json=_make_features(ret_5m=0.03, range_5m=0.012),
+            features_json=json.dumps(
+                {
+                    "current_price": "70000",
+                    "ret_5m": "0.03",
+                    "range_5m": "0.012",
+                    "ret_1m": "0.012",
+                }
+            ),
             ts_ms=fresh_ts_ms,
         )
         _set_live_mark_hist(r, "COIN", "KRW-ETH", latest_price="70000", past_price="68000")
@@ -370,6 +377,32 @@ class TestRunOnceReject:
 
         summary = compute_pre_consensus_shadow_summary(r)
         assert summary["overall"]["trade_count"] == 0
+
+    def test_coin_weak_ret1m_ratio_rejected_before_liquidity_gate(self):
+        r = fakeredis.FakeRedis()
+        fresh_ts_ms = str(int(time.time() * 1000))
+        features_json = json.dumps(
+            {
+                "current_price": "70000",
+                "ret_5m": "0.02",
+                "range_5m": "0.012",
+                "ret_1m": "0.005",
+            }
+        )
+        _set_dual(r, "COIN", "KRW-ATOM", features_json=features_json, ts_ms=fresh_ts_ms)
+        _set_live_mark_hist(r, "COIN", "KRW-ATOM", latest_price="70000", past_price="68627.45")
+
+        from utils.redis_helpers import today_kst
+        r.set(f"vol:COIN:KRW-ATOM:{today_kst()}", "80000000000")
+
+        assert run_once("COIN", "KRW-ATOM", r) is None
+
+        row = r.hgetall(f"research:pre_signal:COIN:pre:KRW-ATOM:{fresh_ts_ms}")
+        assert row[b"reject_reason"] == b"reject_prefilter_ret1m_ratio"
+
+        stats = r.hgetall(f"consensus:stats:COIN:{today_kst()}")
+        assert b"reject_prefilter_ret1m_ratio" in stats
+        assert b"reject_low_vol_24h" not in stats
 
     def test_get_live_ret_5m_handles_dense_mark_hist(self):
         r = fakeredis.FakeRedis()

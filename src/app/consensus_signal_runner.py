@@ -80,6 +80,8 @@ _SYMBOL_COOLDOWN_SEC = int(os.getenv("CONSENSUS_SYMBOL_COOLDOWN_SEC", "180"))
 
 # momentum breakout prefilter: 1분 급등 최소 기준
 _MIN_RET_1M = float(os.getenv("MB_MIN_RET_1M", "0.002"))  # 0.2%
+_MIN_RET_1M_COIN = float(os.getenv("MB_MIN_RET_1M_COIN", "0.004"))
+_COIN_MIN_RET1M_TO_RET5M_RATIO = float(os.getenv("COIN_MIN_RET1M_TO_RET5M_RATIO", "0.35"))
 
 # Phase 17: 신호 품질 강화
 _MIN_RET_15M = float(os.getenv("CONSENSUS_MIN_RET_15M", "0.0"))  # 15분 추세: 0 이상이어야 함
@@ -131,6 +133,18 @@ def _surge_threshold_for_market(market: str) -> float:
     if market == "COIN":
         return _MIN_SURGE_5M_COIN
     return _MIN_SURGE_5M_US
+
+
+def _ret_1m_threshold_for_market(market: str) -> float:
+    if market == "COIN":
+        return _MIN_RET_1M_COIN
+    return _MIN_RET_1M
+
+
+def _coin_ret1m_accel_ratio(ret_5m: float | None, ret_1m: float | None) -> float | None:
+    if ret_5m is None or ret_1m is None or ret_5m <= 0:
+        return None
+    return ret_1m / ret_5m
 
 
 # ---------------------------------------------------------------------------
@@ -909,7 +923,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         ret_1m_raw = c_features.get("ret_1m")
         if ret_1m_raw is not None:
             ret_1m = float(ret_1m_raw)
-            if ret_1m < _MIN_RET_1M:
+            if ret_1m < _ret_1m_threshold_for_market(market):
                 if market == "COIN":
                     _save_coin_pre_consensus_shadow_snapshot(
                         r,
@@ -927,6 +941,45 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
                 return None
     except (TypeError, ValueError):
         pass  # ret_1m 없거나 파싱 실패 → 통과 (permissive)
+
+    if market == "COIN":
+        if ret_1m is None:
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=ret_1m,
+                vol_24h=vol_24h,
+                reject_reason="reject_prefilter_ret_1m_missing",
+            )
+            _log("runner.reject.prefilter_ret_1m_missing", symbol=symbol)
+            _record_reject(r, market, "reject_prefilter_ret_1m_missing")
+            return None
+        accel_ratio = _coin_ret1m_accel_ratio(ret_5m, ret_1m)
+        if accel_ratio is not None and accel_ratio < _COIN_MIN_RET1M_TO_RET5M_RATIO:
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=ret_1m,
+                vol_24h=vol_24h,
+                reject_reason="reject_prefilter_ret1m_ratio",
+            )
+            _log(
+                "runner.reject.prefilter_ret1m_ratio",
+                symbol=symbol,
+                ret_1m=ret_1m,
+                ret_5m=ret_5m,
+                accel_ratio=f"{accel_ratio:.3f}",
+            )
+            _record_reject(r, market, "reject_prefilter_ret1m_ratio")
+            return None
 
     # 5-a3. COIN Type A: 유동성 게이트 (24h 거래대금 하한)
     # 실제 Type A 후보로 남은 경우에만 적용해야 HOLD/veto 심볼이 low_vol로 오분류되지 않는다.
@@ -1389,6 +1442,8 @@ def main():
     print(
         f"consensus: started poll_sec={_POLL_SEC} strategy=momentum_breakout "
         f"prefilter_coin=ret_5m>{_MIN_SURGE_5M_COIN} "
+        f"coin_min_ret1m={_MIN_RET_1M_COIN} "
+        f"coin_min_accel_ratio={_COIN_MIN_RET1M_TO_RET5M_RATIO} "
         f"prefilter_us=ret_5m>{_MIN_SURGE_5M_US} "
         f"prefilter_kr=ret_5m>{_MIN_SURGE_5M_KR} "
         f"range_5m>{_MIN_RANGE_5M} "

@@ -33,6 +33,9 @@ _MB_SURGE_5M_COIN = float(os.getenv("MB_MIN_SURGE_5M_COIN", str(_MB_SURGE_5M)))
 _MB_SURGE_5M_US = float(os.getenv("MB_MIN_SURGE_5M_US", str(_MB_SURGE_5M)))
 _MB_SURGE_5M_KR = float(os.getenv("MB_MIN_SURGE_5M_KR", "0.030"))  # KR 3.0% (consensus와 동일)
 _DUAL_MIN_RANGE_5M = 0.004
+_MIN_RET_1M = float(os.getenv("MB_MIN_RET_1M", "0.002"))
+_MIN_RET_1M_COIN = float(os.getenv("MB_MIN_RET_1M_COIN", "0.004"))
+_COIN_MIN_RET1M_TO_RET5M_RATIO = float(os.getenv("COIN_MIN_RET1M_TO_RET5M_RATIO", "0.35"))
 _DUAL_LOG_MAX = 500           # 시장별 일일 로그 최대 보관 수
 _DUAL_JITTER_MAX_SEC = 3.0    # 심볼 간 호출 분산 최대 지터(초)
 _DUAL_TTL = 7 * 86400
@@ -190,6 +193,18 @@ def _surge_threshold_for_market(market: str) -> float:
     return _MB_SURGE_5M_US
 
 
+def _ret_1m_threshold_for_market(market: str) -> float:
+    if market == "COIN":
+        return _MIN_RET_1M_COIN
+    return _MIN_RET_1M
+
+
+def _coin_ret1m_accel_ratio(ret_5m: float | None, ret_1m: float | None) -> float | None:
+    if ret_5m is None or ret_1m is None or ret_5m <= 0:
+        return None
+    return ret_1m / ret_5m
+
+
 # ---------------------------------------------------------------------------
 # 심볼 평가
 # ---------------------------------------------------------------------------
@@ -318,6 +333,58 @@ def _eval_symbol(gen: AISignalGenerator, claude: ClaudeProvider,
             r.hincrby(stats_key, counter, 1)
             r.expire(stats_key, _DUAL_TTL)
             return
+
+        if market == "COIN":
+            ret_1m_val = features.get("ret_1m")
+            coin_ret_1m_thr = _ret_1m_threshold_for_market(market)
+            if ret_1m_val is None:
+                _record_scan_state(
+                    r,
+                    market,
+                    symbol,
+                    today,
+                    status="skip_prefilter_coin_ret1m_missing",
+                    now_ms=now_ms,
+                    details={**scan_details, "min_ret_1m": coin_ret_1m_thr},
+                )
+                _clear_stale_last_eval()
+                r.hincrby(stats_key, "skip_prefilter_coin_ret1m_missing", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
+            if float(ret_1m_val) < coin_ret_1m_thr:
+                _record_scan_state(
+                    r,
+                    market,
+                    symbol,
+                    today,
+                    status="skip_prefilter_coin_ret1m",
+                    now_ms=now_ms,
+                    details={**scan_details, "ret_1m": ret_1m_val, "min_ret_1m": coin_ret_1m_thr},
+                )
+                _clear_stale_last_eval()
+                r.hincrby(stats_key, "skip_prefilter_coin_ret1m", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
+            accel_ratio = _coin_ret1m_accel_ratio(float(ret_5m_val), float(ret_1m_val))
+            if accel_ratio is not None and accel_ratio < _COIN_MIN_RET1M_TO_RET5M_RATIO:
+                _record_scan_state(
+                    r,
+                    market,
+                    symbol,
+                    today,
+                    status="skip_prefilter_coin_accel_ratio",
+                    now_ms=now_ms,
+                    details={
+                        **scan_details,
+                        "ret_1m": ret_1m_val,
+                        "accel_ratio": accel_ratio,
+                        "min_accel_ratio": _COIN_MIN_RET1M_TO_RET5M_RATIO,
+                    },
+                )
+                _clear_stale_last_eval()
+                r.hincrby(stats_key, "skip_prefilter_coin_accel_ratio", 1)
+                r.expire(stats_key, _DUAL_TTL)
+                return
     except (TypeError, ValueError):
         pass
 
@@ -420,6 +487,8 @@ def main():
         f"call_cap={_DUAL_DAILY_CALL_CAP}/market/day "
         f"model={claude.model} strategy=momentum_breakout "
         f"surge_threshold_coin={_MB_SURGE_5M_COIN} "
+        f"coin_min_ret1m={_MIN_RET_1M_COIN} "
+        f"coin_min_accel_ratio={_COIN_MIN_RET1M_TO_RET5M_RATIO} "
         f"surge_threshold_us={_MB_SURGE_5M_US} "
         f"surge_threshold_kr={_MB_SURGE_5M_KR} "
         f"kr={watchlist_kr} us={watchlist_us}",

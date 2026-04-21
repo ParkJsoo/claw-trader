@@ -5,10 +5,12 @@ import time
 import fakeredis
 
 from app.ai_dual_eval_runner import (
+    _coin_ret1m_accel_ratio,
     _is_last_eval_stale,
     _load_last_eval_meta,
     _purge_stale_last_eval_if_needed,
     _record_scan_state,
+    _ret_1m_threshold_for_market,
 )
 
 
@@ -86,3 +88,15 @@ class TestScanStateRecording:
         assert row[b"range_5m"] == b"0.02"
         assert stats[b"scan_total"] == b"1"
         assert stats[b"scan_skip_prefilter_ret5m"] == b"1"
+
+
+class TestCoinAccelHelpers:
+    def test_ret_1m_threshold_for_coin_is_stricter(self):
+        assert _ret_1m_threshold_for_market("COIN") >= _ret_1m_threshold_for_market("KR")
+
+    def test_coin_accel_ratio_is_computed(self):
+        assert _coin_ret1m_accel_ratio(0.02, 0.01) == 0.5
+
+    def test_coin_accel_ratio_handles_invalid_inputs(self):
+        assert _coin_ret1m_accel_ratio(None, 0.01) is None
+        assert _coin_ret1m_accel_ratio(0.0, 0.01) is None
