@@ -697,6 +697,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     """
     # 1. eval 결과 읽기 (Claude only)
     claude = _hgetall_str(r, f"ai:dual:last:claude:{market}:{symbol}")
+    vol_24h: Optional[float] = None
 
     if not claude:
         return None  # Claude 결과 없음 — cold start
@@ -783,25 +784,6 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         _record_reject(r, market, "reject_stop_count")
         return None
 
-    # 2-f. COIN Type A: 유동성 게이트 (24h 거래대금 하한) — 소형 알트코인 노이즈 필터
-    if market == "COIN":
-        _type_a_min_vol = float(os.getenv("TYPE_A_MIN_VOL_KRW", "30000000000"))  # 기본 300억
-        vol_raw = r.get(f"vol:COIN:{symbol}:{today}")
-        vol_24h = float(vol_raw.decode() if isinstance(vol_raw, bytes) else vol_raw) if vol_raw else 0.0
-        if vol_24h < _type_a_min_vol:
-            if claude.get("emit") == "1" and (claude.get("direction") or "") == "LONG":
-                _save_coin_pre_consensus_shadow_snapshot(
-                    r,
-                    symbol=symbol,
-                    claude=claude,
-                    vol_24h=vol_24h,
-                    reject_reason="reject_low_vol_24h",
-                    shadow_origin="consensus_runner_liquidity_gate",
-                )
-            _log("runner.reject.low_vol_24h", symbol=symbol, vol_24h=f"{vol_24h/1e8:.0f}억")
-            _record_reject(r, market, "reject_low_vol_24h")
-            return None
-
     # 3. 데이터 무결성: features_json 파싱
     try:
         c_features = json.loads(claude.get("features_json") or "{}")
@@ -816,7 +798,6 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         veto_code, veto_label = _classify_claude_veto(claude.get("reason", ""))
         if (
             market == "COIN"
-            and (claude.get("direction") or "") == "LONG"
             and veto_code in ("reject_late_entry", "reject_momentum_decay", "reject_claude_veto")
         ):
             _save_coin_pre_consensus_shadow_snapshot(
@@ -946,6 +927,29 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
                 return None
     except (TypeError, ValueError):
         pass  # ret_1m 없거나 파싱 실패 → 통과 (permissive)
+
+    # 5-a3. COIN Type A: 유동성 게이트 (24h 거래대금 하한)
+    # 실제 Type A 후보로 남은 경우에만 적용해야 HOLD/veto 심볼이 low_vol로 오분류되지 않는다.
+    if market == "COIN":
+        _type_a_min_vol = float(os.getenv("TYPE_A_MIN_VOL_KRW", "30000000000"))  # 기본 300억
+        vol_raw = r.get(f"vol:COIN:{symbol}:{today}")
+        vol_24h = float(vol_raw.decode() if isinstance(vol_raw, bytes) else vol_raw) if vol_raw else 0.0
+        if vol_24h < _type_a_min_vol:
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=ret_1m,
+                vol_24h=vol_24h,
+                reject_reason="reject_low_vol_24h",
+                shadow_origin="consensus_runner_liquidity_gate",
+            )
+            _log("runner.reject.low_vol_24h", symbol=symbol, vol_24h=f"{vol_24h/1e8:.0f}억")
+            _record_reject(r, market, "reject_low_vol_24h")
+            return None
 
     # 5-b. Volume surge 필터 (KR + COIN — US는 데이터 없음)
     if market in ("KR", "COIN"):

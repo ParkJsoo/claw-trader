@@ -289,10 +289,10 @@ class TestRunOnceReject:
             r,
             "COIN",
             "KRW-ETH",
-            features_json=_make_features(ret_5m=0.01, range_5m=0.012),
+            features_json=_make_features(ret_5m=0.03, range_5m=0.012),
             ts_ms=fresh_ts_ms,
         )
-        _set_live_mark_hist(r, "COIN", "KRW-ETH", latest_price="70000", past_price="69000")
+        _set_live_mark_hist(r, "COIN", "KRW-ETH", latest_price="70000", past_price="68000")
 
         from utils.redis_helpers import today_kst
         r.set(f"vol:COIN:KRW-ETH:{today_kst()}", "1000000000")
@@ -323,7 +323,7 @@ class TestRunOnceReject:
         _set_live_mark_hist(r, "COIN", "KRW-XRP", latest_price="70000", past_price="69000")
 
         from utils.redis_helpers import today_kst
-        r.set(f"vol:COIN:KRW-XRP:{today_kst()}", "80000000000")
+        r.set(f"vol:COIN:KRW-XRP:{today_kst()}", "1000000000")
 
         assert run_once("COIN", "KRW-XRP", r) is None
 
@@ -332,6 +332,10 @@ class TestRunOnceReject:
         assert row[b"reject_reason"] == b"reject_late_entry"
         assert row[b"shadow_origin"] == b"consensus_runner_veto_gate"
         assert b"Too late entry" in row[b"claude_reason"]
+
+        stats = r.hgetall(f"consensus:stats:COIN:{today_kst()}")
+        assert b"reject_late_entry" in stats
+        assert b"reject_low_vol_24h" not in stats
 
     def test_coin_prefilter_reject_saves_pre_consensus_snapshot(self):
         r = fakeredis.FakeRedis()
