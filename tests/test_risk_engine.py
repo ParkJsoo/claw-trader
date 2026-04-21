@@ -22,6 +22,9 @@ def _make_signal(
     direction="LONG",
     size_cash=Decimal("100000"),
     price=Decimal("70000"),
+    strategy=None,
+    source=None,
+    signal_family=None,
 ) -> Signal:
     return Signal(
         signal_id="test-sig-001",
@@ -31,6 +34,9 @@ def _make_signal(
         direction=direction,
         entry=SignalEntry(price=price, size_cash=size_cash),
         stop=SignalStop(price=price * Decimal("0.98")),
+        strategy=strategy,
+        source=source,
+        signal_family=signal_family,
     )
 
 
@@ -111,6 +117,41 @@ class TestRule0GlobalPause:
         assert d_coin.reason == "PAUSED"
         assert d_coin.meta["key"] == "claw:pause:COIN"
         assert d_kr.allow is True
+
+
+class TestSignalFamilyMode:
+    def test_shadow_mode_blocks_matching_family_entry(self):
+        r = fakeredis.FakeRedis()
+        r.hset("claw:signal_mode:COIN", mapping={"type_a": "shadow"})
+        eng = _make_engine(r)
+
+        d = eng.check(_make_signal(market="COIN", symbol="KRW-BTC", signal_family="type_a"))
+
+        assert d.allow is False
+        assert d.reason == "SIGNAL_FAMILY_SHADOW_ONLY"
+        assert d.meta["signal_family"] == "type_a"
+        assert d.meta["signal_mode"] == "shadow"
+
+    def test_off_mode_blocks_inferred_family(self):
+        r = fakeredis.FakeRedis()
+        r.hset("claw:signal_mode:COIN", mapping={"type_b": "off"})
+        eng = _make_engine(r)
+
+        d = eng.check(_make_signal(market="COIN", symbol="KRW-BTC", strategy="trend_riding"))
+
+        assert d.allow is False
+        assert d.reason == "SIGNAL_FAMILY_DISABLED"
+        assert d.meta["signal_family"] == "type_b"
+        assert d.meta["signal_mode"] == "off"
+
+    def test_exit_signal_ignores_family_mode_gate(self):
+        r = fakeredis.FakeRedis()
+        r.hset("claw:signal_mode:COIN", mapping={"type_a": "shadow"})
+        eng = _make_engine(r)
+
+        d = eng.check(_make_signal(market="COIN", symbol="KRW-BTC", direction="EXIT", signal_family="type_a"))
+
+        assert d.allow is True
 
 
 # ---------------------------------------------------------------------------

@@ -21,6 +21,7 @@ from app.coin_shadow import (
     compute_pre_consensus_shadow_summary,
     compute_shadow_summary,
 )
+from utils.redis_helpers import get_signal_family_modes
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -99,6 +100,7 @@ def build_snapshot(r: redis.Redis, *, date_from: str, date_to: str) -> dict:
         "today": today,
         "pause_global": r.get("claw:pause:global"),
         "pause_coin": r.get("claw:pause:COIN"),
+        "signal_modes": get_signal_family_modes(r, "COIN"),
         "watchlist_count": len(watchlist),
         "scan_coverage_5m_pct": round((scan5 / len(watchlist)) * 100, 1) if watchlist else 0.0,
         "eval_coverage_5m_pct": round((eval5 / len(watchlist)) * 100, 1) if watchlist else 0.0,

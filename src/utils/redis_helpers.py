@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 _KST = ZoneInfo("Asia/Seoul")
 _ET = ZoneInfo("America/New_York")
+_VALID_SIGNAL_MODES = {"live", "shadow", "off"}
 
 
 def secs_until_kst_midnight() -> int:
@@ -78,6 +79,61 @@ def _is_truthy_redis_value(val) -> bool:
         return False
     s = val.decode() if isinstance(val, bytes) else str(val)
     return s.lower() in ("true", "1", "yes")
+
+
+def infer_signal_family(
+    signal_family: str | None = None,
+    *,
+    strategy: str | None = None,
+    source: str | None = None,
+) -> str:
+    family = (signal_family or "").strip().lower()
+    if family:
+        return family
+
+    strategy_norm = (strategy or "").strip().lower()
+    source_norm = (source or "").strip().lower()
+    if "type_b" in source_norm or strategy_norm == "trend_riding":
+        return "type_b"
+    if strategy_norm == "momentum_breakout":
+        return "type_a"
+    return ""
+
+
+def _normalize_signal_mode(value, default: str = "live") -> str:
+    raw = value.decode() if isinstance(value, bytes) else str(value or "")
+    mode = raw.strip().lower()
+    if mode in _VALID_SIGNAL_MODES:
+        return mode
+    return default
+
+
+def get_signal_family_mode(
+    r,
+    market: str,
+    signal_family: str | None = None,
+    *,
+    strategy: str | None = None,
+    source: str | None = None,
+    default: str = "live",
+) -> str:
+    market_norm = (market or "").strip().upper()
+    family = infer_signal_family(signal_family, strategy=strategy, source=source)
+    if not market_norm or not family:
+        return default
+
+    mode = _normalize_signal_mode(os.getenv(f"{market_norm}_{family.upper()}_MODE"), default)
+    try:
+        override = r.hget(f"claw:signal_mode:{market_norm}", family)
+        if override is not None:
+            mode = _normalize_signal_mode(override, mode)
+    except Exception:
+        pass
+    return mode
+
+
+def get_signal_family_modes(r, market: str, families: tuple[str, ...] = ("type_a", "type_b")) -> dict[str, str]:
+    return {family: get_signal_family_mode(r, market, family) for family in families}
 
 
 def is_paused(r) -> bool:

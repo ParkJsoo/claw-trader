@@ -15,7 +15,13 @@ import redis
 from ai.generator import AISignalGenerator
 from ai.providers.claude_provider import ClaudeProvider
 from news.redis_writer import get_symbol_context
-from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours
+from utils.redis_helpers import (
+    parse_watchlist,
+    load_watchlist,
+    today_kst,
+    is_market_hours,
+    get_signal_family_mode,
+)
 
 # ---------------------------------------------------------------------------
 # 상수
@@ -489,6 +495,7 @@ def main():
         f"surge_threshold_coin={_MB_SURGE_5M_COIN} "
         f"coin_min_ret1m={_MIN_RET_1M_COIN} "
         f"coin_min_accel_ratio={_COIN_MIN_RET1M_TO_RET5M_RATIO} "
+        f"coin_type_a_mode={get_signal_family_mode(r, 'COIN', 'type_a')} "
         f"surge_threshold_us={_MB_SURGE_5M_US} "
         f"surge_threshold_kr={_MB_SURGE_5M_KR} "
         f"kr={watchlist_kr} us={watchlist_us}",
@@ -526,6 +533,8 @@ def main():
                     continue
                 if not is_market_hours(market):  # COIN은 항상 True
                     print(f"dual: market_closed {market} skip", flush=True)
+                    continue
+                if market == "COIN" and get_signal_family_mode(r, "COIN", "type_a") == "off":
                     continue
                 for symbol in watchlist:
                     r.expire(_DUAL_LOCK_KEY, _DUAL_LOCK_TTL)

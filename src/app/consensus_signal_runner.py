@@ -46,7 +46,14 @@ import redis
 
 from app.coin_research import save_pre_consensus_signal_snapshot, save_signal_snapshot
 from domain.models import Signal, SignalEntry, SignalStop
-from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours, is_paused
+from utils.redis_helpers import (
+    parse_watchlist,
+    load_watchlist,
+    today_kst,
+    is_market_hours,
+    is_paused,
+    get_signal_family_mode,
+)
 
 # H1: 잔고 비율 기반 size_cash 계산
 _SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
@@ -1444,6 +1451,8 @@ def main():
         f"prefilter_coin=ret_5m>{_MIN_SURGE_5M_COIN} "
         f"coin_min_ret1m={_MIN_RET_1M_COIN} "
         f"coin_min_accel_ratio={_COIN_MIN_RET1M_TO_RET5M_RATIO} "
+        f"coin_type_a_mode={get_signal_family_mode(r, 'COIN', 'type_a')} "
+        f"coin_type_b_mode={get_signal_family_mode(r, 'COIN', 'type_b')} "
         f"prefilter_us=ret_5m>{_MIN_SURGE_5M_US} "
         f"prefilter_kr=ret_5m>{_MIN_SURGE_5M_KR} "
         f"range_5m>{_MIN_RANGE_5M} "
@@ -1500,19 +1509,26 @@ def main():
             watchlist_coin = load_watchlist(r, "COIN", "GEN_WATCHLIST_COIN")
             if watchlist_coin:
                 regime = _get_regime(r, "COIN", watchlist_coin)
+                coin_type_a_mode = get_signal_family_mode(r, "COIN", "type_a")
+                coin_type_b_mode = get_signal_family_mode(r, "COIN", "type_b")
                 _log("runner.regime", market="COIN", regime=regime,
                      watchlist_size=len(watchlist_coin))
-                for symbol in watchlist_coin:
-                    if regime == "bearish":
-                        continue
-                    try:
-                        run_once("COIN", symbol, r)
-                    except Exception as e:
-                        _log("runner.error.unexpected", market="COIN",
-                             symbol=symbol, error=str(e))
+                if coin_type_a_mode != "off":
+                    for symbol in watchlist_coin:
+                        if regime == "bearish":
+                            continue
+                        try:
+                            run_once("COIN", symbol, r)
+                        except Exception as e:
+                            _log("runner.error.unexpected", market="COIN",
+                                 symbol=symbol, error=str(e))
 
                 # Type B: 5분마다 추세 탑승 신호 체크
-                if time.time() - _last_type_b_ts >= _TYPE_B_POLL_SEC and regime != "bearish":
+                if (
+                    coin_type_b_mode != "off"
+                    and time.time() - _last_type_b_ts >= _TYPE_B_POLL_SEC
+                    and regime != "bearish"
+                ):
                     today = today_kst()
                     for symbol in watchlist_coin:
                         try:

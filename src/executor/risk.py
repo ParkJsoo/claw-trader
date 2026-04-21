@@ -14,6 +14,7 @@ from redis import Redis
 
 from domain.models import Signal
 from exchange.base import ExchangeClient
+from utils.redis_helpers import get_signal_family_mode, infer_signal_family
 
 _KST = ZoneInfo("Asia/Seoul")
 _PENDING_BUY_RESERVE_SEC = max(60, int(os.getenv("RISK_PENDING_BUY_RESERVE_SEC", "900")))
@@ -119,6 +120,41 @@ class RiskEngine:
         if self._is_truthy(self.redis.get(market_key)):
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": market_key, "market": signal.market})
         return None
+
+    def _rule0_signal_family_mode(self, signal: Signal) -> Optional[RiskDecision]:
+        if signal.direction == "EXIT":
+            return None
+
+        family = infer_signal_family(
+            getattr(signal, "signal_family", None),
+            strategy=getattr(signal, "strategy", None),
+            source=getattr(signal, "source", None),
+        )
+        if not family:
+            return None
+
+        mode = get_signal_family_mode(
+            self.redis,
+            signal.market,
+            family,
+            strategy=getattr(signal, "strategy", None),
+            source=getattr(signal, "source", None),
+        )
+        if mode == "live":
+            return None
+
+        reason = "SIGNAL_FAMILY_SHADOW_ONLY" if mode == "shadow" else "SIGNAL_FAMILY_DISABLED"
+        return RiskDecision(
+            allow=False,
+            reason=reason,
+            meta={
+                "market": signal.market,
+                "symbol": signal.symbol,
+                "signal_family": family,
+                "signal_mode": mode,
+                "key": f"claw:signal_mode:{signal.market}",
+            },
+        )
 
     def _rule1_duplicate_position(self, signal: Signal, cfg: MarketRiskConfig) -> Optional[RiskDecision]:
         if signal.direction == "EXIT":
@@ -259,6 +295,7 @@ class RiskEngine:
         cfg = self.cfg.for_market(signal.market)
         rules = [
             lambda: self._rule0_global_pause(signal),
+            lambda: self._rule0_signal_family_mode(signal),
             lambda: self._rule1_duplicate_position(signal, cfg),
             lambda: self._rule2_max_concurrent(signal, cfg),
             lambda: self._rule3_killswitch_pnl(signal, cfg),

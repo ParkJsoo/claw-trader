@@ -114,6 +114,9 @@ class Signal(BaseModel):
     stop: SignalStop
     stop_pct: Optional[Decimal] = None
     take_pct: Optional[Decimal] = None
+    strategy: Optional[str] = None
+    source: Optional[str] = None
+    signal_family: Optional[str] = None
 
     @field_validator("symbol")
     @classmethod
