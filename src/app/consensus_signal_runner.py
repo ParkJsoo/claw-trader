@@ -67,7 +67,9 @@ _LOCK_TTL = 120  # seconds
 _POLL_SEC = float(os.getenv("CONSENSUS_POLL_SEC", "30"))
 
 # momentum breakout prefilter: 5분 급등 최소 기준
-_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))       # COIN 2.0% 급등 최소
+_MIN_SURGE_5M = float(os.getenv("MB_MIN_SURGE_5M", "0.020"))        # legacy fallback
+_MIN_SURGE_5M_COIN = float(os.getenv("MB_MIN_SURGE_5M_COIN", str(_MIN_SURGE_5M)))
+_MIN_SURGE_5M_US = float(os.getenv("MB_MIN_SURGE_5M_US", str(_MIN_SURGE_5M)))
 _MIN_SURGE_5M_KR = float(os.getenv("MB_MIN_SURGE_5M_KR", "0.030"))  # KR 3.0% (노이즈 필터링)
 _MAX_SURGE_5M = float(os.getenv("MB_MAX_SURGE_5M", "0.035"))       # 5분 급등 상한 (꼭지 매수 방지)
 _MIN_RANGE_5M = float(os.getenv("MB_MIN_RANGE_5M", "0.004"))
@@ -120,6 +122,14 @@ def _dynamic_pcts(range_5m: float, market: str = "KR") -> tuple:
         stop = Decimal(os.getenv("EXIT_STOP_LOSS_PCT", "0.015"))        # -1.5%
         take = Decimal(os.getenv("EXIT_TAKE_PROFIT_PCT", "0.030"))      # +3.0%
     return stop, take
+
+
+def _surge_threshold_for_market(market: str) -> float:
+    if market == "KR":
+        return _MIN_SURGE_5M_KR
+    if market == "COIN":
+        return _MIN_SURGE_5M_COIN
+    return _MIN_SURGE_5M_US
 
 
 # ---------------------------------------------------------------------------
@@ -584,12 +594,11 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         eval_is_emit = claude.get("emit") == "1"
         max_eval_age_sec = _emit_eval_stale_sec if eval_is_emit else _hold_eval_stale_sec
         if eval_age_ms > max_eval_age_sec * 1000:
-            if eval_is_emit:
-                try:
-                    # 오래된 emit=1 캐시는 즉시 폐기해 반복 stale skip/log를 막는다.
-                    r.delete(f"ai:dual:last:claude:{market}:{symbol}")
-                except Exception:
-                    pass
+            try:
+                # 오래된 eval 캐시는 즉시 폐기해 반복 stale skip/log를 막는다.
+                r.delete(f"ai:dual:last:claude:{market}:{symbol}")
+            except Exception:
+                pass
             _log(
                 "runner.skip.stale_eval",
                 symbol=symbol,
@@ -716,7 +725,7 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         return None
 
     # momentum breakout: 지금 이 순간에도 5분 상승폭이 충분해야 함
-    surge_threshold = _MIN_SURGE_5M_KR if market == "KR" else _MIN_SURGE_5M
+    surge_threshold = _surge_threshold_for_market(market)
     # 뉴스 boost: KR positive+high 뉴스 있으면 surge 하한선 30% 완화
     if market == "KR" and _get_news_score(r, market, symbol) == "high":
         surge_threshold = surge_threshold * 0.7
@@ -1175,7 +1184,8 @@ def main():
 
     print(
         f"consensus: started poll_sec={_POLL_SEC} strategy=momentum_breakout "
-        f"prefilter_coin_us=ret_5m>{_MIN_SURGE_5M} "
+        f"prefilter_coin=ret_5m>{_MIN_SURGE_5M_COIN} "
+        f"prefilter_us=ret_5m>{_MIN_SURGE_5M_US} "
         f"prefilter_kr=ret_5m>{_MIN_SURGE_5M_KR} "
         f"range_5m>{_MIN_RANGE_5M} "
         f"volume_ratio_coin={_VOLUME_SURGE_RATIO} "

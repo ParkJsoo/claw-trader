@@ -364,6 +364,30 @@ class TestRunOnceDedup:
         assert result2 is not None
         assert r.llen("claw:signal:queue") == 2  # 2건 push
 
+    def test_stale_hold_eval_is_deleted(self):
+        r = fakeredis.FakeRedis()
+        stale_ts_ms = str(int(time.time() * 1000) - (31 * 60 * 1000))
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "emit": "0", "direction": "LONG",
+            "ts_ms": stale_ts_ms,
+            "features_json": _make_features(),
+        })
+
+        assert run_once("KR", "005930", r) is None
+        assert r.exists("ai:dual:last:claude:KR:005930") == 0
+
+    def test_stale_emit_eval_is_deleted(self):
+        r = fakeredis.FakeRedis()
+        stale_ts_ms = str(int(time.time() * 1000) - (6 * 60 * 1000))
+        r.hset("ai:dual:last:claude:KR:005930", mapping={
+            "emit": "1", "direction": "LONG",
+            "ts_ms": stale_ts_ms,
+            "features_json": _make_features(),
+        })
+
+        assert run_once("KR", "005930", r) is None
+        assert r.exists("ai:dual:last:claude:KR:005930") == 0
+
 
 class TestClaudeVetoClassification:
     def test_market_close_reason(self):
