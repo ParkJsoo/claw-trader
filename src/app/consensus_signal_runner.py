@@ -329,15 +329,64 @@ def _save_coin_pre_consensus_shadow_snapshot(
     *,
     symbol: str,
     claude: dict[str, str],
-    current_price: Decimal,
-    ret_5m: float,
-    range_5m: float,
-    ret_1m: Optional[float],
+    current_price: Optional[Decimal] = None,
+    ret_5m: Optional[float] = None,
+    range_5m: Optional[float] = None,
+    ret_1m: Optional[float] = None,
     vol_24h: Optional[float],
     reject_reason: str,
+    shadow_origin: str = "consensus_runner_reject",
 ) -> None:
-    if current_price <= 0:
+    try:
+        c_features = json.loads(claude.get("features_json") or "{}")
+    except (json.JSONDecodeError, Exception):
+        c_features = {}
+
+    live = _get_live_ret_5m(r, "COIN", symbol)
+    live_ret_5m = live[0] if live is not None else None
+    live_price = Decimal(str(live[1])) if live is not None else None
+
+    if current_price is None:
+        current_price = live_price
+    if current_price is None:
+        try:
+            current_price_raw = c_features.get("current_price")
+            if current_price_raw is not None:
+                current_price = Decimal(str(current_price_raw))
+        except (InvalidOperation, TypeError, ValueError):
+            current_price = None
+
+    if current_price is None or current_price <= 0:
         return
+
+    if ret_5m is None:
+        ret_5m = live_ret_5m
+    if ret_5m is None:
+        try:
+            raw_ret_5m = c_features.get("ret_5m")
+            if raw_ret_5m is not None:
+                ret_5m = float(raw_ret_5m)
+        except (TypeError, ValueError):
+            ret_5m = None
+
+    if range_5m is None:
+        try:
+            raw_range_5m = c_features.get("range_5m")
+            if raw_range_5m is not None:
+                range_5m = float(raw_range_5m)
+        except (TypeError, ValueError):
+            range_5m = None
+
+    if range_5m is None or range_5m <= 0:
+        return
+
+    if ret_1m is None:
+        try:
+            raw_ret_1m = c_features.get("ret_1m")
+            if raw_ret_1m is not None:
+                ret_1m = float(raw_ret_1m)
+        except (TypeError, ValueError):
+            ret_1m = None
 
     eval_ts_ms = str(claude.get("ts_ms") or int(time.time() * 1000))
     ts_ms = int(time.time() * 1000)
@@ -365,7 +414,7 @@ def _save_coin_pre_consensus_shadow_snapshot(
         "ts": ts,
         "market": "COIN",
         "symbol": symbol,
-        "direction": "LONG",
+        "direction": claude.get("direction") or "LONG",
         "entry": {
             "price": str(current_price),
             "size_cash": str(max(_COIN_PRE_SHADOW_SIZE_CASH, Decimal("5000"))),
@@ -384,9 +433,10 @@ def _save_coin_pre_consensus_shadow_snapshot(
         "ob_ratio": ob_ratio,
         "stop_pct": str(stop_pct),
         "take_pct": str(take_pct),
+        "claude_reason": claude.get("reason", ""),
         "reject_reason": reject_reason,
         "shadow_stage": "pre_consensus",
-        "shadow_origin": "consensus_runner_reject",
+        "shadow_origin": shadow_origin,
     }
     save_pre_consensus_signal_snapshot(r, payload)
 
@@ -739,6 +789,15 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         vol_raw = r.get(f"vol:COIN:{symbol}:{today}")
         vol_24h = float(vol_raw.decode() if isinstance(vol_raw, bytes) else vol_raw) if vol_raw else 0.0
         if vol_24h < _type_a_min_vol:
+            if claude.get("emit") == "1" and (claude.get("direction") or "") == "LONG":
+                _save_coin_pre_consensus_shadow_snapshot(
+                    r,
+                    symbol=symbol,
+                    claude=claude,
+                    vol_24h=vol_24h,
+                    reject_reason="reject_low_vol_24h",
+                    shadow_origin="consensus_runner_liquidity_gate",
+                )
             _log("runner.reject.low_vol_24h", symbol=symbol, vol_24h=f"{vol_24h/1e8:.0f}억")
             _record_reject(r, market, "reject_low_vol_24h")
             return None
@@ -755,6 +814,19 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     c_emit = claude.get("emit") == "1"
     if not c_emit:
         veto_code, veto_label = _classify_claude_veto(claude.get("reason", ""))
+        if (
+            market == "COIN"
+            and (claude.get("direction") or "") == "LONG"
+            and veto_code in ("reject_late_entry", "reject_momentum_decay", "reject_claude_veto")
+        ):
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                vol_24h=vol_24h if market == "COIN" else None,
+                reject_reason=veto_code,
+                shadow_origin="consensus_runner_veto_gate",
+            )
         _log("runner.reject.claude_veto", symbol=symbol, veto=veto_label, reason=claude.get("reason", "")[:60])
         _record_reject(r, market, veto_code)
         return None

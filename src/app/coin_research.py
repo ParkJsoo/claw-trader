@@ -128,6 +128,7 @@ def _build_signal_snapshot_mapping(payload: dict[str, Any]) -> tuple[str, int, d
         "vol_24h": _normalize_scalar(payload.get("vol_24h")),
         "ob_ratio": _normalize_scalar(payload.get("ob_ratio")),
         "news_score": _normalize_scalar(payload.get("news_score")),
+        "claude_reason": _normalize_scalar(payload.get("claude_reason")),
         "reject_reason": _normalize_scalar(payload.get("reject_reason")),
         "shadow_stage": _normalize_scalar(payload.get("shadow_stage")),
         "shadow_origin": _normalize_scalar(payload.get("shadow_origin")),

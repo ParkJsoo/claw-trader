@@ -282,6 +282,57 @@ class TestRunOnceReject:
 
         assert r.llen("claw:signal:queue") == 0
 
+    def test_coin_low_vol_reject_saves_pre_consensus_snapshot(self):
+        r = fakeredis.FakeRedis()
+        fresh_ts_ms = str(int(time.time() * 1000))
+        _set_dual(
+            r,
+            "COIN",
+            "KRW-ETH",
+            features_json=_make_features(ret_5m=0.01, range_5m=0.012),
+            ts_ms=fresh_ts_ms,
+        )
+        _set_live_mark_hist(r, "COIN", "KRW-ETH", latest_price="70000", past_price="69000")
+
+        from utils.redis_helpers import today_kst
+        r.set(f"vol:COIN:KRW-ETH:{today_kst()}", "1000000000")
+
+        assert run_once("COIN", "KRW-ETH", r) is None
+
+        row = r.hgetall(f"research:pre_signal:COIN:pre:KRW-ETH:{fresh_ts_ms}")
+        assert row[b"symbol"] == b"KRW-ETH"
+        assert row[b"reject_reason"] == b"reject_low_vol_24h"
+        assert row[b"shadow_origin"] == b"consensus_runner_liquidity_gate"
+
+    def test_coin_late_entry_veto_saves_pre_consensus_snapshot(self):
+        r = fakeredis.FakeRedis()
+        fresh_ts_ms = str(int(time.time() * 1000))
+        _set_dual(
+            r,
+            "COIN",
+            "KRW-XRP",
+            c_emit="0",
+            c_dir="LONG",
+            features_json=_make_features(ret_5m=0.014, range_5m=0.011),
+            ts_ms=fresh_ts_ms,
+        )
+        r.hset(
+            "ai:dual:last:claude:COIN:KRW-XRP",
+            mapping={"reason": "Too late entry after breakout."},
+        )
+        _set_live_mark_hist(r, "COIN", "KRW-XRP", latest_price="70000", past_price="69000")
+
+        from utils.redis_helpers import today_kst
+        r.set(f"vol:COIN:KRW-XRP:{today_kst()}", "80000000000")
+
+        assert run_once("COIN", "KRW-XRP", r) is None
+
+        row = r.hgetall(f"research:pre_signal:COIN:pre:KRW-XRP:{fresh_ts_ms}")
+        assert row[b"symbol"] == b"KRW-XRP"
+        assert row[b"reject_reason"] == b"reject_late_entry"
+        assert row[b"shadow_origin"] == b"consensus_runner_veto_gate"
+        assert b"Too late entry" in row[b"claude_reason"]
+
     def test_coin_prefilter_reject_saves_pre_consensus_snapshot(self):
         r = fakeredis.FakeRedis()
         fresh_ts_ms = str(int(time.time() * 1000))
