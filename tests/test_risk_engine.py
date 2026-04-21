@@ -1,6 +1,7 @@
 """RiskEngine 단위 테스트."""
 from __future__ import annotations
 
+import time
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
@@ -169,6 +170,35 @@ class TestRule2MaxConcurrent:
         assert d.reason == "MAX_CONCURRENT_POSITIONS"
         assert d.meta["limit"] == 5
 
+    def test_recent_submitted_buy_counts_toward_limit(self, monkeypatch):
+        monkeypatch.setattr("executor.risk._PENDING_BUY_RESERVE_SEC", 900)
+        r = fakeredis.FakeRedis()
+        r.sadd("position_index:KR", "005930", "000660")
+        now = str(int(time.time()))
+        r.set("order:KR:order-1", "SUBMITTED")
+        r.hset(
+            "claw:order_meta:KR:order-1",
+            mapping={"side": "BUY", "symbol": "035420", "qty": "1", "limit_price": "50000", "first_seen_ts": now},
+        )
+
+        client = MagicMock()
+        client.get_account_snapshot.return_value = AccountSnapshot(
+            equity=Decimal("5000000"),
+            cash=Decimal("5000000"),
+            available_cash=Decimal("5000000"),
+            currency="KRW",
+        )
+        eng = RiskEngine(
+            redis=r,
+            cfg=RiskConfig(kr=MarketRiskConfig(max_concurrent_positions=3)),
+            client=client,
+        )
+        d = eng.check(_make_signal(symbol="068270"))
+
+        assert d.allow is False
+        assert d.reason == "MAX_CONCURRENT_POSITIONS"
+        assert d.meta["pending_buy_count"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Rule 3: killswitch PnL
@@ -226,6 +256,39 @@ class TestRule4AllocationCap:
         d = eng.check(_make_signal(size_cash=Decimal("200000")))
         assert d.allow is False
         assert d.reason == "ALLOCATION_CAP_EXCEEDED"
+
+    def test_recent_submitted_buy_reserve_reduces_effective_available_cash(self, monkeypatch):
+        monkeypatch.setattr("executor.risk._PENDING_BUY_RESERVE_SEC", 900)
+        r = fakeredis.FakeRedis()
+        now = str(int(time.time()))
+        r.set("order:KR:order-1", "SUBMITTED")
+        r.hset(
+            "claw:order_meta:KR:order-1",
+            mapping={"side": "BUY", "symbol": "035420", "qty": "1", "limit_price": "410000", "first_seen_ts": now},
+        )
+
+        eng = _make_engine(r, available_cash=Decimal("500000"))
+        d = eng.check(_make_signal(size_cash=Decimal("100000")))
+
+        assert d.allow is False
+        assert d.reason == "ALLOCATION_CAP_EXCEEDED"
+        assert d.meta["pending_buy_reserved_cash"] == "410000"
+        assert d.meta["effective_available_cash"] == "90000"
+
+    def test_old_submitted_buy_is_ignored_for_reserve(self, monkeypatch):
+        monkeypatch.setattr("executor.risk._PENDING_BUY_RESERVE_SEC", 900)
+        r = fakeredis.FakeRedis()
+        old_ts = str(int(time.time()) - 4000)
+        r.set("order:KR:order-1", "SUBMITTED")
+        r.hset(
+            "claw:order_meta:KR:order-1",
+            mapping={"side": "BUY", "symbol": "035420", "qty": "1", "limit_price": "410000", "first_seen_ts": old_ts},
+        )
+
+        eng = _make_engine(r, available_cash=Decimal("500000"))
+        d = eng.check(_make_signal(size_cash=Decimal("100000")))
+
+        assert d.allow is True
 
     def test_zero_cash_blocks(self):
         r = fakeredis.FakeRedis()

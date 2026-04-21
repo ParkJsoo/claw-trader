@@ -115,3 +115,35 @@ def test_get_price_logs_status_details_without_clearing_token(kis_feed_env, monk
     assert "status=500" in captured
     assert "msg_cd=EGW00123" in captured
     assert "msg1=temporary" in captured
+
+
+def test_get_price_marks_rate_limit_and_shared_backoff(kis_feed_env, monkeypatch):
+    fake_redis = fakeredis.FakeRedis(decode_responses=True)
+    monkeypatch.setattr("market_data.kis_feed._redis.from_url", lambda *args, **kwargs: fake_redis)
+    monkeypatch.setenv("REDIS_URL", "redis://test")
+
+    feed = KisFeed()
+    feed.access_token = "shared-token"
+    feed.session = _SeqSession(
+        [
+            _Resp(500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate"}),
+            _Resp(500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate"}),
+            _Resp(500, {"rt_cd": "1", "msg_cd": "EGW00201", "msg1": "rate"}),
+        ]
+    )
+
+    monkeypatch.setattr(feed, "_ensure_token", lambda: None)
+    monkeypatch.setattr("market_data.kis_feed.time.sleep", lambda *_args, **_kwargs: None)
+
+    price = feed.get_price("005930")
+
+    assert price is None
+    assert feed.last_error_reason == "kis_price_rate_limit"
+    assert fake_redis.ttl("kis:price_backoff") > 0
+
+    feed.session = _SeqSession([_Resp(200, {"output": {"stck_prpr": "54321"}})])
+    second = feed.get_price("000660")
+
+    assert second is None
+    assert feed.last_error_reason == "kis_price_backoff_active"
+    assert len(feed.session.calls) == 0

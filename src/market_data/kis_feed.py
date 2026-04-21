@@ -20,6 +20,8 @@ _TOKEN_LOCK_WAIT_SEC = 8.0
 _TOKEN_LOCK_POLL_SEC = 0.2
 _PRICE_RETRY_ATTEMPTS = 3
 _PRICE_RETRY_BASE_SEC = 0.2
+_PRICE_BACKOFF_KEY = "kis:price_backoff"
+_PRICE_BACKOFF_SEC = max(1, int(os.getenv("KIS_PRICE_BACKOFF_SEC", "3")))
 
 _TOKEN_EXPIRED = object()  # sentinel: 401/403 토큰 만료 신호
 
@@ -40,6 +42,8 @@ class KisFeed:
 
         self.session = requests.Session()
         self.access_token: Optional[str] = None
+        self.last_error_reason: Optional[str] = None
+        self._local_price_backoff_until: float = 0.0
         self._redis: Optional[_redis.Redis] = None
         try:
             redis_url = os.getenv("REDIS_URL")
@@ -181,6 +185,45 @@ class KisFeed:
 
         return "KIS price request failed: " + " ".join(parts)
 
+    def _classify_price_error(self, detail: str) -> str:
+        text = (detail or "").lower()
+        if "msg_cd=egw00201" in text or "status=429" in text:
+            return "kis_price_rate_limit"
+        if "connecttimeout" in text or "readtimeout" in text or "request_error=timeout" in text:
+            return "kis_price_timeout"
+        if "token refresh blocked" in text:
+            return "kis_token_refresh_blocked"
+        if "token refresh deferred" in text:
+            return "kis_token_refresh_deferred"
+        if "token refresh in progress" in text:
+            return "kis_token_refresh_in_progress"
+        if "status=500" in text:
+            return "kis_price_http_500"
+        if "status=403" in text:
+            return "kis_price_http_403"
+        if "status=401" in text:
+            return "kis_price_http_401"
+        return "kis_price_error"
+
+    def _active_price_backoff_ttl(self) -> int:
+        ttl = 0
+        if self._local_price_backoff_until > time.time():
+            ttl = max(ttl, int(self._local_price_backoff_until - time.time()))
+        if self._redis:
+            try:
+                ttl = max(ttl, self._redis.ttl(_PRICE_BACKOFF_KEY))
+            except Exception:
+                pass
+        return max(ttl, 0)
+
+    def _activate_price_backoff(self, seconds: int = _PRICE_BACKOFF_SEC) -> None:
+        self._local_price_backoff_until = max(self._local_price_backoff_until, time.time() + seconds)
+        if self._redis:
+            try:
+                self._redis.set(_PRICE_BACKOFF_KEY, "1", ex=seconds)
+            except Exception:
+                pass
+
     def _fetch_price(self, symbol: str) -> Optional[Decimal]:
         """단일 가격 요청. 호출 전 토큰이 유효해야 함."""
         for attempt in range(1, _PRICE_RETRY_ATTEMPTS + 1):
@@ -261,6 +304,12 @@ class KisFeed:
         - 429/5xx/네트워크: 가격 요청 자체에서 짧게 재시도
         - 기타 HTTP 오류/데이터 없음: 로그 후 None 반환
         """
+        self.last_error_reason = None
+        backoff_ttl = self._active_price_backoff_ttl()
+        if backoff_ttl > 0:
+            self.last_error_reason = "kis_price_backoff_active"
+            return None
+
         def _retry() -> Optional[Decimal]:
             self._clear_token()
             if self._wait_for_shared_token(timeout_sec=1.0):
@@ -276,7 +325,12 @@ class KisFeed:
             if result is _TOKEN_EXPIRED:
                 # 401/403 토큰 만료 → 재발급 후 재시도
                 return _retry()
+            self.last_error_reason = None
             return result  # type: ignore[return-value]
         except Exception as e:
-            print(f"kis_price_error: {symbol} {e}")
+            detail = str(e)
+            self.last_error_reason = self._classify_price_error(detail)
+            if self.last_error_reason == "kis_price_rate_limit":
+                self._activate_price_backoff()
+            print(f"kis_price_error: {symbol} {detail}")
             return None

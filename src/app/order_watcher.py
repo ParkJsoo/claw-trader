@@ -9,6 +9,8 @@ from typing import Optional, Tuple
 # 취소된 종목 재진입 방지 cooldown (기본 1시간)
 _CANCEL_COOLDOWN_SEC: int = int(os.getenv("CANCEL_COOLDOWN_SEC", "3600"))
 _CANCEL_RETRY_BACKOFF_SEC: int = int(os.getenv("CANCEL_RETRY_BACKOFF_SEC", "30"))
+_KR_LOCAL_RECONCILE_STALE_SEC: int = int(os.getenv("WATCHER_KR_RECONCILE_STALE_SEC", "21600"))
+_KR_GHOST_ORDER_STALE_SEC: int = int(os.getenv("WATCHER_KR_GHOST_ORDER_STALE_SEC", "43200"))
 
 import redis
 
@@ -69,6 +71,12 @@ class OrderWatcher:
     def _cancel_backoff_key(self, market: str, order_id: str) -> str:
         return f"claw:cancel_backoff:{market}:{order_id}"
 
+    @staticmethod
+    def _decode(v) -> str:
+        if isinstance(v, bytes):
+            return v.decode()
+        return str(v) if v is not None else ""
+
     def _ensure_meta(self, market: str, order_id: str) -> int:
         """
         meta가 없으면 first_seen_ts를 지금으로 세팅하고 반환.
@@ -87,6 +95,12 @@ class OrderWatcher:
         self.r.expire(mk, self.cfg.meta_ttl_sec)
         return now
 
+    def _get_meta(self, market: str, order_id: str) -> dict[str, str]:
+        raw = self.r.hgetall(self._meta_key(market, order_id))
+        if not raw:
+            return {}
+        return {self._decode(k): self._decode(v) for k, v in raw.items()}
+
     def _set_order_status(self, market: str, order_id: str, status: str) -> None:
         self.r.set(self._order_key(market, order_id), status, ex=self.cfg.meta_ttl_sec)
 
@@ -97,6 +111,57 @@ class OrderWatcher:
             payload[k] = str(v)
         self.r.hset(rk, mapping=payload)
         self.r.expire(rk, self.cfg.meta_ttl_sec)
+
+    def _position_qty(self, market: str, symbol: str) -> Decimal:
+        raw = self.r.hget(f"position:{market}:{symbol}", "qty")
+        if raw is None:
+            return Decimal("0")
+        try:
+            return Decimal(self._decode(raw) or "0")
+        except Exception:
+            return Decimal("0")
+
+    def _kr_has_later_sell_meta(self, symbol: str, first_seen_ts: int) -> bool:
+        for meta_key in self.r.scan_iter("claw:order_meta:KR:*"):
+            order_id = self._decode(meta_key).rsplit(":", 1)[-1]
+            meta = self._get_meta("KR", order_id)
+            if meta.get("side") != "SELL" or meta.get("symbol") != symbol:
+                continue
+            ts = meta.get("first_seen_ts", "")
+            if ts.isdigit() and int(ts) >= first_seen_ts:
+                return True
+        return False
+
+    def _reconcile_kr_submitted_order(self, order_id: str, age_sec: int) -> Optional[str]:
+        meta = self._get_meta("KR", order_id)
+        if not meta:
+            if age_sec >= _KR_GHOST_ORDER_STALE_SEC:
+                print(f"[watcher] reconcile_local market=KR order_id={order_id} status=CANCELED reason=ghost_meta_missing age_sec={age_sec}")
+                return "CANCELED"
+            return None
+
+        symbol = meta.get("symbol", "")
+        side = meta.get("side", "")
+        first_seen_ts = meta.get("first_seen_ts", "")
+        first_seen = int(first_seen_ts) if first_seen_ts.isdigit() else 0
+
+        if not symbol and not side and age_sec >= _KR_GHOST_ORDER_STALE_SEC:
+            print(f"[watcher] reconcile_local market=KR order_id={order_id} status=CANCELED reason=ghost_meta_incomplete age_sec={age_sec}")
+            return "CANCELED"
+
+        if side == "SELL" and symbol and self._position_qty("KR", symbol) <= 0:
+            print(f"[watcher] reconcile_local market=KR order_id={order_id} status=FILLED reason=sell_not_in_holdings symbol={symbol}")
+            return "FILLED"
+
+        if side == "BUY" and symbol:
+            if self._position_qty("KR", symbol) > 0:
+                print(f"[watcher] reconcile_local market=KR order_id={order_id} status=FILLED reason=buy_in_holdings symbol={symbol}")
+                return "FILLED"
+            if first_seen and age_sec >= self.cfg.ttl_cancel_sec and self._kr_has_later_sell_meta(symbol, first_seen):
+                print(f"[watcher] reconcile_local market=KR order_id={order_id} status=FILLED reason=buy_later_sell_meta symbol={symbol}")
+                return "FILLED"
+
+        return None
 
     # -------------------------
     # IBKR status (US)
@@ -296,6 +361,13 @@ class OrderWatcher:
 
                 first_seen = self._ensure_meta(market, order_id)
                 age = now - first_seen
+
+                if market == "KR":
+                    reconciled = self._reconcile_kr_submitted_order(order_id, age)
+                    if reconciled:
+                        self._set_order_status(market, order_id, reconciled)
+                        self.r.delete(self._cancel_backoff_key(market, order_id))
+                        continue
 
                 # 1) US는 실제 상태 조회로 갱신
                 if market == "US":

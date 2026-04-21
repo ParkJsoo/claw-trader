@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime
 from typing import Optional
@@ -15,6 +16,7 @@ _KST = ZoneInfo("Asia/Seoul")
 
 SYMBOL_COUNT_WARN = 20   # 심볼 수 이 이상이면 경고
 ELAPSED_WARN_SEC = 1.0   # 갱신 소요 이 이상이면 경고
+KR_SYMBOL_PACE_SEC = max(0.0, float(os.getenv("KR_SYMBOL_PACE_SEC", "0.25")))
 
 
 class MarketDataUpdater:
@@ -79,9 +81,10 @@ class MarketDataUpdater:
         updated = 0
         errors: dict[str, int] = {}
 
-        for symbol in symbols:
+        for idx, symbol in enumerate(symbols):
             try:
                 price = feed.get_price(symbol)
+                error_reason = getattr(feed, "last_error_reason", None)
                 if price is not None:
                     self.repo.set_mark_price(market, symbol, price)
                     updated += 1
@@ -93,16 +96,24 @@ class MarketDataUpdater:
                     pipe.expire(hist_key, 7 * 86400)
                     pipe.execute()
                 else:
+                    if error_reason:
+                        errors[error_reason] = errors.get(error_reason, 0) + 1
                     # Delayed Frozen 모드(market_data_type=4)는 price_none 카운트 제외 — 노이즈 방지
-                    if not (market == "US" and getattr(feed, "market_data_type", None) == 4):
+                    elif not (market == "US" and getattr(feed, "market_data_type", None) == 4):
                         errors["price_none"] = errors.get("price_none", 0) + 1
             except Exception as e:
                 reason = type(e).__name__
                 errors[reason] = errors.get(reason, 0) + 1
                 print(f"md_update_error: {market}:{symbol} {e}")
+            finally:
+                if market == "KR" and KR_SYMBOL_PACE_SEC > 0 and idx < len(symbols) - 1:
+                    time.sleep(KR_SYMBOL_PACE_SEC)
 
         elapsed = time.time() - t0
-        if elapsed > ELAPSED_WARN_SEC:
+        warn_sec = ELAPSED_WARN_SEC
+        if market == "KR" and KR_SYMBOL_PACE_SEC > 0:
+            warn_sec += max(0, len(symbols) - 1) * KR_SYMBOL_PACE_SEC
+        if elapsed > warn_sec:
             print(f"md_slow: {market} elapsed={elapsed:.2f}s symbols={len(symbols)}")
 
         self._record_errors(market, errors)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,6 +16,7 @@ from domain.models import Signal
 from exchange.base import ExchangeClient
 
 _KST = ZoneInfo("Asia/Seoul")
+_PENDING_BUY_RESERVE_SEC = max(60, int(os.getenv("RISK_PENDING_BUY_RESERVE_SEC", "900")))
 
 
 @dataclass
@@ -58,6 +60,52 @@ class RiskEngine:
         self.client = client
 
     @staticmethod
+    def _decode(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode(errors="replace")
+        return str(value) if value is not None else ""
+
+    def _recent_submitted_buy_orders(self, market: str) -> list[dict[str, Any]]:
+        now = int(time.time())
+        cutoff = now - _PENDING_BUY_RESERVE_SEC
+        orders: list[dict[str, Any]] = []
+
+        for meta_key in self.redis.scan_iter(f"claw:order_meta:{market}:*"):
+            meta_key_str = self._decode(meta_key)
+            order_id = meta_key_str.rsplit(":", 1)[-1]
+            status = self.redis.get(f"order:{market}:{order_id}")
+            if self._decode(status) != "SUBMITTED":
+                continue
+
+            raw = self.redis.hgetall(meta_key_str)
+            meta = {self._decode(k): self._decode(v) for k, v in raw.items()}
+            if meta.get("side") != "BUY":
+                continue
+
+            first_seen_ts = meta.get("first_seen_ts", "")
+            if not first_seen_ts.isdigit() or int(first_seen_ts) < cutoff:
+                continue
+
+            try:
+                qty = Decimal(meta.get("qty") or "0")
+                price = Decimal(meta.get("limit_price") or "0")
+            except (InvalidOperation, ValueError):
+                continue
+
+            orders.append(
+                {
+                    "order_id": order_id,
+                    "symbol": meta.get("symbol", ""),
+                    "qty": qty,
+                    "price": price,
+                    "notional": qty * price,
+                    "first_seen_ts": int(first_seen_ts),
+                }
+            )
+
+        return orders
+
+    @staticmethod
     def _is_truthy(v: Optional[bytes]) -> bool:
         """Redis 값이 pause 활성화 상태인지 판정. 대소문자/다양한 표현 방어."""
         return v is not None and v.decode(errors="replace").strip().lower() in ("true", "1", "yes")
@@ -96,12 +144,21 @@ class RiskEngine:
         return None
 
     def _rule2_max_concurrent(self, signal: Signal, cfg: MarketRiskConfig) -> Optional[RiskDecision]:
+        if signal.direction == "EXIT":
+            return None
         count = self.redis.scard(f"position_index:{signal.market}") or 0
-        if count >= cfg.max_concurrent_positions:
+        pending_buy_count = len(self._recent_submitted_buy_orders(signal.market))
+        effective_count = count + pending_buy_count
+        if effective_count >= cfg.max_concurrent_positions:
             return RiskDecision(
                 allow=False,
                 reason="MAX_CONCURRENT_POSITIONS",
-                meta={"current": count, "limit": cfg.max_concurrent_positions},
+                meta={
+                    "current": count,
+                    "pending_buy_count": pending_buy_count,
+                    "effective_current": effective_count,
+                    "limit": cfg.max_concurrent_positions,
+                },
             )
         return None
 
@@ -128,6 +185,8 @@ class RiskEngine:
         return None
 
     def _rule4_allocation_cap(self, signal: Signal, cfg: MarketRiskConfig) -> Optional[RiskDecision]:
+        if signal.direction == "EXIT":
+            return None
         try:
             snapshot = self.client.get_account_snapshot()
             if snapshot.available_cash <= 0:
@@ -142,7 +201,10 @@ class RiskEngine:
                         "detail": "available_cash <= 0 (broker disconnected or incomplete snapshot)",
                     },
                 )
-            cap = snapshot.available_cash * cfg.allocation_cap_pct
+            pending_orders = self._recent_submitted_buy_orders(signal.market)
+            reserved_cash = sum((o["notional"] for o in pending_orders), Decimal("0"))
+            effective_available_cash = max(Decimal("0"), snapshot.available_cash - reserved_cash)
+            cap = effective_available_cash * cfg.allocation_cap_pct
             if signal.entry.size_cash > cap:
                 return RiskDecision(
                     allow=False,
@@ -151,6 +213,9 @@ class RiskEngine:
                         "size_cash": str(signal.entry.size_cash),
                         "cap": str(cap),
                         "available_cash": str(snapshot.available_cash),
+                        "effective_available_cash": str(effective_available_cash),
+                        "pending_buy_reserved_cash": str(reserved_cash),
+                        "pending_buy_count": len(pending_orders),
                     },
                 )
         except Exception as e:
