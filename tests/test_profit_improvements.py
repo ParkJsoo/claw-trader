@@ -150,6 +150,15 @@ class TestHasPositiveNews:
                     json.dumps({"sentiment": "negative", "impact": "high"}))
             assert _has_positive_news(r, "KR", "005930") is False
 
+    def test_ife_home_is_ignored(self):
+        r = fakeredis.FakeRedis()
+        with patch("app.consensus_signal_runner.today_kst", return_value="20260318"):
+            r.lpush(
+                "news:symbol:KR:005930:20260318",
+                json.dumps({"sentiment": "positive", "impact": "high", "source": "ife_home"}),
+            )
+            assert _has_positive_news(r, "KR", "005930") is False
+
 
 def _make_dual_eval_data(r, market, symbol, c_emit, q_emit, c_dir="LONG", q_dir="LONG",
                           price="50000", ret_5m="0.005", range_5m="0.006"):

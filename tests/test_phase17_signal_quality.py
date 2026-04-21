@@ -51,6 +51,15 @@ class TestGetNewsScore:
         with patch("app.consensus_signal_runner.today_kst", return_value="20260318"):
             assert _get_news_score(r, "KR", "005930") == "none"
 
+    def test_ife_home_is_ignored_for_news_boost(self):
+        r = fakeredis.FakeRedis()
+        r.lpush(
+            "news:symbol:KR:005930:20260318",
+            json.dumps({"sentiment": "positive", "impact": "high", "source": "ife_home"}),
+        )
+        with patch("app.consensus_signal_runner.today_kst", return_value="20260318"):
+            assert _get_news_score(r, "KR", "005930") == "none"
+
 
 class TestGetVolumeSurgeStatus:
     def _set_vol(self, r, market, symbol, date_str, vol):

@@ -489,6 +489,15 @@ def _get_dates_for_news(today: str) -> list:
         return [today]
 
 
+def _is_news_score_eligible(d: dict) -> bool:
+    """Deterministic 뉴스 boost에는 외부 뉴스만 사용.
+
+    `ife_home`은 가격 이벤트 요약 성격이 강해서, surge 완화/size boost에 쓰면
+    가격 움직임을 다시 뉴스로 해석하는 자기강화가 된다.
+    """
+    return str(d.get("source", "")).lower() != "ife_home"
+
+
 def _has_positive_news(r, market: str, symbol: str) -> bool:
     """오늘/어제 뉴스 중 positive+high/medium 뉴스가 있으면 True."""
     today = today_kst()
@@ -498,6 +507,8 @@ def _has_positive_news(r, market: str, symbol: str) -> bool:
         for raw in items:
             try:
                 d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                if not _is_news_score_eligible(d):
+                    continue
                 sentiment = d.get("sentiment", "").lower()
                 impact = d.get("impact", "").lower()
                 if sentiment == "positive" and impact in ("high", "medium"):
@@ -516,6 +527,8 @@ def _get_news_score(r, market: str, symbol: str) -> str:
         for raw in items:
             try:
                 d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                if not _is_news_score_eligible(d):
+                    continue
                 sentiment = d.get("sentiment", "").lower()
                 impact = d.get("impact", "").lower()
                 if sentiment == "positive" and impact == "high":
@@ -525,6 +538,8 @@ def _get_news_score(r, market: str, symbol: str) -> str:
         for raw in items:
             try:
                 d = json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                if not _is_news_score_eligible(d):
+                    continue
                 sentiment = d.get("sentiment", "").lower()
                 impact = d.get("impact", "").lower()
                 if sentiment == "positive" and impact == "medium":
