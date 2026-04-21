@@ -177,6 +177,9 @@ def test_pre_consensus_shadow_is_evaluated_in_separate_ledger():
     assert pre_summary["overall"]["trade_count"] == 1
     assert combined_summary["overall"]["trade_count"] == 1
     assert pre_summary["by_signal_family"]["type_a"]["trade_count"] == 1
+    assert pre_summary["by_symbol"]["KRW-ALT"]["trade_count"] == 1
+    assert pre_summary["by_reject_reason"]["reject_volume_no_surge"]["trade_count"] == 1
+    assert pre_summary["by_shadow_origin"]["consensus_runner_reject"]["trade_count"] == 1
 
 
 def test_choose_resume_summary_prefers_shadow_when_live_sample_is_empty():

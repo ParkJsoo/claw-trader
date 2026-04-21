@@ -212,6 +212,9 @@ def evaluate_signal_snapshot(
         "entry_ob_ratio": snapshot.get("ob_ratio", ""),
         "entry_claude_conf": snapshot.get("claude_conf", ""),
         "entry_news_score": snapshot.get("news_score", ""),
+        "reject_reason": snapshot.get("reject_reason", ""),
+        "shadow_origin": snapshot.get("shadow_origin", ""),
+        "shadow_stage": snapshot.get("shadow_stage", ""),
     }
     return {k: v for k, v in row.items() if v != ""}
 
@@ -329,6 +332,7 @@ def _load_shadow_rows(
     *,
     index_key: str,
     row_key_pattern: str,
+    snapshot_loader=None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> list[dict[str, str]]:
@@ -339,6 +343,11 @@ def _load_shadow_rows(
     for raw_row_id in row_ids:
         row_id = _decode(raw_row_id)
         row = {_decode(k): _decode(v) for k, v in (r.hgetall(row_key_pattern.format(signal_id=row_id)) or {}).items()}
+        if row and snapshot_loader is not None:
+            snapshot = snapshot_loader(r, row_id)
+            for field in ("reject_reason", "shadow_origin", "shadow_stage"):
+                if not row.get(field) and snapshot.get(field):
+                    row[field] = snapshot[field]
         if row:
             rows.append(row)
     return rows
@@ -363,13 +372,15 @@ def compute_pre_consensus_shadow_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> dict[str, Any]:
-    return compute_ledger_summary(
+    rows = _load_shadow_rows(
         r,
         index_key=_PRE_SHADOW_INDEX_KEY,
-        row_key_pattern="research:pre_shadow:COIN:{row_id}",
+        row_key_pattern=_PRE_SHADOW_KEY,
+        snapshot_loader=get_pre_consensus_signal_snapshot,
         date_from=date_from,
         date_to=date_to,
     )
+    return summarize_ledger_rows(rows, date_from=date_from, date_to=date_to)
 
 
 def compute_combined_shadow_summary(
@@ -389,6 +400,7 @@ def compute_combined_shadow_summary(
             r,
             index_key=_PRE_SHADOW_INDEX_KEY,
             row_key_pattern=_PRE_SHADOW_KEY,
+            snapshot_loader=get_pre_consensus_signal_snapshot,
             date_from=date_from,
             date_to=date_to,
         )

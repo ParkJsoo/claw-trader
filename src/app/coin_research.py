@@ -351,6 +351,9 @@ def summarize_ledger_rows(
     by_exit_reason: dict[str, list[dict[str, str]]] = defaultdict(list)
     by_change_rate_bucket: dict[str, list[dict[str, str]]] = defaultdict(list)
     by_ret_5m_bucket: dict[str, list[dict[str, str]]] = defaultdict(list)
+    by_symbol: dict[str, list[dict[str, str]]] = defaultdict(list)
+    by_reject_reason: dict[str, list[dict[str, str]]] = defaultdict(list)
+    by_shadow_origin: dict[str, list[dict[str, str]]] = defaultdict(list)
 
     for row in rows:
         by_signal_family[row.get("signal_family", "") or "unknown"].append(row)
@@ -358,6 +361,9 @@ def summarize_ledger_rows(
         by_exit_reason[row.get("exit_reason", "") or "unknown"].append(row)
         by_change_rate_bucket[_bucket_change_rate(row.get("entry_change_rate_daily", ""))].append(row)
         by_ret_5m_bucket[_bucket_ret_5m(row.get("entry_ret_5m", ""))].append(row)
+        by_symbol[row.get("symbol", "") or "unknown"].append(row)
+        by_reject_reason[row.get("reject_reason", "") or "unknown"].append(row)
+        by_shadow_origin[row.get("shadow_origin", "") or "unknown"].append(row)
 
     return {
         "date_from": date_from or "",
@@ -368,6 +374,9 @@ def summarize_ledger_rows(
         "by_exit_reason": {k: _summarize_rows(v) for k, v in sorted(by_exit_reason.items())},
         "by_change_rate_bucket": {k: _summarize_rows(v) for k, v in sorted(by_change_rate_bucket.items())},
         "by_ret_5m_bucket": {k: _summarize_rows(v) for k, v in sorted(by_ret_5m_bucket.items())},
+        "by_symbol": {k: _summarize_rows(v) for k, v in sorted(by_symbol.items())},
+        "by_reject_reason": {k: _summarize_rows(v) for k, v in sorted(by_reject_reason.items())},
+        "by_shadow_origin": {k: _summarize_rows(v) for k, v in sorted(by_shadow_origin.items())},
     }
 
 
