@@ -44,7 +44,7 @@ def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
 
 import redis
 
-from app.coin_research import save_signal_snapshot
+from app.coin_research import save_pre_consensus_signal_snapshot, save_signal_snapshot
 from domain.models import Signal, SignalEntry, SignalStop
 from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_market_hours, is_paused
 
@@ -52,6 +52,7 @@ from utils.redis_helpers import parse_watchlist, load_watchlist, today_kst, is_m
 _SIZE_CASH_PCT_KR = float(os.getenv("CONSENSUS_KR_SIZE_CASH_PCT", "0.30"))
 _SIZE_CASH_PCT_US = float(os.getenv("CONSENSUS_US_SIZE_CASH_PCT", "0.30"))
 _SIZE_CASH_PCT_COIN = float(os.getenv("CONSENSUS_COIN_SIZE_CASH_PCT", "0.30"))
+_COIN_PRE_SHADOW_SIZE_CASH = Decimal(os.getenv("COIN_PRE_SHADOW_SIZE_CASH", "100000"))
 
 # KisClient / IbkrClient 싱글톤 캐시 (프로세스 재시작 시 초기화)
 _client_cache: dict[str, object] = {}
@@ -321,6 +322,73 @@ def _record_reject(r, market: str, reason_code: str) -> None:
     stats_key = f"consensus:stats:{market}:{today}"
     r.hincrby(stats_key, reason_code, 1)
     r.expire(stats_key, _STATS_TTL)
+
+
+def _save_coin_pre_consensus_shadow_snapshot(
+    r,
+    *,
+    symbol: str,
+    claude: dict[str, str],
+    current_price: Decimal,
+    ret_5m: float,
+    range_5m: float,
+    ret_1m: Optional[float],
+    vol_24h: Optional[float],
+    reject_reason: str,
+) -> None:
+    if current_price <= 0:
+        return
+
+    eval_ts_ms = str(claude.get("ts_ms") or int(time.time() * 1000))
+    ts_ms = int(time.time() * 1000)
+    ts = datetime.fromtimestamp(ts_ms / 1000, _KST).isoformat()
+    stop_pct, take_pct = _dynamic_pcts(range_5m, "COIN")
+    stop_price = _normalize_price("COIN", current_price * (1 - stop_pct))
+    if stop_price <= 0:
+        return
+
+    try:
+        claude_conf = float(claude.get("confidence") or "0.7")
+    except (TypeError, ValueError):
+        claude_conf = 0.7
+
+    ob_ratio = None
+    ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
+    if ob_raw is not None:
+        try:
+            ob_ratio = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
+        except (TypeError, ValueError):
+            ob_ratio = None
+
+    payload = {
+        "signal_id": f"pre:{symbol}:{eval_ts_ms}",
+        "ts": ts,
+        "market": "COIN",
+        "symbol": symbol,
+        "direction": "LONG",
+        "entry": {
+            "price": str(current_price),
+            "size_cash": str(max(_COIN_PRE_SHADOW_SIZE_CASH, Decimal("5000"))),
+        },
+        "stop": {"price": str(stop_price)},
+        "source": "consensus_signal_runner_pre_consensus",
+        "status": "shadow_candidate",
+        "strategy": "momentum_breakout",
+        "signal_family": "type_a",
+        "claude_emit": 1,
+        "claude_conf": str(claude_conf),
+        "ret_5m": ret_5m,
+        "range_5m": range_5m,
+        "ret_1m": ret_1m,
+        "vol_24h": vol_24h,
+        "ob_ratio": ob_ratio,
+        "stop_pct": str(stop_pct),
+        "take_pct": str(take_pct),
+        "reject_reason": reject_reason,
+        "shadow_stage": "pre_consensus",
+        "shadow_origin": "consensus_runner_reject",
+    }
+    save_pre_consensus_signal_snapshot(r, payload)
 
 
 def _classify_claude_veto(reason: str) -> tuple[str, str]:
@@ -731,17 +799,53 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         surge_threshold = surge_threshold * 0.7
         _log("runner.news_surge_relaxed", symbol=symbol, threshold=f"{surge_threshold:.3f}")
     if ret_5m <= surge_threshold:
+        if market == "COIN":
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=None,
+                vol_24h=vol_24h if market == "COIN" else None,
+                reject_reason="reject_prefilter_ret_5m",
+            )
         _log("runner.reject.prefilter_ret_5m", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m")
         return None
 
     # 꼭지 매수 차단: 이미 너무 많이 오른 경우 후발 진입 방지 (Type A Flash Surge 전용)
     if ret_5m >= _MAX_SURGE_5M:
+        if market == "COIN":
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=None,
+                vol_24h=vol_24h if market == "COIN" else None,
+                reject_reason="reject_prefilter_ret_5m_overextended",
+            )
         _log("runner.reject.prefilter_ret_5m_overextended", symbol=symbol, ret_5m=ret_5m)
         _record_reject(r, market, "reject_prefilter_ret_5m_overextended")
         return None
 
     if range_5m <= _MIN_RANGE_5M:
+        if market == "COIN":
+            _save_coin_pre_consensus_shadow_snapshot(
+                r,
+                symbol=symbol,
+                claude=claude,
+                current_price=live_price,
+                ret_5m=ret_5m,
+                range_5m=range_5m,
+                ret_1m=None,
+                vol_24h=vol_24h if market == "COIN" else None,
+                reject_reason="reject_prefilter_range_5m",
+            )
         _log("runner.reject.prefilter_range_5m", symbol=symbol, range_5m=range_5m)
         _record_reject(r, market, "reject_prefilter_range_5m")
         return None
@@ -753,6 +857,18 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
         if ret_1m_raw is not None:
             ret_1m = float(ret_1m_raw)
             if ret_1m < _MIN_RET_1M:
+                if market == "COIN":
+                    _save_coin_pre_consensus_shadow_snapshot(
+                        r,
+                        symbol=symbol,
+                        claude=claude,
+                        current_price=live_price,
+                        ret_5m=ret_5m,
+                        range_5m=range_5m,
+                        ret_1m=ret_1m,
+                        vol_24h=vol_24h if market == "COIN" else None,
+                        reject_reason="reject_prefilter_ret_1m",
+                    )
                 _log("runner.reject.prefilter_ret_1m", symbol=symbol, ret_1m=ret_1m)
                 _record_reject(r, market, "reject_prefilter_ret_1m")
                 return None
@@ -763,6 +879,18 @@ def run_once(market: str, symbol: str, r) -> Optional[dict]:
     if market in ("KR", "COIN"):
         volume_ok, volume_diag = _get_volume_surge_status(r, market, symbol)
         if not volume_ok:
+            if market == "COIN":
+                _save_coin_pre_consensus_shadow_snapshot(
+                    r,
+                    symbol=symbol,
+                    claude=claude,
+                    current_price=live_price,
+                    ret_5m=ret_5m,
+                    range_5m=range_5m,
+                    ret_1m=ret_1m,
+                    vol_24h=vol_24h if market == "COIN" else None,
+                    reject_reason="reject_volume_no_surge",
+                )
             _log(
                 "runner.reject.volume_no_surge",
                 symbol=symbol,

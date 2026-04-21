@@ -12,7 +12,11 @@ import sys
 import redis
 
 from app.coin_research import compute_trade_summary
-from app.coin_shadow import compute_shadow_summary
+from app.coin_shadow import (
+    compute_combined_shadow_summary,
+    compute_pre_consensus_shadow_summary,
+    compute_shadow_summary,
+)
 
 
 def main() -> None:
@@ -21,7 +25,7 @@ def main() -> None:
     parser.add_argument("--date-to", dest="date_to", help="KST end date YYYYMMDD")
     parser.add_argument(
         "--ledger",
-        choices=("trade", "shadow", "both"),
+        choices=("trade", "shadow", "shadow_pre", "shadow_all", "both"),
         default="trade",
         help="출력할 ledger 종류",
     )
@@ -37,10 +41,16 @@ def main() -> None:
         summary = compute_trade_summary(r, args.date_from, args.date_to)
     elif args.ledger == "shadow":
         summary = compute_shadow_summary(r, args.date_from, args.date_to)
+    elif args.ledger == "shadow_pre":
+        summary = compute_pre_consensus_shadow_summary(r, args.date_from, args.date_to)
+    elif args.ledger == "shadow_all":
+        summary = compute_combined_shadow_summary(r, args.date_from, args.date_to)
     else:
         summary = {
             "trade": compute_trade_summary(r, args.date_from, args.date_to),
             "shadow": compute_shadow_summary(r, args.date_from, args.date_to),
+            "shadow_pre": compute_pre_consensus_shadow_summary(r, args.date_from, args.date_to),
+            "shadow_all": compute_combined_shadow_summary(r, args.date_from, args.date_to),
         }
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
 

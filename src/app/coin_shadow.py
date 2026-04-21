@@ -14,7 +14,12 @@ from zoneinfo import ZoneInfo
 from redis import Redis
 
 from app.backtester import _parse_mark_hist
-from app.coin_research import compute_ledger_summary, get_signal_snapshot
+from app.coin_research import (
+    compute_ledger_summary,
+    get_pre_consensus_signal_snapshot,
+    get_signal_snapshot,
+    summarize_ledger_rows,
+)
 from app.position_exit_runner import (
     _COIN_EARLY_EXIT_PCT,
     _COIN_EARLY_EXIT_SEC,
@@ -31,8 +36,11 @@ from app.position_exit_runner import (
 _KST = ZoneInfo("Asia/Seoul")
 _TTL = 180 * 86400
 _SIGNAL_INDEX_KEY = "research:signal_index:COIN"
+_PRE_SIGNAL_INDEX_KEY = "research:pre_signal_index:COIN"
 _SHADOW_KEY = "research:shadow:COIN:{signal_id}"
 _SHADOW_INDEX_KEY = "research:shadow_index:COIN"
+_PRE_SHADOW_KEY = "research:pre_shadow:COIN:{signal_id}"
+_PRE_SHADOW_INDEX_KEY = "research:pre_shadow_index:COIN"
 _SHADOW_SCAN_LIMIT = int(os.getenv("COIN_SHADOW_SCAN_LIMIT", "200"))
 _SHADOW_MIN_POINTS = int(os.getenv("COIN_SHADOW_MIN_POINTS", "10"))
 
@@ -79,8 +87,8 @@ def _score_bounds(date_from: Optional[str], date_to: Optional[str]) -> tuple[int
     return low, high
 
 
-def _shadow_exists(r: Redis, signal_id: str) -> bool:
-    return bool(r.exists(_SHADOW_KEY.format(signal_id=signal_id)))
+def _shadow_exists(r: Redis, signal_id: str, *, key_pattern: str) -> bool:
+    return bool(r.exists(key_pattern.format(signal_id=signal_id)))
 
 
 def _normalize_exit_reason(reason: str) -> str:
@@ -208,18 +216,29 @@ def evaluate_signal_snapshot(
     return {k: v for k, v in row.items() if v != ""}
 
 
-def save_shadow_result(r: Redis, signal_id: str, row: dict[str, str]) -> None:
-    key = _SHADOW_KEY.format(signal_id=signal_id)
+def save_shadow_result(
+    r: Redis,
+    signal_id: str,
+    row: dict[str, str],
+    *,
+    key_pattern: str = _SHADOW_KEY,
+    index_key: str = _SHADOW_INDEX_KEY,
+) -> None:
+    key = key_pattern.format(signal_id=signal_id)
     signal_ts_ms = int(row.get("signal_ts_ms", "0") or 0)
     r.hset(key, mapping=row)
     r.expire(key, _TTL)
-    r.zadd(_SHADOW_INDEX_KEY, {signal_id: signal_ts_ms})
-    r.expire(_SHADOW_INDEX_KEY, _TTL)
+    r.zadd(index_key, {signal_id: signal_ts_ms})
+    r.expire(index_key, _TTL)
 
 
-def evaluate_pending_signals(
+def _evaluate_pending_signals(
     r: Redis,
     *,
+    signal_index_key: str,
+    shadow_key_pattern: str,
+    shadow_index_key: str,
+    snapshot_loader,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     limit: Optional[int] = None,
@@ -227,7 +246,7 @@ def evaluate_pending_signals(
     """미평가 COIN signal snapshot을 shadow ledger로 적재."""
     low, high = _score_bounds(date_from, date_to)
     scan_limit = limit or _SHADOW_SCAN_LIMIT
-    signal_ids = r.zrangebyscore(_SIGNAL_INDEX_KEY, low, high, start=0, num=scan_limit)
+    signal_ids = r.zrangebyscore(signal_index_key, low, high, start=0, num=scan_limit)
 
     stats = {
         "scanned": 0,
@@ -241,11 +260,11 @@ def evaluate_pending_signals(
         signal_id = _decode(raw_signal_id)
         stats["scanned"] += 1
 
-        if _shadow_exists(r, signal_id):
+        if _shadow_exists(r, signal_id, key_pattern=shadow_key_pattern):
             stats["skipped_existing"] += 1
             continue
 
-        snapshot = get_signal_snapshot(r, signal_id)
+        snapshot = snapshot_loader(r, signal_id)
         if not snapshot or snapshot.get("market") != "COIN":
             stats["skipped_invalid"] += 1
             continue
@@ -255,10 +274,74 @@ def evaluate_pending_signals(
             stats["pending"] += 1
             continue
 
-        save_shadow_result(r, signal_id, row)
+        save_shadow_result(
+            r,
+            signal_id,
+            row,
+            key_pattern=shadow_key_pattern,
+            index_key=shadow_index_key,
+        )
         stats["completed"] += 1
 
     return stats
+
+
+def evaluate_pending_signals(
+    r: Redis,
+    *,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> dict[str, int]:
+    return _evaluate_pending_signals(
+        r,
+        signal_index_key=_SIGNAL_INDEX_KEY,
+        shadow_key_pattern=_SHADOW_KEY,
+        shadow_index_key=_SHADOW_INDEX_KEY,
+        snapshot_loader=get_signal_snapshot,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
+def evaluate_pending_pre_consensus_signals(
+    r: Redis,
+    *,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> dict[str, int]:
+    return _evaluate_pending_signals(
+        r,
+        signal_index_key=_PRE_SIGNAL_INDEX_KEY,
+        shadow_key_pattern=_PRE_SHADOW_KEY,
+        shadow_index_key=_PRE_SHADOW_INDEX_KEY,
+        snapshot_loader=get_pre_consensus_signal_snapshot,
+        date_from=date_from,
+        date_to=date_to,
+        limit=limit,
+    )
+
+
+def _load_shadow_rows(
+    r: Redis,
+    *,
+    index_key: str,
+    row_key_pattern: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list[dict[str, str]]:
+    low, high = _score_bounds(date_from, date_to)
+    row_ids = r.zrangebyscore(index_key, low, high)
+
+    rows: list[dict[str, str]] = []
+    for raw_row_id in row_ids:
+        row_id = _decode(raw_row_id)
+        row = {_decode(k): _decode(v) for k, v in (r.hgetall(row_key_pattern.format(signal_id=row_id)) or {}).items()}
+        if row:
+            rows.append(row)
+    return rows
 
 
 def compute_shadow_summary(
@@ -273,3 +356,41 @@ def compute_shadow_summary(
         date_from=date_from,
         date_to=date_to,
     )
+
+
+def compute_pre_consensus_shadow_summary(
+    r: Redis,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> dict[str, Any]:
+    return compute_ledger_summary(
+        r,
+        index_key=_PRE_SHADOW_INDEX_KEY,
+        row_key_pattern="research:pre_shadow:COIN:{row_id}",
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+
+def compute_combined_shadow_summary(
+    r: Redis,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> dict[str, Any]:
+    rows = _load_shadow_rows(
+        r,
+        index_key=_SHADOW_INDEX_KEY,
+        row_key_pattern=_SHADOW_KEY,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    rows.extend(
+        _load_shadow_rows(
+            r,
+            index_key=_PRE_SHADOW_INDEX_KEY,
+            row_key_pattern=_PRE_SHADOW_KEY,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
+    return summarize_ledger_rows(rows, date_from=date_from, date_to=date_to)

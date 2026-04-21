@@ -8,8 +8,14 @@ import fakeredis
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from app.coin_research import choose_resume_summary, save_signal_snapshot
-from app.coin_shadow import compute_shadow_summary, evaluate_pending_signals
+from app.coin_research import choose_resume_summary, save_pre_consensus_signal_snapshot, save_signal_snapshot
+from app.coin_shadow import (
+    compute_combined_shadow_summary,
+    compute_pre_consensus_shadow_summary,
+    compute_shadow_summary,
+    evaluate_pending_pre_consensus_signals,
+    evaluate_pending_signals,
+)
 
 
 def _seed_mark_hist(r, symbol: str, prices: list[tuple[int, str]]) -> None:
@@ -114,6 +120,65 @@ def test_shadow_evaluation_waits_for_more_history_when_signal_is_still_open():
     assert not r.exists("research:shadow:COIN:sig-shadow-2")
 
 
+def test_pre_consensus_shadow_is_evaluated_in_separate_ledger():
+    r = fakeredis.FakeRedis()
+
+    save_pre_consensus_signal_snapshot(
+        r,
+        {
+            "signal_id": "pre:KRW-ALT:1760007200000",
+            "ts": "1760007200000",
+            "market": "COIN",
+            "symbol": "KRW-ALT",
+            "direction": "LONG",
+            "entry": {"price": "100", "size_cash": "100000"},
+            "stop": {"price": "97"},
+            "source": "consensus_signal_runner_pre_consensus",
+            "status": "shadow_candidate",
+            "strategy": "momentum_breakout",
+            "signal_family": "type_a",
+            "ret_5m": 0.018,
+            "range_5m": 0.012,
+            "ret_1m": 0.003,
+            "vol_24h": 80000000000,
+            "ob_ratio": 1.1,
+            "stop_pct": "0.03",
+            "take_pct": "0.15",
+            "reject_reason": "reject_volume_no_surge",
+            "shadow_stage": "pre_consensus",
+            "shadow_origin": "consensus_runner_reject",
+        },
+    )
+    _seed_mark_hist(
+        r,
+        "KRW-ALT",
+        [
+            (1760007600000, "101"),
+            (1760007900000, "102"),
+            (1760008200000, "104"),
+            (1760008500000, "108"),
+            (1760008800000, "112"),
+            (1760009100000, "116"),
+            (1760009400000, "118"),
+            (1760009700000, "117"),
+            (1760010000000, "115"),
+            (1760010300000, "114"),
+        ],
+    )
+
+    stats = evaluate_pending_pre_consensus_signals(r)
+
+    assert stats["completed"] == 1
+    row = r.hgetall("research:pre_shadow:COIN:pre:KRW-ALT:1760007200000")
+    assert row[b"signal_id"] == b"pre:KRW-ALT:1760007200000"
+
+    pre_summary = compute_pre_consensus_shadow_summary(r)
+    combined_summary = compute_combined_shadow_summary(r)
+    assert pre_summary["overall"]["trade_count"] == 1
+    assert combined_summary["overall"]["trade_count"] == 1
+    assert pre_summary["by_signal_family"]["type_a"]["trade_count"] == 1
+
+
 def test_choose_resume_summary_prefers_shadow_when_live_sample_is_empty():
     trade_summary = {"overall": {"trade_count": 0}}
     shadow_summary = {"overall": {"trade_count": 12, "net_pnl": 1000}}
@@ -122,3 +187,22 @@ def test_choose_resume_summary_prefers_shadow_when_live_sample_is_empty():
 
     assert selected["selected_ledger"] == "shadow"
     assert selected["summary"] == shadow_summary
+
+
+def test_choose_resume_summary_can_select_combined_shadow():
+    trade_summary = {"overall": {"trade_count": 0}}
+    shadow_summary = {"overall": {"trade_count": 2, "net_pnl": -50}}
+    shadow_pre_summary = {"overall": {"trade_count": 8, "net_pnl": 120}}
+    shadow_all_summary = {"overall": {"trade_count": 10, "net_pnl": 70}}
+
+    selected = choose_resume_summary(
+        trade_summary,
+        shadow_summary,
+        "shadow_all",
+        shadow_pre_summary=shadow_pre_summary,
+        shadow_all_summary=shadow_all_summary,
+    )
+
+    assert selected["selected_ledger"] == "shadow_all"
+    assert selected["selected_sample_count"] == 10
+    assert selected["summary"] == shadow_all_summary

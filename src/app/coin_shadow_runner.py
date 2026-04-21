@@ -12,7 +12,7 @@ import time
 
 import redis
 
-from app.coin_shadow import evaluate_pending_signals
+from app.coin_shadow import evaluate_pending_pre_consensus_signals, evaluate_pending_signals
 
 _LOCK_KEY = "coin:shadow:runner:lock"
 _LOCK_TTL = 120
@@ -47,13 +47,19 @@ def main() -> None:
         while True:
             r.expire(_LOCK_KEY, _LOCK_TTL)
             stats = evaluate_pending_signals(r)
+            pre_stats = evaluate_pending_pre_consensus_signals(r)
             _log(
                 "scan "
                 f"scanned={stats['scanned']} "
                 f"completed={stats['completed']} "
                 f"pending={stats['pending']} "
                 f"skipped_existing={stats['skipped_existing']} "
-                f"skipped_invalid={stats['skipped_invalid']}"
+                f"skipped_invalid={stats['skipped_invalid']} "
+                f"pre_scanned={pre_stats['scanned']} "
+                f"pre_completed={pre_stats['completed']} "
+                f"pre_pending={pre_stats['pending']} "
+                f"pre_skipped_existing={pre_stats['skipped_existing']} "
+                f"pre_skipped_invalid={pre_stats['skipped_invalid']}"
             )
             time.sleep(_POLL_SEC)
     finally:

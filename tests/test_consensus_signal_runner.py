@@ -10,6 +10,7 @@ import fakeredis
 import pytest
 
 from app.consensus_signal_runner import _classify_claude_veto, _get_live_ret_5m, normalize_kr_price_tick, run_once
+from app.coin_shadow import compute_pre_consensus_shadow_summary
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +281,40 @@ class TestRunOnceReject:
         run_once("KR", "005930", r)
 
         assert r.llen("claw:signal:queue") == 0
+
+    def test_coin_prefilter_reject_saves_pre_consensus_snapshot(self):
+        r = fakeredis.FakeRedis()
+        fresh_ts_ms = str(int(time.time() * 1000))
+        _set_dual(
+            r,
+            "COIN",
+            "KRW-BTC",
+            features_json=_make_features(ret_5m=0.001, range_5m=0.01),
+            ts_ms=fresh_ts_ms,
+        )
+        _set_dense_mark_hist(
+            r,
+            "COIN",
+            "KRW-BTC",
+            latest_price="70000",
+            past_price="69900",
+            step_sec=30,
+            total_points=20,
+        )
+        from utils.redis_helpers import today_kst
+
+        r.set(f"vol:COIN:KRW-BTC:{today_kst()}", "80000000000")
+
+        assert run_once("COIN", "KRW-BTC", r) is None
+
+        row = r.hgetall(f"research:pre_signal:COIN:pre:KRW-BTC:{fresh_ts_ms}")
+        assert row[b"symbol"] == b"KRW-BTC"
+        assert row[b"shadow_stage"] == b"pre_consensus"
+        assert row[b"reject_reason"] == b"reject_prefilter_ret_5m"
+        assert Decimal(row[b"entry_price"].decode()) == Decimal("70000")
+
+        summary = compute_pre_consensus_shadow_summary(r)
+        assert summary["overall"]["trade_count"] == 0
 
     def test_get_live_ret_5m_handles_dense_mark_hist(self):
         r = fakeredis.FakeRedis()

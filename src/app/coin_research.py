@@ -25,6 +25,8 @@ _KST = ZoneInfo("Asia/Seoul")
 _TTL = 180 * 86400
 _SIGNAL_KEY = "research:signal:COIN:{signal_id}"
 _SIGNAL_INDEX_KEY = "research:signal_index:COIN"
+_PRE_SIGNAL_KEY = "research:pre_signal:COIN:{signal_id}"
+_PRE_SIGNAL_INDEX_KEY = "research:pre_signal_index:COIN"
 _TRADE_KEY = "research:trade:COIN:{trade_id}"
 _TRADE_INDEX_KEY = "research:trade_index:COIN"
 
@@ -94,15 +96,8 @@ def _signal_family_from_payload(payload: dict[str, Any]) -> str:
     return "unknown"
 
 
-def save_signal_snapshot(r: Redis, payload: dict[str, Any]) -> None:
-    """COIN 진입 신호 feature snapshot 저장."""
-    if payload.get("market") != "COIN":
-        return
-
+def _build_signal_snapshot_mapping(payload: dict[str, Any]) -> tuple[str, int, dict[str, str]]:
     signal_id = str(payload.get("signal_id") or "").strip()
-    if not signal_id:
-        return
-
     entry = payload.get("entry") or {}
     stop = payload.get("stop") or {}
     ts = str(payload.get("ts") or "")
@@ -133,14 +128,43 @@ def save_signal_snapshot(r: Redis, payload: dict[str, Any]) -> None:
         "vol_24h": _normalize_scalar(payload.get("vol_24h")),
         "ob_ratio": _normalize_scalar(payload.get("ob_ratio")),
         "news_score": _normalize_scalar(payload.get("news_score")),
+        "reject_reason": _normalize_scalar(payload.get("reject_reason")),
+        "shadow_stage": _normalize_scalar(payload.get("shadow_stage")),
+        "shadow_origin": _normalize_scalar(payload.get("shadow_origin")),
     }
+    return signal_id, ts_ms, {k: v for k, v in mapping.items() if v != ""}
 
-    key = _SIGNAL_KEY.format(signal_id=signal_id)
-    filtered = {k: v for k, v in mapping.items() if v != ""}
-    r.hset(key, mapping=filtered)
+
+def _save_signal_snapshot_to(
+    r: Redis,
+    payload: dict[str, Any],
+    *,
+    key_pattern: str,
+    index_key: str,
+) -> None:
+    """COIN 연구용 signal snapshot 저장 공통 경로."""
+    if payload.get("market") != "COIN":
+        return
+
+    signal_id, ts_ms, mapping = _build_signal_snapshot_mapping(payload)
+    if not signal_id:
+        return
+
+    key = key_pattern.format(signal_id=signal_id)
+    r.hset(key, mapping=mapping)
     r.expire(key, _TTL)
-    r.zadd(_SIGNAL_INDEX_KEY, {signal_id: ts_ms})
-    r.expire(_SIGNAL_INDEX_KEY, _TTL)
+    r.zadd(index_key, {signal_id: ts_ms})
+    r.expire(index_key, _TTL)
+
+
+def save_signal_snapshot(r: Redis, payload: dict[str, Any]) -> None:
+    """COIN 진입 신호 feature snapshot 저장."""
+    _save_signal_snapshot_to(r, payload, key_pattern=_SIGNAL_KEY, index_key=_SIGNAL_INDEX_KEY)
+
+
+def save_pre_consensus_signal_snapshot(r: Redis, payload: dict[str, Any]) -> None:
+    """COIN pre-consensus shadow용 snapshot 저장."""
+    _save_signal_snapshot_to(r, payload, key_pattern=_PRE_SIGNAL_KEY, index_key=_PRE_SIGNAL_INDEX_KEY)
 
 
 def get_signal_snapshot(r: Redis, signal_id: str) -> dict[str, str]:
@@ -161,6 +185,13 @@ def get_signal_snapshot(r: Redis, signal_id: str) -> dict[str, str]:
         return {k: _normalize_scalar(v) for k, v in parsed.items() if v is not None}
     except Exception:
         return {}
+
+
+def get_pre_consensus_signal_snapshot(r: Redis, signal_id: str) -> dict[str, str]:
+    """pre-consensus shadow snapshot 조회."""
+    if not signal_id:
+        return {}
+    return _hgetall_str(r, _PRE_SIGNAL_KEY.format(signal_id=signal_id))
 
 
 def bind_position_signal_context(r: Redis, symbol: str, signal_id: str) -> None:
@@ -307,25 +338,13 @@ def _score_bounds(date_from: Optional[str], date_to: Optional[str]) -> tuple[int
     return low, high
 
 
-def compute_ledger_summary(
-    r: Redis,
+def summarize_ledger_rows(
+    rows: list[dict[str, str]],
     *,
-    index_key: str,
-    row_key_pattern: str,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> dict[str, Any]:
-    """공통 research ledger 요약."""
-    low, high = _score_bounds(date_from, date_to)
-    row_ids = r.zrangebyscore(index_key, low, high)
-
-    rows: list[dict[str, str]] = []
-    for raw_row_id in row_ids:
-        row_id = _decode(raw_row_id)
-        row = _hgetall_str(r, row_key_pattern.format(row_id=row_id))
-        if row:
-            rows.append(row)
-
+    """공통 research ledger row 집계."""
     by_signal_family: dict[str, list[dict[str, str]]] = defaultdict(list)
     by_strategy: dict[str, list[dict[str, str]]] = defaultdict(list)
     by_exit_reason: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -349,6 +368,28 @@ def compute_ledger_summary(
         "by_change_rate_bucket": {k: _summarize_rows(v) for k, v in sorted(by_change_rate_bucket.items())},
         "by_ret_5m_bucket": {k: _summarize_rows(v) for k, v in sorted(by_ret_5m_bucket.items())},
     }
+
+
+def compute_ledger_summary(
+    r: Redis,
+    *,
+    index_key: str,
+    row_key_pattern: str,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> dict[str, Any]:
+    """공통 research ledger 요약."""
+    low, high = _score_bounds(date_from, date_to)
+    row_ids = r.zrangebyscore(index_key, low, high)
+
+    rows: list[dict[str, str]] = []
+    for raw_row_id in row_ids:
+        row_id = _decode(raw_row_id)
+        row = _hgetall_str(r, row_key_pattern.format(row_id=row_id))
+        if row:
+            rows.append(row)
+
+    return summarize_ledger_rows(rows, date_from=date_from, date_to=date_to)
 
 
 def _bucket_change_rate(raw: str) -> str:
@@ -452,24 +493,51 @@ def choose_resume_summary(
     trade_summary: dict[str, Any],
     shadow_summary: dict[str, Any],
     ledger: str = "auto",
+    *,
+    shadow_pre_summary: Optional[dict[str, Any]] = None,
+    shadow_all_summary: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """resume 판단에 사용할 evidence 선택."""
     trade_count = int((trade_summary.get("overall", {}) or {}).get("trade_count", 0) or 0)
     shadow_count = int((shadow_summary.get("overall", {}) or {}).get("trade_count", 0) or 0)
+    shadow_pre_summary = shadow_pre_summary or {"overall": {"trade_count": 0}}
+    shadow_all_summary = shadow_all_summary or {"overall": {"trade_count": 0}}
+    shadow_pre_count = int((shadow_pre_summary.get("overall", {}) or {}).get("trade_count", 0) or 0)
+    shadow_all_count = int((shadow_all_summary.get("overall", {}) or {}).get("trade_count", 0) or 0)
 
     if ledger == "trade":
         selected = "trade"
+    elif ledger == "shadow_pre":
+        selected = "shadow_pre"
+    elif ledger == "shadow_all":
+        selected = "shadow_all"
     elif ledger == "shadow":
         selected = "shadow"
     else:
         selected = "trade" if trade_count > 0 else "shadow"
 
+    summary_map = {
+        "trade": trade_summary,
+        "shadow": shadow_summary,
+        "shadow_pre": shadow_pre_summary,
+        "shadow_all": shadow_all_summary,
+    }
+    count_map = {
+        "trade": trade_count,
+        "shadow": shadow_count,
+        "shadow_pre": shadow_pre_count,
+        "shadow_all": shadow_all_count,
+    }
+
     return {
         "selected_ledger": selected,
-        "selected_trade_count": trade_count if selected == "trade" else shadow_count,
+        "selected_trade_count": count_map[selected],
+        "selected_sample_count": count_map[selected],
         "trade_count": trade_count,
         "shadow_count": shadow_count,
-        "summary": trade_summary if selected == "trade" else shadow_summary,
+        "shadow_pre_count": shadow_pre_count,
+        "shadow_all_count": shadow_all_count,
+        "summary": summary_map[selected],
     }
 
 

@@ -16,7 +16,11 @@ from zoneinfo import ZoneInfo
 import redis
 
 from app.coin_research import choose_resume_summary, compute_trade_summary, evaluate_resume_readiness
-from app.coin_shadow import compute_shadow_summary
+from app.coin_shadow import (
+    compute_combined_shadow_summary,
+    compute_pre_consensus_shadow_summary,
+    compute_shadow_summary,
+)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -79,7 +83,15 @@ def build_snapshot(r: redis.Redis, *, date_from: str, date_to: str) -> dict:
 
     trade_summary = compute_trade_summary(r, date_from, date_to)
     shadow_summary = compute_shadow_summary(r, date_from, date_to)
-    selected = choose_resume_summary(trade_summary, shadow_summary, "auto")
+    shadow_pre_summary = compute_pre_consensus_shadow_summary(r, date_from, date_to)
+    shadow_all_summary = compute_combined_shadow_summary(r, date_from, date_to)
+    selected = choose_resume_summary(
+        trade_summary,
+        shadow_summary,
+        "auto",
+        shadow_pre_summary=shadow_pre_summary,
+        shadow_all_summary=shadow_all_summary,
+    )
     resume_check = evaluate_resume_readiness(selected["summary"])
 
     return {
@@ -100,6 +112,8 @@ def build_snapshot(r: redis.Redis, *, date_from: str, date_to: str) -> dict:
         "resume_check": resume_check,
         "trade_summary": trade_summary,
         "shadow_summary": shadow_summary,
+        "shadow_pre_summary": shadow_pre_summary,
+        "shadow_all_summary": shadow_all_summary,
         "watchlist_rows": rows,
     }
 

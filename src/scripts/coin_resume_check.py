@@ -16,7 +16,11 @@ from app.coin_research import (
     compute_trade_summary,
     evaluate_resume_readiness,
 )
-from app.coin_shadow import compute_shadow_summary
+from app.coin_shadow import (
+    compute_combined_shadow_summary,
+    compute_pre_consensus_shadow_summary,
+    compute_shadow_summary,
+)
 
 
 def main() -> None:
@@ -25,7 +29,7 @@ def main() -> None:
     parser.add_argument("--date-to", dest="date_to", help="KST end date YYYYMMDD")
     parser.add_argument(
         "--ledger",
-        choices=("auto", "trade", "shadow"),
+        choices=("auto", "trade", "shadow", "shadow_pre", "shadow_all"),
         default="auto",
         help="resume 판단에 사용할 evidence source",
     )
@@ -39,7 +43,15 @@ def main() -> None:
     r = redis.from_url(redis_url, decode_responses=True)
     trade_summary = compute_trade_summary(r, args.date_from, args.date_to)
     shadow_summary = compute_shadow_summary(r, args.date_from, args.date_to)
-    selected = choose_resume_summary(trade_summary, shadow_summary, args.ledger)
+    shadow_pre_summary = compute_pre_consensus_shadow_summary(r, args.date_from, args.date_to)
+    shadow_all_summary = compute_combined_shadow_summary(r, args.date_from, args.date_to)
+    selected = choose_resume_summary(
+        trade_summary,
+        shadow_summary,
+        args.ledger,
+        shadow_pre_summary=shadow_pre_summary,
+        shadow_all_summary=shadow_all_summary,
+    )
     evaluation = evaluate_resume_readiness(selected["summary"])
     print(
         json.dumps(
@@ -47,6 +59,8 @@ def main() -> None:
                 "selected_ledger": selected["selected_ledger"],
                 "trade_summary": trade_summary,
                 "shadow_summary": shadow_summary,
+                "shadow_pre_summary": shadow_pre_summary,
+                "shadow_all_summary": shadow_all_summary,
                 "summary": selected["summary"],
                 "resume_check": evaluation,
             },
