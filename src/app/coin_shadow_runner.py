@@ -43,6 +43,50 @@ def _type_b_alert_thresholds() -> list[int]:
     return sorted(set(thresholds))
 
 
+def _type_b_watch_scan_thresholds() -> list[int]:
+    raw = os.getenv("COIN_TYPE_B_WATCH_SCAN_THRESHOLDS", "500,1000")
+    thresholds: list[int] = []
+    for token in raw.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            value = int(token)
+        except ValueError:
+            continue
+        if value > 0:
+            thresholds.append(value)
+    return sorted(set(thresholds))
+
+
+def _decode(value) -> str:
+    if isinstance(value, bytes):
+        return value.decode()
+    return "" if value is None else str(value)
+
+
+def _read_type_b_runtime_stats(r, *, today: str) -> dict[str, int]:
+    raw = r.hgetall(f"consensus:type_b:stats:COIN:{today}") or {}
+    normalized = {_decode(key): _decode(value) for key, value in raw.items()}
+    stats: dict[str, int] = {}
+    for key, value in normalized.items():
+        try:
+            stats[key] = int(value or 0)
+        except ValueError:
+            continue
+    return stats
+
+
+def _format_top_rejects(stats: dict[str, int], *, limit: int = 3) -> str:
+    reject_counts = sorted(
+        ((key, value) for key, value in stats.items() if key.startswith("reject_") and value > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not reject_counts:
+        return "none"
+    return ", ".join(f"{reason}={count}" for reason, count in reject_counts[:limit])
+
+
 def _type_b_only_readiness_summary(summary: dict) -> dict:
     type_b_stats = (summary.get("by_signal_family", {}) or {}).get("type_b", {}) or {}
     return {
@@ -104,6 +148,51 @@ def _maybe_notify_type_b_shadow_progress(r, *, today: str | None = None) -> list
     return sent_tags
 
 
+def _build_type_b_runtime_watch_alerts(r, *, today: str) -> dict[str, str]:
+    stats = _read_type_b_runtime_stats(r, today=today)
+    scanned = int(stats.get("scanned", 0) or 0)
+    candidate = int(stats.get("candidate", 0) or 0)
+    shadow_candidate = int(stats.get("shadow_candidate", 0) or 0)
+    pass_total = candidate + shadow_candidate
+    if scanned <= 0:
+        return {}
+
+    alerts: dict[str, str] = {}
+    top_rejects = _format_top_rejects(stats)
+
+    if pass_total > 0:
+        alerts["first_candidate"] = (
+            f"[CLAW] COIN Type B candidate detected ({today})\n"
+            f"scanned={scanned} candidate={candidate} shadow_candidate={shadow_candidate}\n"
+            f"top_rejects={top_rejects}"
+        )
+
+    if pass_total == 0:
+        for threshold in _type_b_watch_scan_thresholds():
+            if scanned >= threshold:
+                alerts[f"stuck:{threshold}"] = (
+                    f"[CLAW] COIN Type B still blocked after {threshold} scans ({today})\n"
+                    f"scanned={scanned} candidate=0 shadow_candidate=0\n"
+                    f"top_rejects={top_rejects}"
+                )
+
+    return alerts
+
+
+def _maybe_notify_type_b_runtime_watch(r, *, today: str | None = None) -> list[str]:
+    today = today or today_kst()
+    alerts = _build_type_b_runtime_watch_alerts(r, today=today)
+    sent_tags: list[str] = []
+
+    for tag, message in alerts.items():
+        alert_key = f"coin:type_b_runtime_watch_alert:{today}:{tag}"
+        if r.set(alert_key, "1", nx=True, ex=_TYPE_B_ALERT_TTL):
+            send_telegram(message)
+            sent_tags.append(tag)
+
+    return sent_tags
+
+
 def main() -> None:
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
@@ -145,6 +234,9 @@ def main() -> None:
             alert_tags = _maybe_notify_type_b_shadow_progress(r)
             if alert_tags:
                 _log(f"type_b_alerts sent={','.join(alert_tags)}")
+            runtime_tags = _maybe_notify_type_b_runtime_watch(r)
+            if runtime_tags:
+                _log(f"type_b_runtime_alerts sent={','.join(runtime_tags)}")
             time.sleep(_POLL_SEC)
     finally:
         r.delete(_LOCK_KEY)

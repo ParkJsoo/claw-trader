@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from app.coin_shadow_runner import _build_type_b_shadow_alerts, _maybe_notify_type_b_shadow_progress
+from app.coin_shadow_runner import (
+    _build_type_b_runtime_watch_alerts,
+    _build_type_b_shadow_alerts,
+    _maybe_notify_type_b_runtime_watch,
+    _maybe_notify_type_b_shadow_progress,
+)
 
 _KST = ZoneInfo("Asia/Seoul")
 
@@ -78,5 +83,71 @@ def test_maybe_notify_type_b_shadow_progress_sends_once(monkeypatch):
     tags2 = _maybe_notify_type_b_shadow_progress(r, today=today)
 
     assert tags1 == ["count:1"]
+    assert tags2 == []
+    assert len(sent) == 1
+
+
+def test_build_type_b_runtime_watch_alerts_reports_first_candidate():
+    r = fakeredis.FakeRedis()
+    r.hset(
+        "consensus:type_b:stats:COIN:20260422",
+        mapping={
+            "scanned": "120",
+            "candidate": "1",
+            "reject_change_rate_weak": "80",
+            "reject_far_from_high": "20",
+        },
+    )
+
+    alerts = _build_type_b_runtime_watch_alerts(r, today="20260422")
+
+    assert "first_candidate" in alerts
+    assert "candidate detected" in alerts["first_candidate"]
+    assert "candidate=1" in alerts["first_candidate"]
+
+
+def test_build_type_b_runtime_watch_alerts_reports_stuck_threshold(monkeypatch):
+    r = fakeredis.FakeRedis()
+    r.hset(
+        "consensus:type_b:stats:COIN:20260422",
+        mapping={
+            "scanned": "650",
+            "candidate": "0",
+            "shadow_candidate": "0",
+            "reject_change_rate_weak": "400",
+            "reject_far_from_high": "120",
+        },
+    )
+    monkeypatch.setenv("COIN_TYPE_B_WATCH_SCAN_THRESHOLDS", "500,1000")
+
+    alerts = _build_type_b_runtime_watch_alerts(r, today="20260422")
+
+    assert "stuck:500" in alerts
+    assert "still blocked after 500 scans" in alerts["stuck:500"]
+    assert "reject_change_rate_weak=400" in alerts["stuck:500"]
+    assert "stuck:1000" not in alerts
+
+
+def test_maybe_notify_type_b_runtime_watch_sends_once(monkeypatch):
+    r = fakeredis.FakeRedis()
+    today = "20260422"
+    r.hset(
+        f"consensus:type_b:stats:COIN:{today}",
+        mapping={
+            "scanned": "700",
+            "candidate": "0",
+            "shadow_candidate": "0",
+            "reject_change_rate_weak": "500",
+        },
+    )
+    monkeypatch.setenv("COIN_TYPE_B_WATCH_SCAN_THRESHOLDS", "500")
+
+    sent: list[str] = []
+    monkeypatch.setattr("app.coin_shadow_runner.send_telegram", lambda msg: sent.append(msg) or True)
+
+    tags1 = _maybe_notify_type_b_runtime_watch(r, today=today)
+    tags2 = _maybe_notify_type_b_runtime_watch(r, today=today)
+
+    assert tags1 == ["stuck:500"]
     assert tags2 == []
     assert len(sent) == 1

@@ -11,6 +11,8 @@ import fakeredis
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from app.consensus_signal_runner import _run_type_b_coin
+from scripts.coin_type_b_reject_report import build_report
+from utils.redis_helpers import today_kst
 
 
 class _FakeUpbitClient:
@@ -48,6 +50,9 @@ def test_type_b_rejects_overextended_ret_5m_before_ai():
         result = _run_type_b_coin("KRW-TEST", r, "20260420")
 
     assert result is None
+    stats = r.hgetall(f"consensus:type_b:stats:COIN:{today_kst()}")
+    assert stats[b"scanned"] == b"1"
+    assert stats[b"reject_ret_5m_overextended"] == b"1"
 
 
 def test_type_b_rejects_missing_orderbook_confirmation():
@@ -64,6 +69,28 @@ def test_type_b_rejects_missing_orderbook_confirmation():
         result = _run_type_b_coin("KRW-TEST", r, "20260420")
 
     assert result is None
+    stats = r.hgetall(f"consensus:type_b:stats:COIN:{today_kst()}")
+    assert stats[b"reject_ob_ratio_missing"] == b"1"
+
+
+def test_type_b_rejects_low_change_rate_and_reports_bottleneck():
+    r = fakeredis.FakeRedis()
+    client = _FakeUpbitClient(
+        change_rate=0.03,
+        trade_price=100.0,
+        high_price=100.5,
+        vol_krw=20_000_000_000.0,
+    )
+
+    with patch("app.consensus_signal_runner._get_client", return_value=client):
+        result = _run_type_b_coin("KRW-TEST", r, "20260420")
+
+    assert result is None
+
+    report = build_report(r, date_from=today_kst(), date_to=today_kst())
+    assert report["summary"]["scanned"] == 1
+    assert report["summary"]["reject_total"] == 1
+    assert report["summary"]["top_rejects"][0]["reason"] == "reject_change_rate_weak"
 
 
 def test_type_b_allows_when_not_overextended_and_orderbook_is_strong():
@@ -112,3 +139,6 @@ def test_type_b_shadow_saves_snapshot_without_queue():
     assert result["status"] == "shadow_candidate"
     assert r.llen("claw:signal:queue") == 0
     assert r.exists(f"research:signal:COIN:{result['signal_id']}") == 1
+    stats = r.hgetall(f"consensus:type_b:stats:COIN:{today_kst()}")
+    assert stats[b"scanned"] == b"1"
+    assert stats[b"shadow_candidate"] == b"1"

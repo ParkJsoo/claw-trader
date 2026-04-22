@@ -104,7 +104,7 @@ _BULLISH_THRESHOLD = float(os.getenv("REGIME_BULLISH_THRESHOLD", "0.30"))  # bea
 # Type B: 추세 탑승 신호 파라미터
 _TYPE_B_POLL_SEC = float(os.getenv("TYPE_B_POLL_SEC", "300"))           # 5분마다 체크
 _TYPE_B_COOLDOWN_SEC = int(os.getenv("TYPE_B_COOLDOWN_SEC", "14400"))   # 4시간 쿨다운
-_TYPE_B_MIN_CHANGE_RATE = float(os.getenv("TYPE_B_MIN_CHANGE_RATE", "0.05"))   # 전일대비 +5%
+_TYPE_B_MIN_CHANGE_RATE = float(os.getenv("TYPE_B_MIN_CHANGE_RATE", "0.04"))   # 전일대비 +4%
 _TYPE_B_MAX_CHANGE_RATE = float(os.getenv("TYPE_B_MAX_CHANGE_RATE", "0.12"))   # 전일대비 +12% 초과 late-chase 차단
 _TYPE_B_MIN_VOL_KRW = float(os.getenv("TYPE_B_MIN_VOL_KRW", "10000000000"))    # 24h 거래대금 100억
 _TYPE_B_NEAR_HIGH_RATIO = float(os.getenv("TYPE_B_NEAR_HIGH_RATIO", "0.97"))   # 당일 고점 -3% 이내
@@ -356,6 +356,17 @@ def _record_reject(r, market: str, reason_code: str) -> None:
     stats_key = f"consensus:stats:{market}:{today}"
     r.hincrby(stats_key, reason_code, 1)
     r.expire(stats_key, _STATS_TTL)
+
+
+def _record_type_b_stat(r, field: str, increment: int = 1) -> None:
+    today = today_kst()
+    stats_key = f"consensus:type_b:stats:COIN:{today}"
+    r.hincrby(stats_key, field, increment)
+    r.expire(stats_key, _STATS_TTL)
+
+
+def _record_type_b_reject(r, reason_code: str) -> None:
+    _record_type_b_stat(r, reason_code)
 
 
 def _save_coin_pre_consensus_shadow_snapshot(
@@ -1272,11 +1283,15 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     market = "COIN"
     signal_mode = get_signal_family_mode(r, market, "type_b", strategy="trend_riding", source="consensus_signal_runner_type_b")
     if signal_mode == "off":
+        _record_type_b_reject(r, "reject_signal_mode_off")
         return None
+
+    _record_type_b_stat(r, "scanned")
 
     # Type B 쿨다운 (4시간)
     tb_cooldown_key = f"consensus:type_b_cooldown:{market}:{symbol}"
     if r.exists(tb_cooldown_key):
+        _record_type_b_reject(r, "reject_cooldown")
         return None
 
     # daily_stop 체크 (완화 로직 동일 적용)
@@ -1297,11 +1312,13 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         except Exception:
             pass
         if not allow_reentry:
+            _record_type_b_reject(r, "reject_daily_stop")
             return None
 
     # 당일 stop_loss 2회 이상 → 완전 차단
     stop_count_key = f"claw:stop_count:{market}:{symbol}:{today}"
     if int(r.get(stop_count_key) or 0) >= 2:
+        _record_type_b_reject(r, "reject_stop_count")
         return None
 
     # 종목별 일일 진입 상한 (Type A와 공유 카운터)
@@ -1309,16 +1326,19 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "2"))
     if int(r.get(symbol_daily_key) or 0) >= _symbol_daily_cap:
         _log("type_b.reject.symbol_daily_cap", symbol=symbol)
+        _record_type_b_reject(r, "reject_symbol_daily_cap")
         return None
 
     # Upbit ticker 조회
     client = _get_client(market)
     if client is None:
+        _record_type_b_reject(r, "reject_client_unavailable")
         return None
     try:
         ticker = client.get_ticker(symbol)
     except Exception as e:
         _log("type_b.ticker_error", symbol=symbol, error=str(e))
+        _record_type_b_reject(r, "reject_ticker_error")
         return None
 
     change_rate = float(ticker.get("signed_change_rate", 0))
@@ -1327,14 +1347,17 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     vol_krw = float(ticker.get("acc_trade_price_24h", 0))
 
     if trade_price <= 0 or high_price <= 0:
+        _record_type_b_reject(r, "reject_invalid_ticker")
         return None
 
     # 조건 ①: 전일대비 +5% 이상
     if change_rate < _TYPE_B_MIN_CHANGE_RATE:
+        _record_type_b_reject(r, "reject_change_rate_weak")
         return None
     if change_rate > _TYPE_B_MAX_CHANGE_RATE:
         _log("type_b.reject.change_rate_overextended", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%")
+        _record_type_b_reject(r, "reject_change_rate_overextended")
         return None
 
     # 조건 ②: 당일 고점 -3% 이내 (추세 유지 확인)
@@ -1342,24 +1365,29 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if near_high < _TYPE_B_NEAR_HIGH_RATIO:
         _log("type_b.reject.far_from_high", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", near_high=f"{near_high:.3f}")
+        _record_type_b_reject(r, "reject_far_from_high")
         return None
 
     # 조건 ③: 거래대금 100억 이상
     if vol_krw < _TYPE_B_MIN_VOL_KRW:
+        _record_type_b_reject(r, "reject_low_vol_24h")
         return None
 
     # 조건 ④: 현재도 5분 상승 중
     live = _get_live_ret_5m(r, market, symbol)
     if live is None:
+        _record_type_b_reject(r, "reject_no_live_price")
         return None
     ret_5m, live_price_float = live
     if ret_5m < _TYPE_B_MIN_RET_5M:
         _log("type_b.reject.ret_5m_weak", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        _record_type_b_reject(r, "reject_ret_5m_weak")
         return None
     if ret_5m > _TYPE_B_MAX_RET_5M:
         _log("type_b.reject.ret_5m_overextended", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        _record_type_b_reject(r, "reject_ret_5m_overextended")
         return None
 
     current_price = Decimal(str(live_price_float))
@@ -1375,10 +1403,12 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if _TYPE_B_REQUIRE_OB_RATIO and _ob_ratio is None:
         _log("type_b.reject.ob_ratio_missing", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%")
+        _record_type_b_reject(r, "reject_ob_ratio_missing")
         return None
     if _ob_ratio is not None and _ob_ratio < _TYPE_B_MIN_OB_RATIO:
         _log("type_b.reject.ob_ratio_weak", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ob_ratio=f"{_ob_ratio:.3f}")
+        _record_type_b_reject(r, "reject_ob_ratio_weak")
         return None
 
     # Claude 평가 (Type B 전용 프롬프트)
@@ -1395,11 +1425,13 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         emit, direction, confidence, reason = parse_decision_response(raw)
     except Exception as e:
         _log("type_b.claude_error", symbol=symbol, error=str(e))
+        _record_type_b_reject(r, "reject_claude_error")
         return None
 
     if not emit or direction != "LONG":
         _log("type_b.reject.claude_hold", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", reason=reason[:60])
+        _record_type_b_reject(r, "reject_claude_hold")
         return None
 
     # 신호 생성
@@ -1425,6 +1457,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         )
     except Exception as e:
         _log("type_b.signal_error", symbol=symbol, error=str(e))
+        _record_type_b_reject(r, "reject_signal_error")
         return None
 
     r.set(tb_cooldown_key, "1", ex=_TYPE_B_COOLDOWN_SEC)
@@ -1464,6 +1497,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
             stats_field="shadow_candidate",
             increment_daily_count=False,
         )
+        _record_type_b_stat(r, "shadow_candidate")
         _log("type_b.shadow_only.candidate_saved", symbol=symbol, signal_id=signal_id, mode=signal_mode)
         return payload
 
@@ -1472,8 +1506,10 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     except Exception as e:
         _log("type_b.publish_failed", symbol=symbol, error=str(e))
         r.delete(tb_cooldown_key)
+        _record_type_b_reject(r, "reject_publish_failed")
         return None
     save_signal_snapshot(r, payload)
+    _record_type_b_stat(r, "candidate")
 
     # 종목별 일일 진입 카운터 증가 (Type A와 공유)
     r.incr(symbol_daily_key)
