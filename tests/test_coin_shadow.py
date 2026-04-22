@@ -41,10 +41,14 @@ def test_shadow_evaluation_records_take_profit_result():
             "strategy": "trend_riding",
             "ret_5m": 0.012,
             "change_rate_daily": 0.08,
+            "high_price": 102,
+            "near_high": 0.9804,
             "vol_24h": 12000000000,
             "ob_ratio": 1.4,
             "stop_pct": "0.03",
             "take_pct": "0.15",
+            "shadow_origin": "consensus_runner_type_b_shadow_candidate",
+            "shadow_stage": "post_consensus",
         },
     )
     _seed_mark_hist(
@@ -70,10 +74,13 @@ def test_shadow_evaluation_records_take_profit_result():
     row = r.hgetall("research:shadow:COIN:sig-shadow-1")
     assert row[b"exit_reason"] == b"take_profit"
     assert Decimal(row[b"realized_pnl"].decode()) > Decimal("0")
+    assert row[b"entry_high_price"] == b"102"
+    assert row[b"entry_near_high"] == b"0.9804"
 
     summary = compute_shadow_summary(r)
     assert summary["overall"]["trade_count"] == 1
     assert summary["by_signal_family"]["type_b"]["trade_count"] == 1
+    assert summary["by_shadow_origin"]["consensus_runner_type_b_shadow_candidate"]["trade_count"] == 1
 
 
 def test_shadow_evaluation_waits_for_more_history_when_signal_is_still_open():
@@ -180,6 +187,74 @@ def test_pre_consensus_shadow_is_evaluated_in_separate_ledger():
     assert pre_summary["by_symbol"]["KRW-ALT"]["trade_count"] == 1
     assert pre_summary["by_reject_reason"]["reject_volume_no_surge"]["trade_count"] == 1
     assert pre_summary["by_shadow_origin"]["consensus_runner_reject"]["trade_count"] == 1
+
+
+def test_shadow_summary_backfills_shadow_origin_from_snapshot():
+    r = fakeredis.FakeRedis()
+
+    save_signal_snapshot(
+        r,
+        {
+            "signal_id": "sig-shadow-backfill",
+            "ts": "1760000000000",
+            "market": "COIN",
+            "symbol": "KRW-BACKFILL",
+            "direction": "LONG",
+            "entry": {"price": "100", "size_cash": "30000"},
+            "stop": {"price": "97"},
+            "source": "consensus_signal_runner_type_b",
+            "strategy": "trend_riding",
+            "ret_5m": 0.02,
+            "change_rate_daily": 0.09,
+            "high_price": 104,
+            "near_high": 0.9615,
+            "shadow_origin": "consensus_runner_type_b_shadow_candidate",
+            "shadow_stage": "post_consensus",
+            "stop_pct": "0.03",
+            "take_pct": "0.15",
+        },
+    )
+    r.hset(
+        "research:shadow:COIN:sig-shadow-backfill",
+        mapping={
+            "signal_id": "sig-shadow-backfill",
+            "signal_ts_ms": "1760000000000",
+            "symbol": "KRW-BACKFILL",
+            "signal_family": "type_b",
+            "entry_strategy": "trend_riding",
+            "realized_pnl": "-100",
+            "hold_sec": "60",
+            "exit_reason": "stop_loss",
+        },
+    )
+    r.zadd("research:shadow_index:COIN", {"sig-shadow-backfill": 1760000000000})
+
+    summary = compute_shadow_summary(r)
+
+    assert summary["by_shadow_origin"]["consensus_runner_type_b_shadow_candidate"]["trade_count"] == 1
+
+
+def test_shadow_summary_infers_type_b_shadow_origin_from_entry_source():
+    r = fakeredis.FakeRedis()
+    r.hset(
+        "research:shadow:COIN:sig-shadow-infer",
+        mapping={
+            "signal_id": "sig-shadow-infer",
+            "signal_ts_ms": "1760000000000",
+            "symbol": "KRW-INFER",
+            "signal_family": "type_b",
+            "entry_strategy": "trend_riding",
+            "entry_source": "consensus_signal_runner_type_b",
+            "realized_pnl": "-100",
+            "hold_sec": "60",
+            "exit_reason": "stop_loss",
+        },
+    )
+    r.zadd("research:shadow_index:COIN", {"sig-shadow-infer": 1760000000000})
+
+    summary = compute_shadow_summary(r)
+
+    assert summary["by_shadow_origin"]["consensus_runner_type_b_shadow_candidate"]["trade_count"] == 1
 
 
 def test_choose_resume_summary_prefers_shadow_when_live_sample_is_empty():

@@ -208,6 +208,8 @@ def evaluate_signal_snapshot(
         "entry_range_5m": snapshot.get("range_5m", ""),
         "entry_ret_1m": snapshot.get("ret_1m", ""),
         "entry_change_rate_daily": snapshot.get("change_rate_daily", ""),
+        "entry_high_price": snapshot.get("high_price", ""),
+        "entry_near_high": snapshot.get("near_high", ""),
         "entry_vol_24h": snapshot.get("vol_24h", ""),
         "entry_ob_ratio": snapshot.get("ob_ratio", ""),
         "entry_claude_conf": snapshot.get("claude_conf", ""),
@@ -345,9 +347,22 @@ def _load_shadow_rows(
         row = {_decode(k): _decode(v) for k, v in (r.hgetall(row_key_pattern.format(signal_id=row_id)) or {}).items()}
         if row and snapshot_loader is not None:
             snapshot = snapshot_loader(r, row_id)
-            for field in ("reject_reason", "shadow_origin", "shadow_stage"):
+            for field in (
+                "reject_reason",
+                "shadow_origin",
+                "shadow_stage",
+                "high_price",
+                "near_high",
+            ):
                 if not row.get(field) and snapshot.get(field):
-                    row[field] = snapshot[field]
+                    if field in ("high_price", "near_high"):
+                        row[f"entry_{field}"] = snapshot[field]
+                    else:
+                        row[field] = snapshot[field]
+        if row and not row.get("shadow_origin"):
+            entry_source = row.get("entry_source", "") or row.get("source", "")
+            if row.get("signal_family") == "type_b" and "consensus_signal_runner_type_b" in entry_source:
+                row["shadow_origin"] = "consensus_runner_type_b_shadow_candidate"
         if row:
             rows.append(row)
     return rows
@@ -358,13 +373,15 @@ def compute_shadow_summary(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> dict[str, Any]:
-    return compute_ledger_summary(
+    rows = _load_shadow_rows(
         r,
         index_key=_SHADOW_INDEX_KEY,
-        row_key_pattern="research:shadow:COIN:{row_id}",
+        row_key_pattern=_SHADOW_KEY,
+        snapshot_loader=get_signal_snapshot,
         date_from=date_from,
         date_to=date_to,
     )
+    return summarize_ledger_rows(rows, date_from=date_from, date_to=date_to)
 
 
 def compute_pre_consensus_shadow_summary(

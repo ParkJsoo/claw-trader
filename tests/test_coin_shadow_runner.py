@@ -118,6 +118,15 @@ def test_build_type_b_runtime_watch_alerts_reports_stuck_threshold(monkeypatch):
             "reject_far_from_high": "120",
         },
     )
+    r.rpush(
+        "consensus:type_b:reject_samples:COIN:20260422:reject_change_rate_weak",
+        '{"symbol":"KRW-A","change_rate":0.02,"vol_24h":12000000000}',
+        '{"symbol":"KRW-B","change_rate":0.03,"vol_24h":8000000000}'
+    )
+    r.rpush(
+        "consensus:type_b:reject_samples:COIN:20260422:reject_far_from_high",
+        '{"symbol":"KRW-C","change_rate":0.08,"near_high":0.91,"vol_24h":40000000000}'
+    )
     monkeypatch.setenv("COIN_TYPE_B_WATCH_SCAN_THRESHOLDS", "500,1000")
 
     alerts = _build_type_b_runtime_watch_alerts(r, today="20260422")
@@ -125,6 +134,12 @@ def test_build_type_b_runtime_watch_alerts_reports_stuck_threshold(monkeypatch):
     assert "stuck:500" in alerts
     assert "still blocked after 500 scans" in alerts["stuck:500"]
     assert "reject_change_rate_weak=400" in alerts["stuck:500"]
+    assert "avg_change=2.50%" in alerts["stuck:500"]
+    assert "avg_gap=1.50pp" in alerts["stuck:500"]
+    assert "near_cutoff<=1.00pp:1/2" in alerts["stuck:500"]
+    assert "avg_near_high=0.910" in alerts["stuck:500"]
+    assert "avg_gap=0.060" in alerts["stuck:500"]
+    assert "near_cutoff<=0.020:0/1" in alerts["stuck:500"]
     assert "stuck:1000" not in alerts
 
 

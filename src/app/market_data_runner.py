@@ -31,6 +31,11 @@ def _load_runtime_watchlist(r, market: str, env_key: str) -> list[str]:
     return load_watchlist(r, market, env_key)
 
 
+def _remaining_sleep_sec(elapsed_sec: float) -> float:
+    """루프 시작 기준으로 poll interval을 맞춘다."""
+    return max(0.0, POLL_INTERVAL - elapsed_sec)
+
+
 def main():
     redis_url = os.getenv("REDIS_URL")
     if not redis_url:
@@ -61,6 +66,7 @@ def main():
 
     try:
         while True:
+            loop_started_at = time.time()
             r.expire(_MD_LOCK_KEY, _MD_LOCK_TTL)
 
             # 동적 워치리스트는 consensus와 가능한 한 같은 주기로 반영한다.
@@ -76,7 +82,14 @@ def main():
                 updater.run_once(watchlist)
             except Exception:
                 traceback.print_exc()
-            time.sleep(POLL_INTERVAL)
+            elapsed = time.time() - loop_started_at
+            sleep_sec = _remaining_sleep_sec(elapsed)
+            if sleep_sec == 0.0 and elapsed > POLL_INTERVAL:
+                print(
+                    f"md_runner: loop_overrun elapsed={elapsed:.2f}s interval={POLL_INTERVAL}s",
+                    flush=True,
+                )
+            time.sleep(sleep_sec)
     finally:
         r.delete(_MD_LOCK_KEY)
         print("md_runner: lock released", flush=True)

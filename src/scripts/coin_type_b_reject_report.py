@@ -7,12 +7,15 @@ load_dotenv()
 import argparse
 import json
 import os
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import redis
 
+from app.coin_type_b_reject_insights import summarize_reject_samples
 from utils.redis_helpers import today_kst
 
 
@@ -70,8 +73,80 @@ def _build_day_summary(date: str, raw: dict[str, str]) -> dict[str, object]:
         "top_rejects": top_rejects,
     }
 
+def _load_reject_samples(r: redis.Redis, *, date: str, reason: str) -> list[dict[str, object]]:
+    key = f"consensus:type_b:reject_samples:COIN:{date}:{reason}"
+    rows = r.lrange(key, 0, -1) or []
+    parsed: list[dict[str, object]] = []
+    for row in rows:
+        try:
+            parsed.append(json.loads(_decode(row)))
+        except Exception:
+            continue
+    return parsed
 
-def build_report(r: redis.Redis, *, date_from: str, date_to: str) -> dict[str, object]:
+
+_TYPE_B_REJECT_LOG_RE = re.compile(
+    r"^\[(?P<date>\d{4}-\d{2}-\d{2})\s+\d{2}:\d{2}:\d{2}\]\s+consensus:\s+type_b\.reject\.(?P<reason>[a-z0-9_]+)\s+(?P<rest>.+)$"
+)
+_LOG_KV_RE = re.compile(r"(?P<key>[a-z0-9_]+)=(?P<value>[^\s]+)")
+
+
+def _parse_float_token(raw: str) -> float | None:
+    token = (raw or "").strip()
+    if not token:
+        return None
+    if token.endswith("%"):
+        token = token[:-1]
+    try:
+        return float(token)
+    except ValueError:
+        return None
+
+
+def _load_log_reject_samples(*, log_path: str, dates: list[str]) -> dict[str, list[dict[str, object]]]:
+    path = Path(log_path)
+    if not path.exists():
+        return {}
+
+    date_set = {
+        f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+        for date in dates
+    }
+    grouped: dict[str, list[dict[str, object]]] = {}
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            match = _TYPE_B_REJECT_LOG_RE.match(line.strip())
+            if not match:
+                continue
+            if match.group("date") not in date_set:
+                continue
+
+            reason = f"reject_{match.group('reason')}"
+            sample: dict[str, object] = {}
+            for kv in _LOG_KV_RE.finditer(match.group("rest")):
+                key = kv.group("key")
+                raw_value = kv.group("value")
+                if key == "symbol":
+                    sample[key] = raw_value
+                else:
+                    parsed = _parse_float_token(raw_value)
+                    if parsed is not None:
+                        if key == "change_rate":
+                            sample[key] = parsed / 100.0
+                        else:
+                            sample[key] = parsed
+            if sample:
+                grouped.setdefault(reason, []).append(sample)
+    return grouped
+
+
+def build_report(
+    r: redis.Redis,
+    *,
+    date_from: str,
+    date_to: str,
+    log_path: str = "logs/consensus_signal.log",
+) -> dict[str, object]:
     dates = _iter_dates(date_from, date_to)
     aggregated = Counter()
     days: list[dict[str, object]] = []
@@ -101,6 +176,23 @@ def build_report(r: redis.Redis, *, date_from: str, date_to: str) -> dict[str, o
         }
         for reason, count in sorted(reject_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
     ]
+    sample_insights: dict[str, dict[str, object]] = {}
+    for reason in reject_counts:
+        samples: list[dict[str, object]] = []
+        for date in dates:
+            samples.extend(_load_reject_samples(r, date=date, reason=reason))
+        if samples:
+            insight = summarize_reject_samples(reason, samples)
+            insight["source"] = "redis_samples"
+            sample_insights[reason] = insight
+
+    log_samples = _load_log_reject_samples(log_path=log_path, dates=dates)
+    for reason, samples in log_samples.items():
+        if reason not in reject_counts or reason in sample_insights or not samples:
+            continue
+        insight = summarize_reject_samples(reason, samples)
+        insight["source"] = "consensus_log"
+        sample_insights[reason] = insight
 
     return {
         "date_from": date_from,
@@ -114,6 +206,7 @@ def build_report(r: redis.Redis, *, date_from: str, date_to: str) -> dict[str, o
             "reject_total": reject_total,
             "top_rejects": top_rejects,
             "reject_counts": reject_counts,
+            "sample_insights": sample_insights,
         },
         "days": days,
     }
@@ -123,6 +216,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="COIN Type B reject/bottleneck report")
     parser.add_argument("--date-from", dest="date_from", default=today_kst(), help="KST start date YYYYMMDD")
     parser.add_argument("--date-to", dest="date_to", default=today_kst(), help="KST end date YYYYMMDD")
+    parser.add_argument("--log-path", dest="log_path", default="logs/consensus_signal.log", help="consensus log path for fallback sampling")
     args = parser.parse_args()
 
     redis_url = os.getenv("REDIS_URL")
@@ -131,7 +225,7 @@ def main() -> None:
         sys.exit(1)
 
     r = redis.from_url(redis_url, decode_responses=True)
-    report = build_report(r, date_from=args.date_from, date_to=args.date_to)
+    report = build_report(r, date_from=args.date_from, date_to=args.date_to, log_path=args.log_path)
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
 
 

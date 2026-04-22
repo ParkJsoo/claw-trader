@@ -4,6 +4,7 @@ import os
 import sys
 from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import fakeredis
@@ -60,3 +61,28 @@ def test_update_market_records_feed_error_reason(monkeypatch):
     assert "price_none" not in decoded
     assert repo.mark_updates == [("KR", "000660", Decimal("12345"))]
     assert repo.recalc_calls == ["KR"]
+
+
+def test_update_market_logs_slow_breakdown_for_kr(monkeypatch, capsys):
+    monkeypatch.setattr("market_data.updater.KR_SYMBOL_PACE_SEC", 0.25)
+    monkeypatch.setattr("market_data.updater.ELAPSED_WARN_SEC", 1.0)
+
+    time_values = iter([100.0, 100.1, 100.2, 104.6, 104.7])
+    fake_clock = SimpleNamespace(
+        time=lambda: next(time_values),
+        sleep=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr("market_data.updater.time", fake_clock)
+
+    r = fakeredis.FakeRedis()
+    repo = _Repo()
+    feed = _Feed(
+        prices={"005930": Decimal("70000"), "000660": Decimal("120000")},
+        reasons={"005930": None, "000660": None},
+    )
+    updater = MarketDataUpdater(r, repo, feed, None)
+
+    updater.update_market("KR", ["005930", "000660"])
+
+    captured = capsys.readouterr().out
+    assert "md_slow: KR elapsed=4.60s symbols=2 updated=2 pace=0.25s work=4.35s" in captured

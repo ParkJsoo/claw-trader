@@ -5,6 +5,7 @@ pause 상태에서도 signal snapshot을 주기적으로 후행 평가해 shadow
 from dotenv import load_dotenv
 load_dotenv()
 
+import json
 import os
 import signal as _signal
 import sys
@@ -12,6 +13,7 @@ import time
 
 import redis
 
+from app.coin_type_b_reject_insights import format_reject_insight_short, summarize_reject_samples
 from app.coin_research import evaluate_resume_readiness
 from app.coin_shadow import compute_shadow_summary, evaluate_pending_pre_consensus_signals, evaluate_pending_signals
 from guards.notifier import send_telegram
@@ -87,6 +89,33 @@ def _format_top_rejects(stats: dict[str, int], *, limit: int = 3) -> str:
     return ", ".join(f"{reason}={count}" for reason, count in reject_counts[:limit])
 
 
+def _format_top_reject_sample_insights(r, *, today: str, stats: dict[str, int], limit: int = 2) -> str:
+    reject_counts = sorted(
+        ((key, value) for key, value in stats.items() if key.startswith("reject_") and value > 0),
+        key=lambda item: (-item[1], item[0]),
+    )
+    if not reject_counts:
+        return "none"
+
+    parts: list[str] = []
+    for reason, _count in reject_counts[:limit]:
+        rows = r.lrange(f"consensus:type_b:reject_samples:COIN:{today}:{reason}", 0, -1) or []
+        samples = []
+        for row in rows:
+            try:
+                samples.append(json.loads(_decode(row)))
+            except Exception:
+                continue
+        if not samples:
+            continue
+
+        insight = summarize_reject_samples(reason, samples)
+        if insight:
+            parts.append(format_reject_insight_short(reason, insight))
+
+    return " | ".join(parts) if parts else "none"
+
+
 def _type_b_only_readiness_summary(summary: dict) -> dict:
     type_b_stats = (summary.get("by_signal_family", {}) or {}).get("type_b", {}) or {}
     return {
@@ -159,12 +188,14 @@ def _build_type_b_runtime_watch_alerts(r, *, today: str) -> dict[str, str]:
 
     alerts: dict[str, str] = {}
     top_rejects = _format_top_rejects(stats)
+    reject_insights = _format_top_reject_sample_insights(r, today=today, stats=stats)
 
     if pass_total > 0:
         alerts["first_candidate"] = (
             f"[CLAW] COIN Type B candidate detected ({today})\n"
             f"scanned={scanned} candidate={candidate} shadow_candidate={shadow_candidate}\n"
-            f"top_rejects={top_rejects}"
+            f"top_rejects={top_rejects}\n"
+            f"reject_insights={reject_insights}"
         )
 
     if pass_total == 0:
@@ -173,7 +204,8 @@ def _build_type_b_runtime_watch_alerts(r, *, today: str) -> dict[str, str]:
                 alerts[f"stuck:{threshold}"] = (
                     f"[CLAW] COIN Type B still blocked after {threshold} scans ({today})\n"
                     f"scanned={scanned} candidate=0 shadow_candidate=0\n"
-                    f"top_rejects={top_rejects}"
+                    f"top_rejects={top_rejects}\n"
+                    f"reject_insights={reject_insights}"
                 )
 
     return alerts

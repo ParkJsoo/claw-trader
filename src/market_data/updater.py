@@ -80,6 +80,7 @@ class MarketDataUpdater:
         t0 = time.time()
         updated = 0
         errors: dict[str, int] = {}
+        pace_sleep_total = 0.0
 
         for idx, symbol in enumerate(symbols):
             try:
@@ -107,6 +108,7 @@ class MarketDataUpdater:
                 print(f"md_update_error: {market}:{symbol} {e}")
             finally:
                 if market == "KR" and KR_SYMBOL_PACE_SEC > 0 and idx < len(symbols) - 1:
+                    pace_sleep_total += KR_SYMBOL_PACE_SEC
                     time.sleep(KR_SYMBOL_PACE_SEC)
 
         elapsed = time.time() - t0
@@ -114,7 +116,11 @@ class MarketDataUpdater:
         if market == "KR" and KR_SYMBOL_PACE_SEC > 0:
             warn_sec += max(0, len(symbols) - 1) * KR_SYMBOL_PACE_SEC
         if elapsed > warn_sec:
-            print(f"md_slow: {market} elapsed={elapsed:.2f}s symbols={len(symbols)}")
+            work_elapsed = max(0.0, elapsed - pace_sleep_total)
+            print(
+                f"md_slow: {market} elapsed={elapsed:.2f}s symbols={len(symbols)} "
+                f"updated={updated} pace={pace_sleep_total:.2f}s work={work_elapsed:.2f}s"
+            )
 
         self._record_errors(market, errors)
 
