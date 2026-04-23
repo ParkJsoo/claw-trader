@@ -111,6 +111,40 @@ class RiskEngine:
         """Redis 값이 pause 활성화 상태인지 판정. 대소문자/다양한 표현 방어."""
         return v is not None and v.decode(errors="replace").strip().lower() in ("true", "1", "yes")
 
+    def _market_pause_bypass_allowed(self, signal: Signal) -> bool:
+        """Allow exact opt-in canary families to bypass market-specific pause.
+
+        Global pause always wins. This exists so a COIN alt canary can run while
+        the broader COIN market remains paused.
+        """
+        if signal.direction == "EXIT":
+            return True
+
+        family = infer_signal_family(
+            getattr(signal, "signal_family", None),
+            strategy=getattr(signal, "strategy", None),
+            source=getattr(signal, "source", None),
+        )
+        if not family or not family.startswith("type_b_alt_"):
+            return False
+
+        mode = get_signal_family_mode(
+            self.redis,
+            signal.market,
+            family,
+            strategy=getattr(signal, "strategy", None),
+            source=getattr(signal, "source", None),
+            default="off",
+        )
+        if mode != "live":
+            return False
+
+        try:
+            raw = self.redis.hget(f"claw:pause_bypass:{signal.market}", family)
+        except Exception:
+            raw = None
+        return self._is_truthy(raw)
+
     def _rule0_global_pause(self, signal: Signal) -> Optional[RiskDecision]:
         if self._is_truthy(self.redis.get(self.PAUSE_KEY_PRIMARY)):
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": self.PAUSE_KEY_PRIMARY})
@@ -118,6 +152,8 @@ class RiskEngine:
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": self.PAUSE_KEY_COMPAT})
         market_key = f"claw:pause:{signal.market}"
         if self._is_truthy(self.redis.get(market_key)):
+            if self._market_pause_bypass_allowed(signal):
+                return None
             return RiskDecision(allow=False, reason="PAUSED", meta={"key": market_key, "market": signal.market})
         return None
 

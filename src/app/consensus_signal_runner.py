@@ -44,6 +44,7 @@ def print(*args, sep=' ', end='\n', file=None, flush=False):  # noqa: A001
 
 import redis
 
+from app.coin_type_b_gate_profiles import alt_shadow_profile_names, first_gate_fail_reason, scenario_map
 from app.coin_research import save_pre_consensus_signal_snapshot, save_signal_snapshot
 from domain.models import Signal, SignalEntry, SignalStop
 from utils.redis_helpers import (
@@ -112,6 +113,10 @@ _TYPE_B_MIN_RET_5M = float(os.getenv("TYPE_B_MIN_RET_5M", "0.005"))            #
 _TYPE_B_MAX_RET_5M = float(os.getenv("TYPE_B_MAX_RET_5M", "0.025"))            # 5분 ret 2.5% 초과 late-chase 차단
 _TYPE_B_REQUIRE_OB_RATIO = os.getenv("TYPE_B_REQUIRE_OB_RATIO", "true").lower() in ("1", "true", "yes", "on")
 _TYPE_B_MIN_OB_RATIO = float(os.getenv("TYPE_B_MIN_OB_RATIO", "1.05"))         # 매수 우위 오더북 확인
+_COIN_ALT_CANARY_PROFILE = os.getenv("COIN_ALT_CANARY_PROFILE", "alt_pullback_setup_allow_small_dip")
+_COIN_ALT_CANARY_SIGNAL_FAMILY = os.getenv("COIN_ALT_CANARY_SIGNAL_FAMILY", "type_b_alt_pullback")
+_COIN_ALT_CANARY_DAILY_CAP = int(os.getenv("COIN_ALT_CANARY_DAILY_CAP", "1"))
+_COIN_ALT_CANARY_SIZE_CASH = Decimal(os.getenv("COIN_ALT_CANARY_SIZE_CASH", "10000"))
 
 _AUDIT_TTL = 7 * 86400   # 7일
 _STATS_TTL = 30 * 86400
@@ -366,6 +371,8 @@ def _record_type_b_stat(r, field: str, increment: int = 1) -> None:
 
 
 _TYPE_B_REJECT_SAMPLE_LIMIT = int(os.getenv("TYPE_B_REJECT_SAMPLE_LIMIT", "50"))
+_TYPE_B_SCAN_SAMPLE_LIMIT = int(os.getenv("TYPE_B_SCAN_SAMPLE_LIMIT", "500"))
+_TYPE_B_ALT_SHADOW_COOLDOWN_SEC = int(os.getenv("TYPE_B_ALT_SHADOW_COOLDOWN_SEC", "14400"))
 
 
 def _record_type_b_reject_sample(
@@ -390,8 +397,255 @@ def _record_type_b_reject_sample(
     r.expire(key, _STATS_TTL)
 
 
+def _record_type_b_scan_sample(
+    r,
+    *,
+    symbol: str,
+    status: str,
+    reason_code: str | None = None,
+    signal_mode: str | None = None,
+    change_rate: float | None = None,
+    near_high: float | None = None,
+    ret_5m: float | None = None,
+    trade_price: float | None = None,
+    high_price: float | None = None,
+    vol_24h: float | None = None,
+    ob_ratio: float | None = None,
+) -> None:
+    today = today_kst()
+    key = f"consensus:type_b:scan_samples:COIN:{today}"
+    payload = {
+        "ts": datetime.now(_KST).isoformat(),
+        "symbol": symbol,
+        "status": status,
+    }
+    if reason_code:
+        payload["reason_code"] = reason_code
+    if signal_mode:
+        payload["signal_mode"] = signal_mode
+
+    metrics = {
+        "change_rate": change_rate,
+        "near_high": near_high,
+        "ret_5m": ret_5m,
+        "trade_price": trade_price,
+        "high_price": high_price,
+        "vol_24h": vol_24h,
+        "ob_ratio": ob_ratio,
+    }
+    for field, value in metrics.items():
+        if value is not None:
+            payload[field] = value
+
+    r.lpush(key, json.dumps(payload, ensure_ascii=False))
+    r.ltrim(key, 0, max(_TYPE_B_SCAN_SAMPLE_LIMIT - 1, 0))
+    r.expire(key, _STATS_TTL)
+
+
 def _record_type_b_reject(r, reason_code: str) -> None:
     _record_type_b_stat(r, reason_code)
+
+
+def _type_b_alt_shadow_origin(profile_name: str) -> str:
+    return f"consensus_runner_type_b_alt_shadow:{profile_name}"
+
+
+def _coin_alt_canary_mode(r, profile_name: str) -> str:
+    if profile_name != _COIN_ALT_CANARY_PROFILE:
+        return "off"
+    return get_signal_family_mode(
+        r,
+        "COIN",
+        _COIN_ALT_CANARY_SIGNAL_FAMILY,
+        strategy="trend_riding",
+        source="consensus_signal_runner_type_b_alt_canary",
+        default="off",
+    )
+
+
+def _coin_alt_canary_daily_key(profile_name: str, today: str | None = None) -> str:
+    return f"consensus:coin_alt_canary_daily:COIN:{profile_name}:{today or today_kst()}"
+
+
+def _coin_alt_canary_has_capacity(r, profile_name: str) -> bool:
+    if _COIN_ALT_CANARY_DAILY_CAP <= 0:
+        return False
+    try:
+        return int(r.get(_coin_alt_canary_daily_key(profile_name)) or 0) < _COIN_ALT_CANARY_DAILY_CAP
+    except Exception:
+        return False
+
+
+def _coin_alt_canary_mark_used(r, profile_name: str) -> None:
+    key = _coin_alt_canary_daily_key(profile_name)
+    r.incr(key)
+    r.expire(key, 86400)
+
+
+def _type_b_alt_shadow_sample(
+    *,
+    change_rate: float | None,
+    near_high: float | None,
+    ret_5m: float | None,
+    trade_price: float | None,
+    high_price: float | None,
+    vol_24h: float | None,
+    ob_ratio: float | None,
+) -> dict[str, object]:
+    return {
+        "change_rate": change_rate,
+        "near_high": near_high,
+        "ret_5m": ret_5m,
+        "trade_price": trade_price,
+        "high_price": high_price,
+        "vol_24h": vol_24h,
+        "ob_ratio": ob_ratio,
+    }
+
+
+def _save_type_b_alt_shadow_candidate(
+    r,
+    *,
+    symbol: str,
+    profile_name: str,
+    current_price: Decimal,
+    change_rate: float,
+    near_high: float,
+    ret_5m: float,
+    trade_price: float,
+    high_price: float,
+    vol_24h: float,
+    ob_ratio: float | None,
+    base_reject_reason: str,
+) -> str | None:
+    cooldown_key = f"consensus:type_b_alt_shadow_cooldown:COIN:{profile_name}:{symbol}"
+    if not r.set(cooldown_key, "1", nx=True, ex=_TYPE_B_ALT_SHADOW_COOLDOWN_SEC):
+        return None
+
+    canary_mode = _coin_alt_canary_mode(r, profile_name)
+    canary_live = canary_mode == "live" and _coin_alt_canary_has_capacity(r, profile_name)
+    stop_pct = Decimal(os.getenv("COIN_EXIT_STOP_LOSS_PCT", "0.030"))
+    take_pct = Decimal(os.getenv("COIN_EXIT_TAKE_PROFIT_PCT", "0.150"))
+    stop_price = current_price * (1 - stop_pct)
+    signal_id = str(uuid.uuid4())
+    ts_now = datetime.now(_KST).isoformat()
+    size_cash = _COIN_ALT_CANARY_SIZE_CASH if canary_live else _calc_size_cash("COIN", current_price)
+
+    payload = {
+        "signal_id": signal_id,
+        "ts": ts_now,
+        "market": "COIN",
+        "symbol": symbol,
+        "direction": "LONG",
+        "entry": {"price": str(current_price), "size_cash": str(size_cash)},
+        "stop": {"price": str(stop_price)},
+        "source": "consensus_signal_runner_type_b_alt_canary" if canary_live else "consensus_signal_runner_type_b_alt_shadow",
+        "status": "candidate" if canary_live else "shadow_candidate",
+        "strategy": "trend_riding",
+        "claude_emit": 1 if canary_live else 0,
+        "claude_conf": "0.70" if canary_live else "0",
+        "ret_5m": ret_5m,
+        "change_rate_daily": change_rate,
+        "high_price": high_price,
+        "near_high": near_high,
+        "vol_24h": vol_24h,
+        "ob_ratio": ob_ratio,
+        "signal_family": _COIN_ALT_CANARY_SIGNAL_FAMILY if canary_live else "type_b",
+        "stop_pct": str(stop_pct),
+        "take_pct": str(take_pct),
+        "reject_reason": base_reject_reason,
+        "shadow_stage": "post_gate_alt_profile",
+        "shadow_origin": _type_b_alt_shadow_origin(profile_name),
+        "canary_profile": profile_name,
+    }
+
+    if canary_live:
+        try:
+            r.lpush("claw:signal:queue", json.dumps(payload))
+        except Exception as e:
+            r.delete(cooldown_key)
+            _log("type_b.alt_canary.publish_failed", symbol=symbol, profile=profile_name, error=str(e))
+            return None
+        _coin_alt_canary_mark_used(r, profile_name)
+        r.hset(f"claw:signal_pct:COIN:{symbol}", mapping={
+            "stop_pct": str(stop_pct),
+            "take_pct": str(take_pct),
+        })
+        r.expire(f"claw:signal_pct:COIN:{symbol}", 86400)
+        _log(
+            "type_b.alt_canary.signal_created",
+            symbol=symbol,
+            profile=profile_name,
+            signal_id=signal_id,
+            size_cash=str(size_cash),
+            base_reject=base_reject_reason,
+        )
+
+    save_signal_snapshot(r, payload)
+    return signal_id
+
+
+def _maybe_save_type_b_alt_shadow_candidates(
+    r,
+    *,
+    symbol: str,
+    current_price: Decimal | None,
+    change_rate: float | None,
+    near_high: float | None,
+    ret_5m: float | None,
+    trade_price: float | None,
+    high_price: float | None,
+    vol_24h: float | None,
+    ob_ratio: float | None,
+    base_reject_reason: str,
+) -> list[str]:
+    if current_price is None or current_price <= 0:
+        return []
+    if any(value is None for value in (change_rate, near_high, ret_5m, trade_price, high_price, vol_24h)):
+        return []
+
+    sample = _type_b_alt_shadow_sample(
+        change_rate=change_rate,
+        near_high=near_high,
+        ret_5m=ret_5m,
+        trade_price=trade_price,
+        high_price=high_price,
+        vol_24h=vol_24h,
+        ob_ratio=ob_ratio,
+    )
+    thresholds_by_name = scenario_map()
+    saved_signal_ids: list[str] = []
+    for profile_name in alt_shadow_profile_names():
+        thresholds = thresholds_by_name.get(profile_name)
+        if not thresholds:
+            continue
+        if first_gate_fail_reason(sample, thresholds) != "pass_pre_ai":
+            continue
+        signal_id = _save_type_b_alt_shadow_candidate(
+            r,
+            symbol=symbol,
+            profile_name=profile_name,
+            current_price=current_price,
+            change_rate=float(change_rate),
+            near_high=float(near_high),
+            ret_5m=float(ret_5m),
+            trade_price=float(trade_price),
+            high_price=float(high_price),
+            vol_24h=float(vol_24h),
+            ob_ratio=ob_ratio,
+            base_reject_reason=base_reject_reason,
+        )
+        if signal_id:
+            saved_signal_ids.append(f"{profile_name}:{signal_id}")
+
+    if saved_signal_ids:
+        _log(
+            "type_b.alt_shadow.saved",
+            symbol=symbol,
+            base_reject=base_reject_reason,
+            profiles=",".join(saved_signal_ids),
+        )
+    return saved_signal_ids
 
 
 def _save_coin_pre_consensus_shadow_snapshot(
@@ -1306,13 +1560,38 @@ def _get_anthropic_client():
 def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     """Type B 추세 탑승: 일간 +5% 이상 상승 중이며 현재도 고점 유지 중인 종목."""
     market = "COIN"
+    change_rate: float | None = None
+    trade_price: float | None = None
+    high_price: float | None = None
+    vol_krw: float | None = None
+    near_high: float | None = None
+    ret_5m: float | None = None
+    _ob_ratio: float | None = None
+    current_price: Decimal | None = None
 
     def _reject(reason_code: str, **sample_metrics) -> None:
         _record_type_b_reject(r, reason_code)
         _record_type_b_reject_sample(r, reason_code, symbol=symbol, **sample_metrics)
 
+    def _record_scan(status: str, reason_code: str | None = None) -> None:
+        _record_type_b_scan_sample(
+            r,
+            symbol=symbol,
+            status=status,
+            reason_code=reason_code,
+            signal_mode=signal_mode,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+        )
+
     signal_mode = get_signal_family_mode(r, market, "type_b", strategy="trend_riding", source="consensus_signal_runner_type_b")
     if signal_mode == "off":
+        _record_scan("reject", "reject_signal_mode_off")
         _reject("reject_signal_mode_off")
         return None
 
@@ -1321,6 +1600,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     # Type B 쿨다운 (4시간)
     tb_cooldown_key = f"consensus:type_b_cooldown:{market}:{symbol}"
     if r.exists(tb_cooldown_key):
+        _record_scan("reject", "reject_cooldown")
         _reject("reject_cooldown")
         return None
 
@@ -1342,12 +1622,14 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         except Exception:
             pass
         if not allow_reentry:
+            _record_scan("reject", "reject_daily_stop")
             _reject("reject_daily_stop")
             return None
 
     # 당일 stop_loss 2회 이상 → 완전 차단
     stop_count_key = f"claw:stop_count:{market}:{symbol}:{today}"
     if int(r.get(stop_count_key) or 0) >= 2:
+        _record_scan("reject", "reject_stop_count")
         _reject("reject_stop_count")
         return None
 
@@ -1356,18 +1638,21 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     _symbol_daily_cap = int(os.getenv("CONSENSUS_SYMBOL_DAILY_CAP", "2"))
     if int(r.get(symbol_daily_key) or 0) >= _symbol_daily_cap:
         _log("type_b.reject.symbol_daily_cap", symbol=symbol)
+        _record_scan("reject", "reject_symbol_daily_cap")
         _reject("reject_symbol_daily_cap")
         return None
 
     # Upbit ticker 조회
     client = _get_client(market)
     if client is None:
+        _record_scan("reject", "reject_client_unavailable")
         _reject("reject_client_unavailable")
         return None
     try:
         ticker = client.get_ticker(symbol)
     except Exception as e:
         _log("type_b.ticker_error", symbol=symbol, error=str(e))
+        _record_scan("reject", "reject_ticker_error")
         _reject("reject_ticker_error")
         return None
 
@@ -1377,11 +1662,43 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     vol_krw = float(ticker.get("acc_trade_price_24h", 0))
 
     if trade_price <= 0 or high_price <= 0:
+        _record_scan("reject", "reject_invalid_ticker")
         _reject("reject_invalid_ticker")
         return None
 
+    near_high = trade_price / high_price
+    live = _get_live_ret_5m(r, market, symbol)
+    if live is not None:
+        ret_5m, live_price_float = live
+    else:
+        live_price_float = trade_price
+
+    ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
+    if ob_raw:
+        try:
+            _ob_ratio = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
+        except (TypeError, ValueError):
+            _ob_ratio = None
+
+    if live is not None:
+        current_price = Decimal(str(live_price_float))
+
     # 조건 ①: 전일대비 +5% 이상
     if change_rate < _TYPE_B_MIN_CHANGE_RATE:
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_change_rate_weak",
+        )
+        _record_scan("reject", "reject_change_rate_weak")
         _reject(
             "reject_change_rate_weak",
             change_rate=change_rate,
@@ -1393,6 +1710,20 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if change_rate > _TYPE_B_MAX_CHANGE_RATE:
         _log("type_b.reject.change_rate_overextended", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_change_rate_overextended",
+        )
+        _record_scan("reject", "reject_change_rate_overextended")
         _reject(
             "reject_change_rate_overextended",
             change_rate=change_rate,
@@ -1403,10 +1734,23 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         return None
 
     # 조건 ②: 당일 고점 -3% 이내 (추세 유지 확인)
-    near_high = trade_price / high_price
     if near_high < _TYPE_B_NEAR_HIGH_RATIO:
         _log("type_b.reject.far_from_high", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", near_high=f"{near_high:.3f}")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_far_from_high",
+        )
+        _record_scan("reject", "reject_far_from_high")
         _reject(
             "reject_far_from_high",
             change_rate=change_rate,
@@ -1419,6 +1763,20 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
 
     # 조건 ③: 거래대금 100억 이상
     if vol_krw < _TYPE_B_MIN_VOL_KRW:
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_low_vol_24h",
+        )
+        _record_scan("reject", "reject_low_vol_24h")
         _reject(
             "reject_low_vol_24h",
             change_rate=change_rate,
@@ -1430,8 +1788,8 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         return None
 
     # 조건 ④: 현재도 5분 상승 중
-    live = _get_live_ret_5m(r, market, symbol)
     if live is None:
+        _record_scan("reject", "reject_no_live_price")
         _reject(
             "reject_no_live_price",
             change_rate=change_rate,
@@ -1441,10 +1799,23 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
             vol_24h=vol_krw,
         )
         return None
-    ret_5m, live_price_float = live
     if ret_5m < _TYPE_B_MIN_RET_5M:
         _log("type_b.reject.ret_5m_weak", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_ret_5m_weak",
+        )
+        _record_scan("reject", "reject_ret_5m_weak")
         _reject(
             "reject_ret_5m_weak",
             change_rate=change_rate,
@@ -1458,6 +1829,20 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if ret_5m > _TYPE_B_MAX_RET_5M:
         _log("type_b.reject.ret_5m_overextended", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ret_5m=f"{ret_5m:.4f}")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_ret_5m_overextended",
+        )
+        _record_scan("reject", "reject_ret_5m_overextended")
         _reject(
             "reject_ret_5m_overextended",
             change_rate=change_rate,
@@ -1472,16 +1857,23 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     current_price = Decimal(str(live_price_float))
 
     # 오더북 데이터 읽기 (ws_exit_monitor가 갱신)
-    _ob_ratio = None
-    ob_raw = r.hget(f"orderbook:COIN:{symbol}", "ob_ratio")
-    if ob_raw:
-        try:
-            _ob_ratio = float(ob_raw.decode() if isinstance(ob_raw, bytes) else ob_raw)
-        except (TypeError, ValueError):
-            pass
     if _TYPE_B_REQUIRE_OB_RATIO and _ob_ratio is None:
         _log("type_b.reject.ob_ratio_missing", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_ob_ratio_missing",
+        )
+        _record_scan("reject", "reject_ob_ratio_missing")
         _reject(
             "reject_ob_ratio_missing",
             change_rate=change_rate,
@@ -1495,6 +1887,20 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if _ob_ratio is not None and _ob_ratio < _TYPE_B_MIN_OB_RATIO:
         _log("type_b.reject.ob_ratio_weak", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", ob_ratio=f"{_ob_ratio:.3f}")
+        _maybe_save_type_b_alt_shadow_candidates(
+            r,
+            symbol=symbol,
+            current_price=current_price,
+            change_rate=change_rate,
+            near_high=near_high,
+            ret_5m=ret_5m,
+            trade_price=trade_price,
+            high_price=high_price,
+            vol_24h=vol_krw,
+            ob_ratio=_ob_ratio,
+            base_reject_reason="reject_ob_ratio_weak",
+        )
+        _record_scan("reject", "reject_ob_ratio_weak")
         _reject(
             "reject_ob_ratio_weak",
             change_rate=change_rate,
@@ -1521,6 +1927,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         emit, direction, confidence, reason = parse_decision_response(raw)
     except Exception as e:
         _log("type_b.claude_error", symbol=symbol, error=str(e))
+        _record_scan("reject", "reject_claude_error")
         _reject(
             "reject_claude_error",
             change_rate=change_rate,
@@ -1536,6 +1943,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     if not emit or direction != "LONG":
         _log("type_b.reject.claude_hold", symbol=symbol,
              change_rate=f"{change_rate*100:.1f}%", reason=reason[:60])
+        _record_scan("reject", "reject_claude_hold")
         _reject(
             "reject_claude_hold",
             change_rate=change_rate,
@@ -1571,6 +1979,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
         )
     except Exception as e:
         _log("type_b.signal_error", symbol=symbol, error=str(e))
+        _record_scan("reject", "reject_signal_error")
         _reject(
             "reject_signal_error",
             change_rate=change_rate,
@@ -1610,6 +2019,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     }
 
     if signal_mode == "shadow":
+        _record_scan("shadow_candidate")
         payload["status"] = "shadow_candidate"
         payload["shadow_stage"] = "post_consensus"
         payload["shadow_origin"] = "consensus_runner_type_b_shadow_candidate"
@@ -1633,6 +2043,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
     except Exception as e:
         _log("type_b.publish_failed", symbol=symbol, error=str(e))
         r.delete(tb_cooldown_key)
+        _record_scan("reject", "reject_publish_failed")
         _reject(
             "reject_publish_failed",
             change_rate=change_rate,
@@ -1644,6 +2055,7 @@ def _run_type_b_coin(symbol: str, r, today: str) -> Optional[dict]:
             ob_ratio=_ob_ratio,
         )
         return None
+    _record_scan("candidate")
     save_signal_snapshot(r, payload)
     _record_type_b_stat(r, "candidate")
 

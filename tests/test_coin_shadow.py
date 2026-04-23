@@ -234,6 +234,60 @@ def test_shadow_summary_backfills_shadow_origin_from_snapshot():
     assert summary["by_shadow_origin"]["consensus_runner_type_b_shadow_candidate"]["trade_count"] == 1
 
 
+def test_shadow_summary_tracks_type_b_alt_shadow_origin():
+    r = fakeredis.FakeRedis()
+
+    save_signal_snapshot(
+        r,
+        {
+            "signal_id": "sig-shadow-alt-profile",
+            "ts": "1760000000000",
+            "market": "COIN",
+            "symbol": "KRW-ALT-PROFILE",
+            "direction": "LONG",
+            "entry": {"price": "100", "size_cash": "30000"},
+            "stop": {"price": "97"},
+            "source": "consensus_signal_runner_type_b_alt_shadow",
+            "strategy": "trend_riding",
+            "ret_5m": 0.003,
+            "change_rate_daily": 0.022,
+            "high_price": 109,
+            "near_high": 0.9174,
+            "vol_24h": 4000000000,
+            "ob_ratio": 0.98,
+            "shadow_origin": "consensus_runner_type_b_alt_shadow:alt_broad_trend_positive_5m",
+            "shadow_stage": "post_gate_alt_profile",
+            "reject_reason": "reject_change_rate_weak",
+            "stop_pct": "0.03",
+            "take_pct": "0.15",
+        },
+    )
+    _seed_mark_hist(
+        r,
+        "KRW-ALT-PROFILE",
+        [
+            (1760000400000, "101"),
+            (1760000700000, "104"),
+            (1760001000000, "108"),
+            (1760001300000, "112"),
+            (1760001600000, "115"),
+            (1760001900000, "116"),
+            (1760002200000, "117"),
+            (1760002500000, "118"),
+            (1760002800000, "116"),
+            (1760003100000, "115"),
+        ],
+    )
+
+    stats = evaluate_pending_signals(r)
+    assert stats["completed"] == 1
+
+    summary = compute_shadow_summary(r)
+    assert summary["by_signal_family"]["type_b"]["trade_count"] == 1
+    assert summary["by_shadow_origin"]["consensus_runner_type_b_alt_shadow:alt_broad_trend_positive_5m"]["trade_count"] == 1
+    assert summary["by_reject_reason"]["reject_change_rate_weak"]["trade_count"] == 1
+
+
 def test_shadow_summary_infers_type_b_shadow_origin_from_entry_source():
     r = fakeredis.FakeRedis()
     r.hset(

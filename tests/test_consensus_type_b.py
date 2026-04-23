@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from app.consensus_signal_runner import _run_type_b_coin
 from scripts.coin_type_b_reject_report import build_report
+from scripts.coin_type_b_whatif_report import build_report as build_whatif_report
 from utils.redis_helpers import today_kst
 
 
@@ -107,6 +108,13 @@ def test_type_b_rejects_low_change_rate_and_reports_bottleneck():
     assert threshold["threshold"] == 4.0
     assert threshold["avg_gap"] == 1.0
     assert threshold["near_threshold"]["count"] == 1
+    scan_key = f"consensus:type_b:scan_samples:COIN:{today_kst()}"
+    scan_row = r.lindex(scan_key, 0)
+    assert scan_row is not None
+    scan = __import__("json").loads(scan_row.decode())
+    assert scan["status"] == "reject"
+    assert scan["reason_code"] == "reject_change_rate_weak"
+    assert round(scan["near_high"], 3) == 0.995
 
 
 def test_type_b_reject_report_uses_consensus_log_fallback_for_samples(tmp_path: Path):
@@ -192,3 +200,176 @@ def test_type_b_shadow_saves_snapshot_without_queue():
     stats = r.hgetall(f"consensus:type_b:stats:COIN:{today_kst()}")
     assert stats[b"scanned"] == b"1"
     assert stats[b"shadow_candidate"] == b"1"
+    scan_key = f"consensus:type_b:scan_samples:COIN:{today_kst()}"
+    scan_row = r.lindex(scan_key, 0)
+    assert scan_row is not None
+    scan = __import__("json").loads(scan_row.decode())
+    assert scan["status"] == "shadow_candidate"
+    assert round(scan["ret_5m"] * 100, 1) == 1.2
+
+
+def test_type_b_reject_can_seed_alt_shadow_candidates_once_per_profile():
+    r = fakeredis.FakeRedis()
+    client = _FakeUpbitClient(
+        change_rate=0.022,
+        trade_price=100.0,
+        high_price=108.7,
+        vol_krw=4_000_000_000.0,
+    )
+
+    with patch("app.consensus_signal_runner._get_client", return_value=client), \
+         patch("app.consensus_signal_runner._get_live_ret_5m", return_value=(0.003, 100.0)):
+        result1 = _run_type_b_coin("KRW-ALT", r, "20260420")
+        result2 = _run_type_b_coin("KRW-ALT", r, "20260420")
+
+    assert result1 is None
+    assert result2 is None
+
+    signal_ids = [raw.decode() for raw in r.zrange("research:signal_index:COIN", 0, -1)]
+    assert len(signal_ids) == 2
+
+    rows = [r.hgetall(f"research:signal:COIN:{signal_id}") for signal_id in signal_ids]
+    origins = sorted(row[b"shadow_origin"].decode() for row in rows)
+    assert origins == [
+        "consensus_runner_type_b_alt_shadow:alt_broad_trend_positive_5m",
+        "consensus_runner_type_b_alt_shadow:alt_pullback_setup_allow_small_dip",
+    ]
+    assert all(row[b"status"] == b"shadow_candidate" for row in rows)
+    assert all(row[b"source"] == b"consensus_signal_runner_type_b_alt_shadow" for row in rows)
+    assert all(row[b"reject_reason"] == b"reject_change_rate_weak" for row in rows)
+
+
+def test_type_b_alt_pullback_canary_enqueues_only_when_explicitly_live(monkeypatch):
+    monkeypatch.setattr("app.consensus_signal_runner._COIN_ALT_CANARY_DAILY_CAP", 1)
+    monkeypatch.setattr("app.consensus_signal_runner._COIN_ALT_CANARY_SIZE_CASH", Decimal("10000"))
+    r = fakeredis.FakeRedis()
+    r.hset("claw:signal_mode:COIN", mapping={"type_b_alt_pullback": "live"})
+    client = _FakeUpbitClient(
+        change_rate=0.022,
+        trade_price=100.0,
+        high_price=108.7,
+        vol_krw=4_000_000_000.0,
+    )
+
+    with patch("app.consensus_signal_runner._get_client", return_value=client), \
+         patch("app.consensus_signal_runner._get_live_ret_5m", return_value=(0.003, 100.0)):
+        result = _run_type_b_coin("KRW-ALT", r, "20260420")
+
+    assert result is None
+    assert r.llen("claw:signal:queue") == 1
+    queued = __import__("json").loads(r.lindex("claw:signal:queue", 0).decode())
+    assert queued["status"] == "candidate"
+    assert queued["source"] == "consensus_signal_runner_type_b_alt_canary"
+    assert queued["signal_family"] == "type_b_alt_pullback"
+    assert queued["canary_profile"] == "alt_pullback_setup_allow_small_dip"
+    assert queued["entry"]["size_cash"] == "10000"
+    assert r.get(f"consensus:coin_alt_canary_daily:COIN:alt_pullback_setup_allow_small_dip:{today_kst()}") == b"1"
+
+
+def test_type_b_whatif_report_compares_relaxed_gate_profiles():
+    r = fakeredis.FakeRedis()
+    today = today_kst()
+    key = f"consensus:type_b:scan_samples:COIN:{today}"
+    r.rpush(
+        key,
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-A",
+                "status": "reject",
+                "reason_code": "reject_change_rate_weak",
+                "change_rate": 0.03,
+                "near_high": 0.985,
+                "ret_5m": 0.010,
+                "trade_price": 100.0,
+                "high_price": 101.5,
+                "vol_24h": 20_000_000_000.0,
+                "ob_ratio": 1.10,
+            }
+        ),
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-B",
+                "status": "reject",
+                "reason_code": "reject_far_from_high",
+                "change_rate": 0.08,
+                "near_high": 0.945,
+                "ret_5m": 0.012,
+                "trade_price": 100.0,
+                "high_price": 105.8,
+                "vol_24h": 20_000_000_000.0,
+                "ob_ratio": 1.10,
+            }
+        ),
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-C",
+                "status": "reject",
+                "reason_code": "reject_low_vol_24h",
+                "change_rate": 0.07,
+                "near_high": 0.982,
+                "ret_5m": 0.011,
+                "trade_price": 100.0,
+                "high_price": 101.8,
+                "vol_24h": 8_000_000_000.0,
+                "ob_ratio": 1.10,
+            }
+        ),
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-D",
+                "status": "candidate",
+                "change_rate": 0.09,
+                "near_high": 0.985,
+                "ret_5m": 0.014,
+                "trade_price": 100.0,
+                "high_price": 101.5,
+                "vol_24h": 25_000_000_000.0,
+                "ob_ratio": 1.12,
+            }
+        ),
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-E",
+                "status": "reject",
+                "reason_code": "reject_far_from_high",
+                "change_rate": 0.022,
+                "near_high": 0.92,
+                "ret_5m": 0.003,
+                "trade_price": 100.0,
+                "high_price": 108.7,
+                "vol_24h": 4_000_000_000.0,
+                "ob_ratio": 0.98,
+            }
+        ),
+        __import__("json").dumps(
+            {
+                "symbol": "KRW-F",
+                "status": "reject",
+                "reason_code": "reject_ret_5m_weak",
+                "change_rate": 0.018,
+                "near_high": 0.89,
+                "ret_5m": -0.001,
+                "trade_price": 100.0,
+                "high_price": 112.4,
+                "vol_24h": 3_500_000_000.0,
+                "ob_ratio": None,
+            }
+        ),
+    )
+
+    report = build_whatif_report(r, date_from=today, date_to=today)
+    scenarios = {row["name"]: row for row in report["summary"]["scenario_reports"]}
+
+    assert report["summary"]["scan_sample_count"] == 6
+    assert scenarios["baseline_current"]["pre_ai_pass_count"] == 1
+    assert scenarios["baseline_current"]["pass_symbols"] == ["KRW-D"]
+    assert scenarios["relax_change_rate_3pct"]["pre_ai_pass_count"] == 2
+    assert scenarios["relax_change_rate_3pct"]["delta_vs_baseline"] == 1
+    assert scenarios["relax_change_rate_3pct"]["newly_unblocked_from"][0]["reason"] == "reject_change_rate_weak"
+    assert scenarios["relax_near_high_0_95"]["pre_ai_pass_count"] == 1
+    assert scenarios["relax_combo_3pct_0_95_7b"]["pre_ai_pass_count"] == 3
+    assert scenarios["alt_pullback_continuation"]["pre_ai_pass_count"] == 4
+    assert scenarios["alt_pullback_continuation"]["delta_vs_baseline"] == 3
+    assert scenarios["alt_pullback_continuation"]["pass_symbols"] == ["KRW-A", "KRW-B", "KRW-C", "KRW-D"]
+    assert scenarios["alt_broad_trend_positive_5m"]["pre_ai_pass_count"] == 5
+    assert scenarios["alt_pullback_setup_allow_small_dip"]["pre_ai_pass_count"] == 6

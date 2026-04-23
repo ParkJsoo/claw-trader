@@ -118,6 +118,37 @@ class TestRule0GlobalPause:
         assert d_coin.meta["key"] == "claw:pause:COIN"
         assert d_kr.allow is True
 
+    def test_market_pause_can_be_bypassed_only_for_explicit_alt_canary(self):
+        r = fakeredis.FakeRedis()
+        r.set("claw:pause:COIN", "true")
+        r.hset("claw:signal_mode:COIN", mapping={"type_b_alt_pullback": "live"})
+        r.hset("claw:pause_bypass:COIN", mapping={"type_b_alt_pullback": "true"})
+        eng = _make_engine(r)
+
+        d = eng.check(
+            _make_signal(
+                market="COIN",
+                symbol="KRW-BTC",
+                strategy="trend_riding",
+                source="consensus_signal_runner_type_b_alt_canary",
+                signal_family="type_b_alt_pullback",
+            )
+        )
+
+        assert d.allow is True
+
+    def test_market_pause_bypass_does_not_apply_to_baseline_type_b(self):
+        r = fakeredis.FakeRedis()
+        r.set("claw:pause:COIN", "true")
+        r.hset("claw:signal_mode:COIN", mapping={"type_b": "live"})
+        r.hset("claw:pause_bypass:COIN", mapping={"type_b": "true"})
+        eng = _make_engine(r)
+
+        d = eng.check(_make_signal(market="COIN", symbol="KRW-BTC", strategy="trend_riding", signal_family="type_b"))
+
+        assert d.allow is False
+        assert d.reason == "PAUSED"
+
 
 class TestSignalFamilyMode:
     def test_shadow_mode_blocks_matching_family_entry(self):
@@ -143,6 +174,15 @@ class TestSignalFamilyMode:
         assert d.reason == "SIGNAL_FAMILY_DISABLED"
         assert d.meta["signal_family"] == "type_b"
         assert d.meta["signal_mode"] == "off"
+
+    def test_alt_canary_family_defaults_disabled(self):
+        r = fakeredis.FakeRedis()
+        eng = _make_engine(r)
+
+        d = eng.check(_make_signal(market="COIN", symbol="KRW-BTC", signal_family="type_b_alt_pullback"))
+
+        assert d.allow is False
+        assert d.reason == "SIGNAL_FAMILY_DISABLED"
 
     def test_exit_signal_ignores_family_mode_gate(self):
         r = fakeredis.FakeRedis()

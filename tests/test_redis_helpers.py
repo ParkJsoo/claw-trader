@@ -27,3 +27,12 @@ def test_get_signal_family_mode_redis_override_wins(monkeypatch):
     r.hset("claw:signal_mode:COIN", mapping={"type_a": "off"})
 
     assert get_signal_family_mode(r, "COIN", "type_a") == "off"
+
+
+def test_alt_type_b_family_defaults_off_until_explicit_override():
+    r = fakeredis.FakeRedis()
+
+    assert get_signal_family_mode(r, "COIN", "type_b_alt_pullback") == "off"
+
+    r.hset("claw:signal_mode:COIN", mapping={"type_b_alt_pullback": "live"})
+    assert get_signal_family_mode(r, "COIN", "type_b_alt_pullback") == "live"

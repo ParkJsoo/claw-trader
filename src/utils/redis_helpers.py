@@ -122,7 +122,10 @@ def get_signal_family_mode(
     if not market_norm or not family:
         return default
 
-    mode = _normalize_signal_mode(os.getenv(f"{market_norm}_{family.upper()}_MODE"), default)
+    # Alt Type B canary families must be explicit opt-in. The normal default is
+    # live for backward compatibility with existing type_a/type_b behavior.
+    effective_default = "off" if family.startswith("type_b_alt_") else default
+    mode = _normalize_signal_mode(os.getenv(f"{market_norm}_{family.upper()}_MODE"), effective_default)
     try:
         override = r.hget(f"claw:signal_mode:{market_norm}", family)
         if override is not None:
