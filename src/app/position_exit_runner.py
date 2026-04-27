@@ -456,10 +456,12 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
 
     _eff_trail = trail_pct if trail_pct is not None else _TRAIL_STOP_PCT
 
-    stop_price = avg_price * (1 - _eff_stop)
+    static_stop_price = avg_price * (1 - _eff_stop)
+    stop_price = static_stop_price
 
     # Trailing stop: HWM에서 trail_pct 이상 하락하면 청산 (floor = static stop)
     # 2단계 tight trail: HWM이 +trigger% 이상 찍었으면 더 tight한 trail 적용 (빅무버 이익 보호)
+    trail_stop = None
     if hwm_price is not None and hwm_price > avg_price:
         if (trail_tight_pct is not None and trail_tight_trigger is not None
                 and hwm_price >= avg_price * (Decimal("1") + trail_tight_trigger)):
@@ -478,6 +480,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int, pos: di
         held_sec = (now_ms // 1000) - opened_ts
 
     if mark_price <= stop_price:
+        if trail_stop is not None and trail_stop > static_stop_price:
+            return f"trailing_stop(mark={mark_price:.4f}<=stop={stop_price:.4f})"
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
     # Trail-only mode: 지정 수익률 달성 시 take_profit 비활성화, trailing stop만 유지
     _in_trail_only = (trail_only_trigger is not None
@@ -773,8 +777,8 @@ def _run_market(r, client, market: str) -> None:
         _log("exit_triggered", market=market, symbol=symbol, reason=reason,
              avg=str(avg_price), mark=str(mark_price), qty=str(qty))
 
-        # H4: stop_loss/time_limit 매도 시 0.3% 낮은 가격으로 지정가 (체결 확률 향상)
-        if "take_profit" in reason:
+        # H4: 손실성 청산만 0.3% 낮은 가격으로 지정가.
+        if "take_profit" in reason or "trailing_stop" in reason:
             sell_price = mark_price
         else:
             sell_price = mark_price * Decimal("0.997")
@@ -806,6 +810,10 @@ def _run_market(r, client, market: str) -> None:
             # 횡보/시간만료 청산 후 2시간 쿨다운 (반복 진입 방지)
             r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=7200)
             _log("time_limit_cooldown_marked", market=market, symbol=symbol, cooldown_sec=7200)
+        if ok and "trailing_stop" in reason:
+            # 이익 보호 trailing 청산은 손절로 취급하지 않고 take_profit과 동일한 재진입 정책 적용.
+            r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=1800)
+            _log("trailing_stop_cooldown_marked", market=market, symbol=symbol, cooldown_sec=1800)
         if ok and "take_profit" in reason:
             # take_profit 청산 후 30분 쿨다운 (모멘텀 지속 시 빠른 재진입 허용)
             r.set(f"consensus:symbol_cooldown:{market}:{symbol}", "1", ex=1800)

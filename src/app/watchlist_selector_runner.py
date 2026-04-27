@@ -37,8 +37,8 @@ _SELECT_INTERVAL_MARKET_SEC = float(os.getenv("WATCHLIST_SELECT_INTERVAL_MARKET_
 _SELECT_COUNT = int(os.getenv("UNIVERSE_SELECT_COUNT", "8"))
 _WL_TTL = 8 * 3600  # 8시간
 
-# 계좌 거래 불가 종목 블랙리스트 (파생ETF — APBK1497)
-_SYMBOL_BLACKLIST: set[str] = {"114800", "251340"}
+# 계좌 거래 불가 종목 블랙리스트 (파생ETF/레버리지 등 — APBK1497)
+_SYMBOL_BLACKLIST: set[str] = {"114800", "233740", "251340"}
 
 # 뉴스 sentiment/impact 점수 매핑
 _SCORE_MAP = {

@@ -192,10 +192,12 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
 
     _eff_trail = trail_pct if trail_pct is not None else _COIN_TRAIL_STOP_PCT
 
-    stop_price = avg_price * (1 - _eff_stop)
+    static_stop_price = avg_price * (1 - _eff_stop)
+    stop_price = static_stop_price
 
     # Trailing stop: HWM에서 trail_pct 이상 하락하면 청산
     # 2단계 tight trail: HWM이 +trigger% 이상 찍었으면 더 tight한 trail 적용
+    trail_stop = None
     if hwm_price is not None and hwm_price > avg_price:
         if (trail_tight_pct is not None and trail_tight_trigger is not None
                 and hwm_price >= avg_price * (Decimal("1") + trail_tight_trigger)):
@@ -214,6 +216,8 @@ def _check_exit(avg_price: Decimal, mark_price: Decimal, opened_ts: int,
         held_sec = int(time.time()) - opened_ts
 
     if mark_price <= stop_price:
+        if trail_stop is not None and trail_stop > static_stop_price:
+            return f"trailing_stop(mark={mark_price:.4f}<=stop={stop_price:.4f})"
         return f"stop_loss(mark={mark_price:.4f}<=stop={stop_price:.4f})"
     if mark_price >= take_price:
         return f"take_profit(mark={mark_price:.4f}>=take={take_price:.4f})"
@@ -423,6 +427,9 @@ def _handle_ticker(r, upbit: UpbitClient, data: dict, positions: dict,
     if ok and ("time_limit" in reason or "stagnant_exit" in reason):
         r.set(f"consensus:symbol_cooldown:COIN:{symbol}", "1", ex=7200)
         _log("time_limit_cooldown_marked", symbol=symbol, cooldown_sec=7200)
+    if ok and "trailing_stop" in reason:
+        r.set(f"consensus:symbol_cooldown:COIN:{symbol}", "1", ex=1800)
+        _log("trailing_stop_cooldown_marked", symbol=symbol, cooldown_sec=1800)
     if ok and "take_profit" in reason:
         r.set(f"consensus:symbol_cooldown:COIN:{symbol}", "1", ex=1800)
         _log("take_profit_cooldown_marked", symbol=symbol, cooldown_sec=1800)

@@ -47,7 +47,7 @@ class TestTrailingStop:
         mark = Decimal("99000")  # static_stop(98500) 위지만 trail_stop(99485) 아래 → 발동
         result = _check_exit(avg, mark, int(time.time()), hwm_price=hwm)
         assert result is not None
-        assert "stop_loss" in result
+        assert "trailing_stop" in result
 
     def test_trailing_stop_not_triggered_above_trail(self):
         """HWM에서 trail_pct 이내 하락이면 trailing stop 미발동."""
@@ -75,6 +75,23 @@ class TestTrailingStop:
         mark = avg * (1 - _STOP_LOSS_PCT) + 1  # static stop 바로 위 → hold
         result = _check_exit(avg, mark, int(time.time()), hwm_price=hwm)
         assert result is None
+
+    def test_trailing_stop_below_static_stop_stays_stop_loss(self):
+        """HWM이 낮아 trail stop이 static stop보다 느슨하면 여전히 stop_loss."""
+        avg = Decimal("100000")
+        hwm = Decimal("101000")
+        mark = Decimal("96999")
+        result = _check_exit(
+            avg,
+            mark,
+            int(time.time()),
+            hwm_price=hwm,
+            stop_pct=Decimal("0.03"),
+            trail_pct=Decimal("0.05"),
+        )
+        assert result is not None
+        assert "stop_loss" in result
+        assert "trailing_stop" not in result
 
 
 class TestTimeLimitExtension:

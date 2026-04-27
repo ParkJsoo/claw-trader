@@ -141,6 +141,9 @@ PYTHONUNBUFFERED=1 PYTHONPATH=src venv/bin/python -m scripts.daily_report_runner
 
 `config/supervisord.conf`가 실제 운영 source of truth이고, `config/phase10_kr_micro.env`는 로컬 기본값입니다.
 
+운영 중 특정 심볼을 즉시 제외해야 하면 Redis `watchlist:exclude:{market}` Set을 사용한다.
+예: `PYTHONPATH=src venv/bin/python -c "from dotenv import load_dotenv; load_dotenv('.env'); import os, redis; r=redis.from_url(os.environ['REDIS_URL'], decode_responses=True); r.sadd('watchlist:exclude:KR','233740')"`
+
 `config/phase10_kr_micro.env` 기본 설정:
 
 ```bash

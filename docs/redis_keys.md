@@ -77,6 +77,7 @@
 
 ## Watchlist / Regime
 - `dynamic:watchlist:{market}` — 동적 워치리스트 Set (watchlist_selector_runner 갱신, 장중 1h/장외 6h 주기)
+- `watchlist:exclude:{market}` — 운영 제외 심볼 Set. 계좌 권한/브로커 제약으로 거래 불가한 종목을 즉시 차단할 때 사용 (예: `233740`).
 - `ret5m:{market}:{symbol}` — 종목별 5분 수익률 (regime filter 계산용)
 
 ## Performance / Reporting (Phase 16)

@@ -99,6 +99,29 @@ class TestSelectWatchlist:
 
         assert len(result) == 2
 
+    def test_excludes_hardcoded_blacklist_symbol(self):
+        r = fakeredis.FakeRedis()
+        r.set("mark:KR:233740", "17820")
+        r.set("mark:KR:005930", "30000")
+
+        from unittest.mock import patch
+        with patch("app.watchlist_selector_runner.today_kst", return_value="20260318"):
+            result = select_watchlist(r, "KR", ["233740", "005930"], 2)
+
+        assert result == ["005930"]
+
+    def test_excludes_runtime_blacklist_symbol(self):
+        r = fakeredis.FakeRedis()
+        r.set("mark:KR:A", "30000")
+        r.set("mark:KR:B", "30000")
+        r.sadd("watchlist:exclude:KR", "B")
+
+        from unittest.mock import patch
+        with patch("app.watchlist_selector_runner.today_kst", return_value="20260318"):
+            result = select_watchlist(r, "KR", ["A", "B"], 2)
+
+        assert result == ["A"]
+
 
 # ---------------------------------------------------------------------------
 # write_watchlist
